@@ -1,0 +1,3 @@
+name = "solvenet-verification"
+version = "0.1.0"
+defaultTargets = []

@@ -1,0 +1,16 @@
+FROM debian:bookworm-slim AS toolchain
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl zstd \
+    && rm -rf /var/lib/apt/lists/*
+COPY lean/lean-toolchain /tmp/lean-toolchain
+RUN version="$(sed 's/leanprover\/lean4:v//' /tmp/lean-toolchain)" \
+    && curl -fL "https://github.com/leanprover/lean4/releases/download/v${version}/lean-${version}-linux.tar.zst" -o /tmp/lean.tar.zst \
+    && mkdir /opt/lean \
+    && tar --zstd -xf /tmp/lean.tar.zst -C /opt/lean --strip-components=1
+
+FROM python:3.12-slim-bookworm
+COPY --from=toolchain /opt/lean /opt/lean
+COPY lean /opt/solvenet/lean
+COPY coordinator/src /opt/solvenet/src
+ENV PATH="/opt/lean/bin:${PATH}" PYTHONPATH=/opt/solvenet/src PYTHONDONTWRITEBYTECODE=1
+WORKDIR /opt/solvenet
+ENTRYPOINT ["python", "-m", "solvenet.sandbox"]

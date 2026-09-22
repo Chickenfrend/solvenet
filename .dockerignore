@@ -1,0 +1,6 @@
+.git
+**/__pycache__
+**/.lake
+**/.venv
+*.db*
+worker

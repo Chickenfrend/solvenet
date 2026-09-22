@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.db
+*.db-shm
+*.db-wal
+lean/.lake/
+worker/solvenet-worker
