@@ -103,6 +103,12 @@ CREATE UNIQUE INDEX runs_experiment_problem ON runs(experiment_id, fixture_probl
 PRAGMA user_version = 7;
 """
 
+MIGRATION_8 = """
+ALTER TABLE runs ADD COLUMN created_at REAL;
+ALTER TABLE verifications ADD COLUMN verified_at REAL;
+PRAGMA user_version = 8;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
@@ -174,7 +180,10 @@ class Store:
             if version == 6:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_7 + "COMMIT;")
                 version = 7
-            if version != 7:
+            if version == 7:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_8 + "COMMIT;")
+                version = 8
+            if version != 8:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -258,10 +267,10 @@ class Store:
         db.execute("INSERT INTO problems VALUES (?, ?, ?)", (problem, statement, json.dumps(imports)))
         db.execute("""INSERT INTO runs
           (id, problem_id, status, max_repairs, generation_timeout_seconds, max_assignments,
-           experiment_id, fixture_problem_id)
-          VALUES (?, ?, 'running', ?, ?, ?, ?, ?)""",
+           experiment_id, fixture_problem_id, created_at)
+           VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)""",
                    (run, problem, max_repairs, generation_timeout_seconds, max_assignments,
-                    experiment_id, fixture_problem_id))
+                    experiment_id, fixture_problem_id, self.clock()))
         for group in initial_jobs:
             for _ in range(group['count']):
                 db.execute("""INSERT INTO jobs
@@ -307,6 +316,14 @@ class Store:
     def experiment(self, experiment_id):
         with self.connect() as db:
             return self._experiment(db, experiment_id)
+
+    def experiment_summary(self, experiment_id):
+        from .experiment_summary import summary
+
+        with self.connect() as db:
+            db.execute('BEGIN')  # one consistent snapshot across experiment and detail queries
+            experiment = self._experiment(db, experiment_id)
+            return summary(db, experiment) if experiment else None
 
     def _refresh(self, db):
         db.execute("""UPDATE jobs SET status='cancelled' WHERE status='queued'
@@ -444,8 +461,11 @@ class Store:
 
     def verified(self, attempt, result):
         with self.transaction() as db:
-            inserted = db.execute("INSERT OR IGNORE INTO verifications VALUES (?, ?, ?, ?)",
-                                  (attempt, result.status, result.diagnostics, result.elapsed_ms))
+            inserted = db.execute("""INSERT OR IGNORE INTO verifications
+                                   (attempt_id, status, diagnostics, elapsed_ms, verified_at)
+                                   VALUES (?, ?, ?, ?, ?)""",
+                                  (attempt, result.status, result.diagnostics, result.elapsed_ms,
+                                   self.clock()))
             if inserted.rowcount == 0:
                 return
             job = db.execute("""SELECT j.* FROM jobs j JOIN assignments a ON a.job_id=j.id

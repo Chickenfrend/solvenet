@@ -39,6 +39,31 @@ into run records and worker claims; fixture reference proofs are never stored as
 prompts or sent to workers. Existing `POST /v1/runs` remains available for ad hoc
 runs and has no experiment linkage.
 
+## Experiment reports
+
+`GET /v1/experiments/{id}/summary` returns a JSON snapshot. For a readable
+export, use `GET /v1/experiments/{id}/summary.md` (for example,
+`curl -o repair.md http://127.0.0.1:8080/v1/experiments/<id>/summary.md`).
+Export the independent and repair experiment IDs separately to compare them
+side by side. Both include the persisted set/version/SHA-256, Lean environment,
+strategy and request configuration. Run and attempt IDs in JSON lead to
+`GET /v1/runs/{run_id}` for full candidates and diagnostics; reports do not
+repeat the raw text.
+
+Request outcomes count **assignments**, including execution retries and leases
+that expire or are rejected before execution. Completed generations have an
+attempt; worker failures may have partial usage without an attempt. Known token
+and provider-duration totals are accompanied by known/unknown counts, including
+zero as a *known* value when actually reported. Missing counts are never
+estimated. Provider failure classification recognizes Ollama errors; the
+`Ollama proof format:` prefix identifies formatting failures, while other
+unclassified failures remain separate. Provider time is reported by the worker
+in nanoseconds; Lean verification time is in milliseconds. These are not
+wall-clock totals for the experiment. Three requests do not imply an equal
+token budget. Time to first proof is run creation to successful Lean verification
+(queue and retry delays included); pre-migration runs lack timestamps and report
+this duration as unavailable. In-progress experiments have provisional rates.
+
 Requires Python 3.11+ and Linux/POSIX process-group support. Install Lean using
 [elan](https://github.com/leanprover/elan); `lean/lean-toolchain` pins Lean 4.19.0.
 From the repository root, download the toolchain before running timed checks:
