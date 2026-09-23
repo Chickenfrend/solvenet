@@ -7,8 +7,10 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -61,6 +63,37 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(restarted.run(self.run)['attempts']), 1)
         Coordinator(restarted, FakeVerifier()).tick()
         self.assertEqual(Store(self.path).run(self.run)['status'], 'solved')
+
+    def test_run_reads_one_snapshot_during_verification(self):
+        claim = self.store.claim('worker', ['scripted'])
+        self.store.result(claim['assignment_id'], self.payload(claim))
+        attempt_id = self.store.pending()['id']
+        writer = Store(self.path, clock=lambda: self.now)
+        original_connect = self.store.connect
+        verified_between_reads = []
+
+        @contextmanager
+        def interleaved_connect():
+            with original_connect() as db:
+                def on_query(sql):
+                    if sql.startswith('SELECT * FROM problems WHERE id='):
+                        db.set_trace_callback(None)
+                        writer.verified(attempt_id, VerificationResult(
+                            VerificationStatus.VERIFIED, 'verified', 1))
+                        verified_between_reads.append(True)
+
+                db.set_trace_callback(on_query)
+                yield db
+
+        with patch.object(self.store, 'connect', interleaved_connect):
+            snapshot = self.store.run(self.run)
+
+        self.assertEqual(verified_between_reads, [True])
+        self.assertEqual(snapshot['status'], 'running')
+        self.assertEqual(snapshot['jobs'][0]['status'], 'verifying')
+        self.assertIsNone(snapshot['attempts'][0]['verification_status'])
+        self.assertEqual(snapshot['assignments'][0]['status'], 'completed')
+        self.assertEqual(writer.run(self.run)['status'], 'solved')
 
     def test_atomic_claim(self):
         with ThreadPoolExecutor(max_workers=8) as pool:

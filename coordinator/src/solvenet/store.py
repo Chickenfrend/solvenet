@@ -553,6 +553,7 @@ class Store:
 
     def run(self, run_id):
         with self.connect() as db:
+            db.execute('BEGIN')  # one consistent snapshot across run and detail queries
             run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
             if run is None:
                 return None
