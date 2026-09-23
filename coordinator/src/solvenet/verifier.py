@@ -20,6 +20,21 @@ from typing import Sequence
 
 MAX_DIAGNOSTICS_BYTES = 64 * 1024
 DIAGNOSTICS_TRUNCATION_MARKER = "\n[diagnostics truncated]"
+DEFAULT_LEAN_TIMEOUT_SECONDS = 10.0
+
+
+@dataclass(frozen=True)
+class LeanVerifierConfig:
+    """Resource limits applied to one verification attempt."""
+
+    timeout_seconds: float = DEFAULT_LEAN_TIMEOUT_SECONDS
+    max_diagnostics_bytes: int = MAX_DIAGNOSTICS_BYTES
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("The Lean timeout must be positive and finite")
+        if self.max_diagnostics_bytes <= 0:
+            raise ValueError("The diagnostic limit must be positive")
 
 
 def truncate_diagnostics(
@@ -68,19 +83,36 @@ class LeanVerifier:
         project_dir: Path,
         *,
         command: Sequence[str] = ("lake", "env", "lean"),
-        timeout_seconds: float = 10,
-        max_diagnostics_bytes: int = MAX_DIAGNOSTICS_BYTES,
+        config: LeanVerifierConfig | None = None,
+        timeout_seconds: float | None = None,
+        max_diagnostics_bytes: int | None = None,
         allowed_axioms: frozenset[str] = DEFAULT_ALLOWED_AXIOMS,
     ) -> None:
+        if config is not None and (
+            timeout_seconds is not None or max_diagnostics_bytes is not None
+        ):
+            raise ValueError("Use either verifier config or individual limits")
+        if config is None:
+            config = LeanVerifierConfig(
+                timeout_seconds=(
+                    DEFAULT_LEAN_TIMEOUT_SECONDS
+                    if timeout_seconds is None
+                    else timeout_seconds
+                ),
+                max_diagnostics_bytes=(
+                    MAX_DIAGNOSTICS_BYTES
+                    if max_diagnostics_bytes is None
+                    else max_diagnostics_bytes
+                ),
+            )
         self.project_dir = Path(project_dir).resolve()
         self.command = tuple(command)
-        self.timeout_seconds = timeout_seconds
-        self.max_diagnostics_bytes = max_diagnostics_bytes
+        self.config = config
+        self.timeout_seconds = config.timeout_seconds
+        self.max_diagnostics_bytes = config.max_diagnostics_bytes
         self.allowed_axioms = allowed_axioms
-        if not self.command or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-            raise ValueError("A command and a positive finite timeout are required")
-        if max_diagnostics_bytes <= 0:
-            raise ValueError("The diagnostic limit must be positive")
+        if not self.command:
+            raise ValueError("A Lean command is required")
 
     def verify(
         self,

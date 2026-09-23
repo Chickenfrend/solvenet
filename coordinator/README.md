@@ -45,6 +45,14 @@ produce `verifier_error`. A normal compiler exit of 1 after preflight is treated
 as rejection; an environment that changes between the two invocations can still
 cause a misclassified failure.
 
+The coordinator defaults this Lean deadline to 10 seconds and retains 64 KiB of
+diagnostics. `solvenet.server --lean-timeout SECONDS` changes the deadline for
+both local and container verification. For Docker, `--container-timeout SECONDS`
+sets the outer deadline (default 30 seconds), which must leave at least one
+second beyond the Lean deadline for container overhead. The inner deadline and
+diagnostic limit are included in each container request rather than relying on
+image defaults.
+
 This is a local experiment runner, **not an isolation boundary against hostile
 Lean metaprograms**. Tactics can execute IO in the Lean process, including reading
 or modifying its files. The completion receipt does not authenticate against

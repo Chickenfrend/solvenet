@@ -37,6 +37,15 @@ PYTHONPATH=coordinator/src python3 -m solvenet.server \
 The API listens on `127.0.0.1:8080`. Docker is the default verifier; it does not
 silently fall back to executing candidate code on the host.
 
+Verification has a 10-second total Lean deadline (including preflight). The
+Docker verifier has a 30-second outer deadline and requires at least one second
+beyond the Lean deadline for startup and cleanup. Override these with
+`--lean-timeout SECONDS` and `--container-timeout SECONDS`; local verification
+uses only the Lean deadline. The Docker defaults are 1 CPU, 1 GiB memory and
+swap, 64 processes, a 1 MiB file-size limit, a 128 MiB `/tmp`, and 64 KiB of
+retained diagnostics. These resource values are available through the Python
+`DockerResourceLimits` API rather than coordinator flags.
+
 **2. In another terminal, submit a problem:**
 
 ```sh

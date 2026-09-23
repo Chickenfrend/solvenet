@@ -12,6 +12,7 @@ from pathlib import Path
 from solvenet.verifier import (
     DIAGNOSTICS_TRUNCATION_MARKER,
     LeanVerifier,
+    LeanVerifierConfig,
     VerificationStatus,
     truncate_diagnostics,
 )
@@ -69,6 +70,12 @@ class LeanVerifierUnitTests(unittest.TestCase):
         diagnostics = "ééé"
         result = truncate_diagnostics(diagnostics, 5)
         self.assertEqual(result, "éé" + DIAGNOSTICS_TRUNCATION_MARKER)
+
+    def test_config_validates_resource_limits(self) -> None:
+        with self.assertRaisesRegex(ValueError, "timeout"):
+            LeanVerifierConfig(timeout_seconds=0)
+        with self.assertRaisesRegex(ValueError, "diagnostic"):
+            LeanVerifierConfig(max_diagnostics_bytes=0)
 
 
 @unittest.skipUnless(shutil.which("lake"), "Lake is not installed")

@@ -7,8 +7,19 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .sandbox import (
+    DEFAULT_CONTAINER_TIMEOUT_SECONDS,
+    ContainerVerifier,
+    ContainerVerifierConfig,
+)
 from .store import MAX_GENERATION_TIMEOUT_SECONDS, Conflict, Store
-from .verifier import LeanVerifier, VerificationResult, VerificationStatus
+from .verifier import (
+    DEFAULT_LEAN_TIMEOUT_SECONDS,
+    LeanVerifier,
+    LeanVerifierConfig,
+    VerificationResult,
+    VerificationStatus,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -174,13 +185,33 @@ def main():
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--verifier', choices=('docker', 'local'), default='docker')
     parser.add_argument('--image', default='solvenet-verifier:local')
+    parser.add_argument(
+        '--lean-timeout', type=float, default=DEFAULT_LEAN_TIMEOUT_SECONDS,
+        help='total Lean verification deadline in seconds (default: 10)',
+    )
+    parser.add_argument(
+        '--container-timeout', type=float, default=DEFAULT_CONTAINER_TIMEOUT_SECONDS,
+        help='outer Docker deadline in seconds (default: 30)',
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    try:
+        verifier_config = LeanVerifierConfig(timeout_seconds=args.lean_timeout)
+    except ValueError as error:
+        parser.error(str(error))
     if args.verifier == 'docker':
-        from .sandbox import ContainerVerifier
-        verifier = ContainerVerifier(args.image)
+        try:
+            verifier = ContainerVerifier(
+                args.image,
+                verifier_config=verifier_config,
+                container_config=ContainerVerifierConfig(
+                    deadline_seconds=args.container_timeout,
+                ),
+            )
+        except ValueError as error:
+            parser.error(str(error))
     else:
-        verifier = LeanVerifier(args.project)
+        verifier = LeanVerifier(args.project, config=verifier_config)
     coordinator = Coordinator(Store(args.db), verifier)
     stop = threading.Event()
     thread = threading.Thread(target=coordinator.loop, args=(stop,), daemon=True)

@@ -5,10 +5,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from solvenet.sandbox import ContainerVerifier, MAX_CONTAINER_RESULT_BYTES, _encode_result
+from solvenet.sandbox import (
+    ContainerVerifier,
+    ContainerVerifierConfig,
+    DockerResourceLimits,
+    MAX_CONTAINER_RESULT_BYTES,
+    _encode_result,
+)
 from solvenet.verifier import (
     DIAGNOSTICS_TRUNCATION_MARKER,
     MAX_DIAGNOSTICS_BYTES,
+    LeanVerifierConfig,
     VerificationResult,
     VerificationStatus,
 )
@@ -36,6 +43,54 @@ class ContainerTests(unittest.TestCase):
         self.assertTrue(result.verified)
         self.assertEqual(result.elapsed_ms, 1)
         self.assertEqual(calls[-1][:3], ['docker', 'rm', '-f'])
+
+    def test_configuration_is_propagated_to_request_and_docker(self):
+        observed = {}
+
+        def execute(command, **kwargs):
+            if command[1] == 'run':
+                observed['command'] = command
+                observed['timeout'] = kwargs['timeout']
+                mount = command[command.index('--mount') + 1]
+                directory = Path(
+                    mount.removeprefix('type=bind,src=').removesuffix(',dst=/work')
+                )
+                observed['request'] = json.loads(
+                    (directory / 'request.json').read_text()
+                )
+                (directory / 'result.json').write_text(json.dumps({
+                    'status': 'verified', 'diagnostics': '', 'elapsed_ms': 1,
+                }))
+            return subprocess.CompletedProcess(command, 0)
+
+        verifier = ContainerVerifier(
+            verifier_config=LeanVerifierConfig(
+                timeout_seconds=12, max_diagnostics_bytes=2048,
+            ),
+            container_config=ContainerVerifierConfig(deadline_seconds=14),
+            resources=DockerResourceLimits(
+                cpus=2, memory='2g', memory_swap='2g', pids=32,
+                file_size_bytes=2048, tmpfs_size='64m',
+            ),
+        )
+        with patch('solvenet.sandbox.subprocess.run', side_effect=execute):
+            self.assertTrue(verifier.verify(': True', 'trivial').verified)
+
+        self.assertEqual(observed['timeout'], 14)
+        self.assertEqual(observed['request']['timeout_seconds'], 12)
+        self.assertEqual(observed['request']['max_diagnostics_bytes'], 2048)
+        for option in (
+            '--cpus=2', '--memory=2g', '--memory-swap=2g', '--pids-limit=32',
+            'fsize=2048:2048', '/tmp:rw,noexec,nosuid,size=64m,mode=1777',
+        ):
+            self.assertIn(option, observed['command'])
+
+    def test_container_deadline_reserves_overhead(self):
+        with self.assertRaisesRegex(ValueError, 'minimum 1 second'):
+            ContainerVerifier(
+                verifier_config=LeanVerifierConfig(timeout_seconds=10),
+                container_config=ContainerVerifierConfig(deadline_seconds=10.5),
+            )
 
     def _transport(self, payload):
         def execute(command, **kwargs):
