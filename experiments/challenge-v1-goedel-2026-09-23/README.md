@@ -1,5 +1,7 @@
 # Challenge-v1: paired independent vs repair, Goedel-Prover V2 8B
 
+For the rerun with distinct independent-chain seeds, see the [corrected comparison](../challenge-v1-goedel-corrected-2026-09-23/README.md).
+
 **Interpretation correction:** The historical 15/36 independent vs 18/36 repair
 comparison below is confounded and is **not a valid comparison of independent
 search against repair**. At the time, all three initial jobs in each independent
