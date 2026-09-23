@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote_to_bytes, urlsplit
 
+from . import protocol_limits as limits
 from .sandbox import (
     DEFAULT_CONTAINER_TIMEOUT_SECONDS,
     ContainerVerifier,
@@ -19,7 +20,6 @@ from .store import (
     FAILURE_CLASSES,
     DEFAULT_MAX_ASSIGNMENTS,
     MAX_ASSIGNMENTS,
-    MAX_GENERATION_TIMEOUT_SECONDS,
     REJECTION_KINDS,
     Conflict,
     Store,
@@ -36,7 +36,7 @@ LOG = logging.getLogger(__name__)
 IDENTIFIER_RE = re.compile(r'^[0-9a-f]{32}$')
 
 
-def text(value, field, limit=65536):
+def text(value, field, limit):
     if not isinstance(value, str) or not value.strip() or len(value.encode()) > limit:
         raise ValueError(f"{field} must be a nonempty string of at most {limit} bytes")
     return value
@@ -59,7 +59,8 @@ def validate_generation(data):
     generation = data.get('generation', {})
     if not isinstance(generation, dict):
         raise ValueError('generation must be an object')
-    strings = {'raw_response': 128 * 1024, 'model': 256, 'finish_reason': 256}
+    strings = {'raw_response': limits.MAX_RAW_RESPONSE_BYTES,
+               'model': limits.MAX_MODEL_BYTES, 'finish_reason': limits.MAX_FINISH_REASON_BYTES}
     numbers = {'total_duration_ns', 'load_duration_ns', 'prompt_eval_duration_ns',
                'eval_duration_ns', 'context_length', 'max_output_tokens'}
     for key, value in generation.items():
@@ -209,42 +210,42 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 # Candidate + raw response may both expand under JSON escaping.
                 is_result = (len(parts) == 4 and parts[:2] == ['v1', 'assignments']
                              and self.identifier(parts[2]) and parts[3] == 'result')
-                limit = 2 * 1024 * 1024 if is_result else 256 * 1024
+                limit = limits.MAX_RESULT_REQUEST_BYTES if is_result else limits.MAX_REQUEST_BYTES
                 data = self.read_json(limit)
                 if data is None:
                     return
                 if parts == ['v1', 'runs']:
-                    statement = text(data.get('statement'), 'statement')
+                    statement = text(data.get('statement'), 'statement', limits.MAX_STATEMENT_BYTES)
                     imports = data.get('imports', ['Init'])
-                    if not isinstance(imports, list) or not 1 <= len(imports) <= 32:
-                        raise ValueError('imports must be a nonempty list of up to 32 modules')
+                    if not isinstance(imports, list) or not 1 <= len(imports) <= limits.MAX_IMPORTS:
+                        raise ValueError(f'imports must be a nonempty list of up to {limits.MAX_IMPORTS} modules')
                     for module in imports:
-                        text(module, 'import', 256)
+                        text(module, 'import', limits.MAX_IMPORT_BYTES)
                     return self.respond(201, coordinator.store.submit(
                         statement, imports,
                         integer(data.get('attempts', 3), 'attempts', 100),
-                        text(data.get('model', 'scripted'), 'model', 256),
-                        integer(data.get('max_output_tokens', 2048), 'max_output_tokens', 32768),
+                        text(data.get('model', 'scripted'), 'model', limits.MAX_MODEL_BYTES),
+                        integer(data.get('max_output_tokens', 2048), 'max_output_tokens', limits.MAX_OUTPUT_TOKENS),
                         max_repairs=data.get('max_repairs', 0),
                         generation_timeout_seconds=integer(
                             data.get('generation_timeout_seconds', 120),
-                            'generation_timeout_seconds', MAX_GENERATION_TIMEOUT_SECONDS),
+                            'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
                         max_assignments=integer(
                             data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
                             'max_assignments', MAX_ASSIGNMENTS)))
                 if parts == ['v1', 'claim']:
-                    worker = text(data.get('worker_id'), 'worker_id', 256)
+                    worker = text(data.get('worker_id'), 'worker_id', limits.MAX_IDENTIFIER_BYTES)
                     models = data.get('models')
-                    if not isinstance(models, list) or not 1 <= len(models) <= 32:
-                        raise ValueError('models must be a nonempty list of up to 32 identifiers')
+                    if not isinstance(models, list) or not 1 <= len(models) <= limits.MAX_CLAIM_MODELS:
+                        raise ValueError(f'models must be a nonempty list of up to {limits.MAX_CLAIM_MODELS} identifiers')
                     for model in models:
-                        text(model, 'model', 256)
+                        text(model, 'model', limits.MAX_MODEL_BYTES)
                     claim = coordinator.store.claim(worker, models)
                     return self.respond(200 if claim else 204, claim)
                 if (len(parts) == 4 and parts[:2] == ['v1', 'assignments']
                         and self.identifier(parts[2])
                         and parts[3] in ('heartbeat', 'result')):
-                    token = text(data.get('lease_token'), 'lease_token', 256)
+                    token = text(data.get('lease_token'), 'lease_token', limits.MAX_IDENTIFIER_BYTES)
                     if parts[3] == 'heartbeat':
                         return self.respond(200, coordinator.store.heartbeat(parts[2], token))
                     if parts[3] == 'result':
@@ -252,14 +253,14 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         if data.get('status') == 'completed':
                             if not isinstance(data.get('output'), dict):
                                 raise ValueError('output must be an object')
-                            text(data['output'].get('text'), 'output.text', 128 * 1024)
+                            text(data['output'].get('text'), 'output.text', limits.MAX_CANDIDATE_BYTES)
                         elif data.get('status') == 'failed':
-                            text(data.get('error'), 'error', 4096)
+                            text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
                             failure_class = data.get('failure_class', DEFAULT_FAILURE_CLASS)
                             if failure_class not in FAILURE_CLASSES:
                                 raise ValueError('failure_class must be transient or permanent')
                         elif data.get('status') == 'rejected':
-                            text(data.get('error'), 'error', 4096)
+                            text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
                             if data.get('rejection_kind') not in REJECTION_KINDS:
                                 raise ValueError(
                                     'rejection_kind must be malformed_assignment or unsupported_protocol')

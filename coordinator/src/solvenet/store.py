@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from . import protocol_limits as limits
+
 
 class Conflict(Exception):
     pass
@@ -87,7 +89,6 @@ PRAGMA user_version = 6;
 """
 
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
-MAX_GENERATION_TIMEOUT_SECONDS = 24 * 60 * 60
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
 MAX_REPAIRS = 2
@@ -184,8 +185,8 @@ class Store:
         if type(max_repairs) is not int or not 0 <= max_repairs <= MAX_REPAIRS:
             raise ValueError(f'max_repairs must be an integer between 0 and {MAX_REPAIRS}')
         if (type(generation_timeout_seconds) is not int or
-                not 1 <= generation_timeout_seconds <= MAX_GENERATION_TIMEOUT_SECONDS):
-            raise ValueError('generation_timeout_seconds must be an integer between 1 and 86400')
+                not 1 <= generation_timeout_seconds <= limits.MAX_GENERATION_TIMEOUT_SECONDS):
+            raise ValueError(f'generation_timeout_seconds must be an integer between 1 and {limits.MAX_GENERATION_TIMEOUT_SECONDS}')
         if type(max_assignments) is not int or not 1 <= max_assignments <= MAX_ASSIGNMENTS:
             raise ValueError(f'max_assignments must be an integer between 1 and {MAX_ASSIGNMENTS}')
         problem, run = identifier(), identifier()

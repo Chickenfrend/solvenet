@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from solvenet.server import Coordinator, make_server
+from solvenet import protocol_limits as limits
 from solvenet.store import MAX_REPAIRS, Conflict, Store, SCHEMA
 from solvenet.verifier import (
     LeanVerifier,
@@ -423,6 +424,59 @@ class APITests(unittest.TestCase):
         with response:
             raw = response.read()
             return response.status, json.loads(raw) if raw else None
+
+    def test_protocol_field_byte_boundaries(self):
+        for field, maximum in (('statement', limits.MAX_STATEMENT_BYTES),
+                               ('model', limits.MAX_MODEL_BYTES)):
+            for extra, expected in ((0, 201), (1, 400)):
+                with self.subTest(field=field, extra=extra):
+                    data = {'statement': ': True', field: 'é' * (maximum // 2) + 'x' * extra}
+                    self.assertEqual(self.request('/v1/runs', data)[0], expected)
+        for value, expected in ((limits.MAX_OUTPUT_TOKENS, 201),
+                                (limits.MAX_OUTPUT_TOKENS + 1, 400)):
+            self.assertEqual(self.request('/v1/runs', {
+                'statement': ': True', 'max_output_tokens': value})[0], expected)
+        for value, expected in ((limits.MAX_GENERATION_TIMEOUT_SECONDS, 201),
+                                (limits.MAX_GENERATION_TIMEOUT_SECONDS + 1, 400)):
+            self.assertEqual(self.request('/v1/runs', {
+                'statement': ': True', 'generation_timeout_seconds': value})[0], expected)
+
+        self.request('/v1/runs', {'statement': ': True'})
+        claim = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})[1]
+        path = f"/v1/assignments/{claim['assignment_id']}/result"
+        for field, maximum in (('text', limits.MAX_CANDIDATE_BYTES),
+                               ('raw_response', limits.MAX_RAW_RESPONSE_BYTES)):
+            for extra, expected in ((0, 200), (1, 400)):
+                with self.subTest(field=field, extra=extra):
+                    value = 'é' * (maximum // 2) + 'x' * extra
+                    data = {'lease_token': claim['lease_token'], 'status': 'completed',
+                            'output': {'text': value if field == 'text' else 'rfl'},
+                            'generation': {'raw_response': value if field == 'raw_response' else ''}}
+                    self.assertEqual(self.request(path, data)[0], expected)
+            if field == 'text':
+                # Next claim must belong to a newly submitted run.
+                self.request('/v1/runs', {'statement': ': True'})
+                claim = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})[1]
+                path = f"/v1/assignments/{claim['assignment_id']}/result"
+
+    def test_request_body_byte_boundaries(self):
+        for path, maximum in (('/v1/claim', limits.MAX_REQUEST_BYTES),
+                              ('/v1/assignments/' + 'a' * 32 + '/result', limits.MAX_RESULT_REQUEST_BYTES)):
+            for extra, expected in ((0, 400), (1, 413)):
+                # At the cap JSON is decoded and field validation (or routing) applies.
+                if extra:
+                    # The server rejects Content-Length before reading; avoid
+                    # racing its early close by streaming a multi-MiB body.
+                    connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
+                    connection.request('POST', path, b'', {'Content-Length': str(maximum + 1)})
+                    response = connection.getresponse()
+                    status = response.status
+                    response.read()
+                    connection.close()
+                else:
+                    body = b'{' + b' ' * (maximum - 2) + b'}'
+                    status = self.method_request('POST', path, body)[0]
+                self.assertEqual(status, expected)
 
     def method_request(self, method, path, body=b''):
         req = Request(self.url + path, data=body, method=method,

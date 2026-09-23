@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type Message struct {
@@ -150,6 +151,17 @@ func FailureClassOf(err error) FailureClass {
 	return FailureTransient
 }
 
+func boundedError(err error) string {
+	message := strings.ToValidUTF8(err.Error(), "�")
+	if len(message) > MaxErrorBytes {
+		message = message[:MaxErrorBytes]
+		for !utf8.ValidString(message) {
+			message = message[:len(message)-1]
+		}
+	}
+	return message
+}
+
 type Executor interface {
 	Execute(context.Context, Job) (Execution, error)
 }
@@ -162,19 +174,7 @@ type Worker struct {
 	Executor Executor
 }
 
-const (
-	protocolVersion             = 1
-	maxIdentifierBytes          = 256
-	maxStatementBytes           = 64 * 1024
-	maxImports                  = 32
-	maxImportBytes              = 256
-	maxMessages                 = 32
-	maxMessageContentBytes      = 256 * 1024
-	maxModelBytes               = 256
-	maxOutputTokens             = 32768
-	maxGenerationTimeoutSeconds = 24 * 60 * 60
-	maxHeartbeatSeconds         = 24 * 60 * 60
-)
+const protocolVersion = 1
 
 // UnsupportedProtocolVersionError identifies a well-formed assignment for a
 // protocol this worker cannot execute. It is separate from field validation so
@@ -201,60 +201,60 @@ func (a Assignment) validate(workerModel string) error {
 	if a.Version != protocolVersion {
 		return &UnsupportedProtocolVersionError{Version: a.Version}
 	}
-	if err := validateText(a.ID, "assignment_id", maxIdentifierBytes); err != nil {
+	if err := validateText(a.ID, "assignment_id", MaxIdentifierBytes); err != nil {
 		return err
 	}
-	if err := validateText(a.Token, "lease_token", maxIdentifierBytes); err != nil {
+	if err := validateText(a.Token, "lease_token", MaxIdentifierBytes); err != nil {
 		return err
 	}
 	if math.IsNaN(a.LeaseExpiresAt) || math.IsInf(a.LeaseExpiresAt, 0) || a.LeaseExpiresAt <= 0 {
 		return fmt.Errorf("lease_expires_at must be a positive finite Unix timestamp")
 	}
-	if math.IsNaN(a.HeartbeatSeconds) || math.IsInf(a.HeartbeatSeconds, 0) || a.HeartbeatSeconds <= 0 || a.HeartbeatSeconds > maxHeartbeatSeconds {
-		return fmt.Errorf("heartbeat_seconds must be greater than 0 and at most %d", maxHeartbeatSeconds)
+	if math.IsNaN(a.HeartbeatSeconds) || math.IsInf(a.HeartbeatSeconds, 0) || a.HeartbeatSeconds <= 0 || a.HeartbeatSeconds > MaxHeartbeatSeconds {
+		return fmt.Errorf("heartbeat_seconds must be greater than 0 and at most %d", MaxHeartbeatSeconds)
 	}
-	if err := validateText(a.Job.ID, "job.id", maxIdentifierBytes); err != nil {
+	if err := validateText(a.Job.ID, "job.id", MaxIdentifierBytes); err != nil {
 		return err
 	}
 	if a.Job.Kind != "model.generate" {
 		return fmt.Errorf("job.kind must be model.generate")
 	}
-	if err := validateText(a.Job.Model, "job.model", maxModelBytes); err != nil {
+	if err := validateText(a.Job.Model, "job.model", MaxModelBytes); err != nil {
 		return err
 	}
 	if a.Job.Model != workerModel {
 		return fmt.Errorf("job.model %q does not match worker model %q", a.Job.Model, workerModel)
 	}
-	if err := validateText(a.Job.Statement, "job.statement", maxStatementBytes); err != nil {
+	if err := validateText(a.Job.Statement, "job.statement", MaxStatementBytes); err != nil {
 		return err
 	}
-	if len(a.Job.Imports) < 1 || len(a.Job.Imports) > maxImports {
-		return fmt.Errorf("job.imports must contain between 1 and %d modules", maxImports)
+	if len(a.Job.Imports) < 1 || len(a.Job.Imports) > MaxImports {
+		return fmt.Errorf("job.imports must contain between 1 and %d modules", MaxImports)
 	}
 	for i, module := range a.Job.Imports {
-		if err := validateText(module, fmt.Sprintf("job.imports[%d]", i), maxImportBytes); err != nil {
+		if err := validateText(module, fmt.Sprintf("job.imports[%d]", i), MaxImportBytes); err != nil {
 			return err
 		}
 	}
 	if !a.Job.messagesPresent || a.Job.Messages == nil {
 		return fmt.Errorf("job.messages must be an array")
 	}
-	if len(a.Job.Messages) > maxMessages {
-		return fmt.Errorf("job.messages must contain at most %d messages", maxMessages)
+	if len(a.Job.Messages) > MaxMessages {
+		return fmt.Errorf("job.messages must contain at most %d messages", MaxMessages)
 	}
 	for i, message := range a.Job.Messages {
 		if message.Role != "system" && message.Role != "user" && message.Role != "assistant" {
 			return fmt.Errorf("job.messages[%d].role must be system, user, or assistant", i)
 		}
-		if err := validateText(message.Content, fmt.Sprintf("job.messages[%d].content", i), maxMessageContentBytes); err != nil {
+		if err := validateText(message.Content, fmt.Sprintf("job.messages[%d].content", i), MaxMessageContentBytes); err != nil {
 			return err
 		}
 	}
-	if a.Job.MaxOutputTokens <= 0 || a.Job.MaxOutputTokens > maxOutputTokens {
-		return fmt.Errorf("job.max_output_tokens must be between 1 and %d", maxOutputTokens)
+	if a.Job.MaxOutputTokens <= 0 || a.Job.MaxOutputTokens > MaxOutputTokens {
+		return fmt.Errorf("job.max_output_tokens must be between 1 and %d", MaxOutputTokens)
 	}
-	if a.Job.TimeoutSeconds <= 0 || a.Job.TimeoutSeconds > maxGenerationTimeoutSeconds {
-		return fmt.Errorf("job.timeout_seconds must be between 1 and %d", maxGenerationTimeoutSeconds)
+	if a.Job.TimeoutSeconds <= 0 || a.Job.TimeoutSeconds > MaxGenerationTimeoutSeconds {
+		return fmt.Errorf("job.timeout_seconds must be between 1 and %d", MaxGenerationTimeoutSeconds)
 	}
 	if !a.Job.repairDepthPresent {
 		return fmt.Errorf("job.repair_depth is required")
@@ -272,7 +272,7 @@ func (a Assignment) validate(workerModel string) error {
 		return fmt.Errorf("job.parent_attempt_id is required when job.repair_depth is positive")
 	}
 	if a.Job.ParentAttemptID != nil {
-		if err := validateText(*a.Job.ParentAttemptID, "job.parent_attempt_id", maxIdentifierBytes); err != nil {
+		if err := validateText(*a.Job.ParentAttemptID, "job.parent_attempt_id", MaxIdentifierBytes); err != nil {
 			return err
 		}
 	}
@@ -295,7 +295,7 @@ func (w *Worker) post(ctx context.Context, path string, body any, target any) (i
 	}
 	defer resp.Body.Close()
 	// A repair claim includes the previous candidate and Lean diagnostics.
-	const maxResponse = 2 * 1024 * 1024
+	const maxResponse = 2 * 1024 * 1024 // local response cap; a repair claim includes feedback
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
 		return resp.StatusCode, err
@@ -328,8 +328,8 @@ func recoverAssignmentCredentials(data []byte) (string, string, bool) {
 	if err := json.Unmarshal(fields["lease_token"], &token); err != nil {
 		return "", "", false
 	}
-	if validateText(id, "assignment_id", maxIdentifierBytes) != nil ||
-		validateText(token, "lease_token", maxIdentifierBytes) != nil {
+	if validateText(id, "assignment_id", MaxIdentifierBytes) != nil ||
+		validateText(token, "lease_token", MaxIdentifierBytes) != nil {
 		return "", "", false
 	}
 	return id, token, true
@@ -365,10 +365,7 @@ func (w *Worker) rejectAssignment(ctx context.Context, data []byte, cause error)
 	if errors.As(cause, &unsupported) {
 		kind = RejectionUnsupportedProtocol
 	}
-	message := cause.Error()
-	if len(message) > 4000 {
-		message = message[:4000]
-	}
+	message := boundedError(cause)
 	result := Result{Token: token, Status: "rejected", Error: message, RejectionKind: kind}
 	if err := w.submitResult(ctx, id, result); err != nil {
 		return fmt.Errorf("%w (assignment rejection failed: %v)", cause, err)
@@ -423,14 +420,11 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	execution, executeErr := w.Executor.Execute(jobCtx, a.Job)
 	result := Result{Token: a.Token, Status: "completed", Output: &Output{Text: execution.Text},
 		Generation: execution.Generation, Usage: execution.Usage}
-	if executeErr == nil && (len(strings.TrimSpace(execution.Text)) == 0 || len(execution.Text) > 128*1024) {
-		executeErr = Permanent(fmt.Errorf("executor output must be 1–131072 bytes"))
+	if executeErr == nil && (len(strings.TrimSpace(execution.Text)) == 0 || len(execution.Text) > MaxCandidateBytes) {
+		executeErr = Permanent(fmt.Errorf("executor output must be 1–%d bytes", MaxCandidateBytes))
 	}
 	if executeErr != nil {
-		message := executeErr.Error()
-		if len(message) > 4000 {
-			message = message[:4000]
-		}
+		message := boundedError(executeErr)
 		result.Status, result.Error, result.Output = "failed", message, nil
 		result.FailureClass = string(FailureClassOf(executeErr))
 	}

@@ -16,7 +16,6 @@ import (
 )
 
 const maxOllamaResponse = 1024 * 1024
-const maxRawResponse = 128 * 1024
 
 const DefaultOllamaContext = 4096
 const MaxOllamaContext = 1024 * 1024
@@ -39,8 +38,8 @@ func NewOllama(baseURL, model string, contextSize int) (*Ollama, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("ollama-url must be an HTTP(S) URL without credentials, query, or fragment")
 	}
-	if strings.TrimSpace(model) == "" || len("ollama/"+model) > 256 {
-		return nil, fmt.Errorf("model must be nonempty and at most 249 bytes")
+	if strings.TrimSpace(model) == "" || len("ollama/"+model) > daemon.MaxModelBytes {
+		return nil, fmt.Errorf("model must be nonempty and at most %d bytes", daemon.MaxModelBytes-len("ollama/"))
 	}
 	if contextSize <= 0 || contextSize > MaxOllamaContext {
 		return nil, fmt.Errorf("ollama-context must be between 1 and %d tokens", MaxOllamaContext)
@@ -50,9 +49,9 @@ func NewOllama(baseURL, model string, contextSize int) (*Ollama, error) {
 }
 
 func rawGeneration(raw string) *daemon.Generation {
-	truncated := len(raw) > maxRawResponse
+	truncated := len(raw) > daemon.MaxRawResponseBytes
 	if truncated {
-		raw = raw[:maxRawResponse]
+		raw = raw[:daemon.MaxRawResponseBytes]
 		for !utf8.ValidString(raw) {
 			raw = raw[:len(raw)-1]
 		}
@@ -62,7 +61,7 @@ func rawGeneration(raw string) *daemon.Generation {
 
 func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution, error) {
 	var execution daemon.Execution
-	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > 32768 {
+	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > daemon.MaxOutputTokens {
 		return execution, daemon.Permanent(fmt.Errorf("invalid job output-token limit"))
 	}
 	if job.MaxOutputTokens >= o.ContextSize {
@@ -150,7 +149,7 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 			*duration = nil
 		}
 	}
-	if len(reply.Model) > 256 || len(reply.DoneReason) > 256 {
+	if len(reply.Model) > daemon.MaxModelBytes || len(reply.DoneReason) > daemon.MaxFinishReasonBytes {
 		generation.Model, generation.FinishReason = "", ""
 		return execution, daemon.Permanent(fmt.Errorf("Ollama model/finish metadata exceeded size limit"))
 	}
@@ -158,7 +157,7 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		return execution, daemon.Permanent(fmt.Errorf("Ollama returned an incomplete non-streaming response"))
 	}
 	if generation.RawResponseTruncated {
-		return execution, daemon.Permanent(fmt.Errorf("Ollama generated text exceeded 128 KiB"))
+		return execution, daemon.Permanent(fmt.Errorf("Ollama generated text exceeded %d bytes", daemon.MaxRawResponseBytes))
 	}
 	proof, err := extractProof(reply.Message.Content)
 	if err != nil {

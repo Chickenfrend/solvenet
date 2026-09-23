@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"solvenet/worker/internal/daemon"
 )
@@ -162,7 +163,7 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 			if class := daemon.FailureClassOf(err); class != test.class {
 				t.Fatalf("class=%q, want %q", class, test.class)
 			}
-			if result.Generation == nil || result.Generation.RawResponse == "" || len(result.Generation.RawResponse) > maxRawResponse {
+			if result.Generation == nil || result.Generation.RawResponse == "" || len(result.Generation.RawResponse) > daemon.MaxRawResponseBytes {
 				t.Fatal("missing or unbounded raw response")
 			}
 			if result.Generation.ContextLength != DefaultOllamaContext || result.Generation.MaxOutputTokens != 10 {
@@ -224,6 +225,22 @@ func TestOllamaContextValidation(t *testing.T) {
 	}
 	if _, err := NewOllama("http://localhost:11434", "test", MaxOllamaContext); err != nil {
 		t.Fatalf("maximum context rejected: %v", err)
+	}
+}
+
+func TestRawGenerationUTF8ByteBoundary(t *testing.T) {
+	for _, extra := range []int{0, 1} {
+		raw := strings.Repeat("é", daemon.MaxRawResponseBytes/2) + strings.Repeat("x", extra)
+		generation := rawGeneration(raw)
+		if len(generation.RawResponse) != daemon.MaxRawResponseBytes || generation.RawResponseTruncated != (extra == 1) {
+			t.Fatalf("extra=%d bytes=%d truncated=%v", extra, len(generation.RawResponse), generation.RawResponseTruncated)
+		}
+	}
+	// Clipping inside a multibyte rune keeps a valid, bounded UTF-8 prefix.
+	raw := strings.Repeat("é", daemon.MaxRawResponseBytes/2-1) + "€x"
+	generation := rawGeneration(raw)
+	if !generation.RawResponseTruncated || !utf8.ValidString(generation.RawResponse) || len(generation.RawResponse) > daemon.MaxRawResponseBytes {
+		t.Fatalf("invalid clipped prefix: %+v", generation)
 	}
 }
 
