@@ -9,7 +9,12 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from solvenet.verifier import LeanVerifier, VerificationStatus
+from solvenet.verifier import (
+    DIAGNOSTICS_TRUNCATION_MARKER,
+    LeanVerifier,
+    VerificationStatus,
+    truncate_diagnostics,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +64,11 @@ class LeanVerifierUnitTests(unittest.TestCase):
     def test_crash_is_verifier_error(self) -> None:
         result = self.verifier().verify(": True", "FAKE_CRASH")
         self.assertEqual(result.status, VerificationStatus.VERIFIER_ERROR)
+
+    def test_truncation_keeps_complete_unicode_characters(self) -> None:
+        diagnostics = "ééé"
+        result = truncate_diagnostics(diagnostics, 5)
+        self.assertEqual(result, "éé" + DIAGNOSTICS_TRUNCATION_MARKER)
 
 
 @unittest.skipUnless(shutil.which("lake"), "Lake is not installed")

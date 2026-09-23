@@ -18,6 +18,21 @@ from pathlib import Path
 from typing import Sequence
 
 
+MAX_DIAGNOSTICS_BYTES = 64 * 1024
+DIAGNOSTICS_TRUNCATION_MARKER = "\n[diagnostics truncated]"
+
+
+def truncate_diagnostics(
+    diagnostics: str, max_bytes: int = MAX_DIAGNOSTICS_BYTES
+) -> str:
+    """Retain a UTF-8-safe prefix and mark diagnostics that exceed the limit."""
+    encoded = diagnostics.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return encoded.decode("utf-8")
+    prefix = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return prefix + DIAGNOSTICS_TRUNCATION_MARKER
+
+
 class VerificationStatus(StrEnum):
     VERIFIED = "verified"
     REJECTED = "rejected"
@@ -54,7 +69,7 @@ class LeanVerifier:
         *,
         command: Sequence[str] = ("lake", "env", "lean"),
         timeout_seconds: float = 10,
-        max_diagnostics_bytes: int = 64 * 1024,
+        max_diagnostics_bytes: int = MAX_DIAGNOSTICS_BYTES,
         allowed_axioms: frozenset[str] = DEFAULT_ALLOWED_AXIOMS,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
@@ -133,7 +148,19 @@ class LeanVerifier:
                             available = self.max_diagnostics_bytes - len(output)
                             output.extend(chunk[:available])
                             if len(chunk) > available:
-                                return VerificationStatus.REJECTED, self._decode_output(output) + "\n[output limit exceeded]"
+                                marker = "\n[output limit exceeded]"
+                                prefix_bytes = max(
+                                    0,
+                                    self.max_diagnostics_bytes
+                                    - len(marker.encode("utf-8")),
+                                )
+                                diagnostics = (
+                                    bytes(output[:prefix_bytes])
+                                    .decode("utf-8", errors="replace")
+                                    .strip()
+                                    + marker
+                                )
+                                return VerificationStatus.REJECTED, diagnostics
                     remaining = self.timeout_seconds - (time.monotonic() - started)
                     try:
                         code = process.wait(timeout=max(0, remaining))
@@ -220,13 +247,12 @@ run_cmd do
             text += "\n[diagnostics truncated]"
         return text
 
-    @staticmethod
     def _result(
-        status: VerificationStatus, diagnostics: str, started: float
+        self, status: VerificationStatus, diagnostics: str, started: float
     ) -> VerificationResult:
         return VerificationResult(
             status=status,
-            diagnostics=diagnostics,
+            diagnostics=truncate_diagnostics(diagnostics, self.max_diagnostics_bytes),
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
 
