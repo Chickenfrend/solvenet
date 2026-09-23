@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 [project.scripts]
 solvenet-verify = "solvenet.verifier:main"
 solvenet-coordinator = "solvenet.server:main"
+solvenet-problems = "solvenet.problem_set:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

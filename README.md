@@ -67,6 +67,25 @@ problems; successful verification results never include this launcher output.
 
 **2. In another terminal, submit a problem:**
 
+To submit the checked-in Lean core fixture set instead, keep the printed
+run-to-problem mapping for later results (no reference proofs are submitted):
+
+```sh
+PYTHONPATH=coordinator/src python3 -m solvenet.problem_set \
+  --model ollama/qwen2.5-coder:7b --attempts 3 --max-output-tokens 256 \
+  --output core-v1-runs.json
+```
+
+Use `--id and-swap` to submit one fixture; repeat `--id` for a subset. The
+manifest identifies `set_id`, `version`, the pinned Lean environment, and each
+`problem_id` / `run_id`. To compare repair chains, submit a separate batch with
+`--attempts 1 --max-repairs 2 --output core-v1-repair-runs.json`. The coordinator
+currently stores runs individually; retain these manifests alongside exported
+run results to identify the exact set and environment. See
+[`problems/README.md`](problems/README.md) for fixture validation.
+
+To submit an ad hoc problem instead:
+
 ```sh
 curl -sS http://127.0.0.1:8080/v1/runs \
   -H 'Content-Type: application/json' \

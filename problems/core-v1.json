@@ -1,0 +1,103 @@
+{
+  "set_id": "core",
+  "version": 1,
+  "environment": "leanprover/lean4:v4.19.0",
+  "problems": [
+    {
+      "id": "and-swap",
+      "title": "Swap a conjunction",
+      "category": "propositional",
+      "statement": "(p q : Prop) : p ∧ q → q ∧ p",
+      "imports": ["Init"],
+      "reference_proof": "intro h\nexact ⟨h.2, h.1⟩"
+    },
+    {
+      "id": "or-swap",
+      "title": "Swap a disjunction",
+      "category": "propositional",
+      "statement": "(p q : Prop) : p ∨ q → q ∨ p",
+      "imports": ["Init"],
+      "reference_proof": "intro h\ncases h with\n| inl hp => exact Or.inr hp\n| inr hq => exact Or.inl hq"
+    },
+    {
+      "id": "imp-compose",
+      "title": "Compose implications",
+      "category": "propositional",
+      "statement": "(p q r : Prop) : (p → q) → (q → r) → p → r",
+      "imports": ["Init"],
+      "reference_proof": "intro hpq hqr hp\nexact hqr (hpq hp)"
+    },
+    {
+      "id": "not-and",
+      "title": "Contradict a conjunction",
+      "category": "propositional",
+      "statement": "(p q : Prop) : (p → ¬q) → ¬(p ∧ q)",
+      "imports": ["Init"],
+      "reference_proof": "intro h hpq\nexact h hpq.1 hpq.2"
+    },
+    {
+      "id": "exists-swap",
+      "title": "Swap existential witnesses",
+      "category": "quantifiers",
+      "statement": "(α β : Type) (r : α → β → Prop) : (∃ a, ∃ b, r a b) → ∃ b, ∃ a, r a b",
+      "imports": ["Init"],
+      "reference_proof": "intro h\nrcases h with ⟨a, b, hab⟩\nexact ⟨b, a, hab⟩"
+    },
+    {
+      "id": "forall-and",
+      "title": "Distribute universal conjunction",
+      "category": "quantifiers",
+      "statement": "(α : Type) (p q : α → Prop) : (∀ x, p x ∧ q x) → (∀ x, p x) ∧ (∀ x, q x)",
+      "imports": ["Init"],
+      "reference_proof": "intro h\nconstructor\n· intro x\n  exact (h x).1\n· intro x\n  exact (h x).2"
+    },
+    {
+      "id": "nat-add-right-zero",
+      "title": "Addition by zero on the right",
+      "category": "arithmetic",
+      "statement": "(n : Nat) : n + 0 = n",
+      "imports": ["Init"],
+      "reference_proof": "exact Nat.add_zero n"
+    },
+    {
+      "id": "nat-add-comm",
+      "title": "Addition commutes",
+      "category": "arithmetic",
+      "statement": "(a b : Nat) : a + b = b + a",
+      "imports": ["Init"],
+      "reference_proof": "exact Nat.add_comm a b"
+    },
+    {
+      "id": "nat-succ-injective",
+      "title": "Successor preserves distinctness",
+      "category": "arithmetic",
+      "statement": "(a b : Nat) : Nat.succ a = Nat.succ b → a = b",
+      "imports": ["Init"],
+      "reference_proof": "intro h\nexact Nat.succ.inj h"
+    },
+    {
+      "id": "list-append-length",
+      "title": "Length of concatenation",
+      "category": "lists",
+      "statement": "(α : Type) (xs ys : List α) : (xs ++ ys).length = xs.length + ys.length",
+      "imports": ["Init"],
+      "reference_proof": "induction xs with\n| nil => simp\n| cons x xs ih => simp [List.length, List.append, ih, Nat.succ_add]"
+    },
+    {
+      "id": "list-map-id",
+      "title": "Mapping identity over a list",
+      "category": "lists",
+      "statement": "(α : Type) (xs : List α) : xs.map (fun x => x) = xs",
+      "imports": ["Init"],
+      "reference_proof": "induction xs with\n| nil => rfl\n| cons x xs ih => simp [List.map, ih]"
+    },
+    {
+      "id": "bool-and-comm",
+      "title": "Boolean and commutes",
+      "category": "booleans",
+      "statement": "(a b : Bool) : (a && b) = (b && a)",
+      "imports": ["Init"],
+      "reference_proof": "cases a <;> cases b <;> rfl"
+    }
+  ]
+}
