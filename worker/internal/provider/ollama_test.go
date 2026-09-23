@@ -115,8 +115,13 @@ func TestProofExtraction(t *testing.T) {
 		{"{\"proof\":\"```lean\\nrfl\\n```\"}", "rfl", true},
 		{`{"proof":"refl"}`, "refl", true}, // Logic must not be silently corrected.
 		{`{"proof":"intro h\nexact h"}`, "intro h\nexact h", true},
+		{`{"proof":"by intro h; exact h"}`, "intro h; exact h", true},
+		{`{"proof":"by\n  intro h\n  exact h"}`, "intro h\n  exact h", true},
+		{"{\"proof\":\"```lean\\nby rfl\\n```\"}", "rfl", true},
 		{`{"proof":"example : True := by trivial"}`, "", false},
-		{`{"proof":"by rfl"}`, "", false},
+		{`{"proof":"by"}`, "", false},
+		{`{"proof":"by by rfl"}`, "", false},
+		{`{"proof":"byte"}`, "byte", true},
 		{`{"proof":""}`, "", false},
 		{`{"proof":null}`, "", false},
 		{`{"proof":42}`, "", false},
@@ -133,6 +138,24 @@ func TestProofExtraction(t *testing.T) {
 				t.Fatalf("proof=%q err=%v", proof, err)
 			}
 		})
+	}
+}
+
+func TestOllamaEnclosingByPreservesRawResponse(t *testing.T) {
+	raw := `{"proof":"by intro h; exact h"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"done": true, "message": map[string]string{"content": raw},
+		})
+	}))
+	defer server.Close()
+	o, err := NewOllama(server.URL, "test", DefaultOllamaContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := o.Execute(context.Background(), daemon.Job{MaxOutputTokens: 256})
+	if err != nil || result.Text != "intro h; exact h" || result.Generation.RawResponse != raw {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
 

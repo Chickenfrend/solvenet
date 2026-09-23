@@ -204,6 +204,9 @@ separate silent cap. Heartbeats continue during generation. Cancellation closes
 the HTTP request. The worker does not automatically download models. Repair
 requests carry explicit previous-proof and diagnostic text rather than
 provider-specific conversation state.
+Some models include one enclosing `by` in the proof string; the worker strips
+that wrapper before submitting the candidate while retaining the original
+response in `generation.raw_response`. Lean still verifies the tactic body.
 
 Prompt ownership is explicit: the coordinator sends trusted problem context in
 the structured `statement` and `imports` fields and reserves `messages` for

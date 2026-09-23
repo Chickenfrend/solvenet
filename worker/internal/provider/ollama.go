@@ -196,6 +196,11 @@ func extractProof(raw string) (string, error) {
 		}
 		proof = strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
 	}
+	// Some proof models include the enclosing `by` despite the prompt. Accept
+	// only that one leading wrapper; Lean still checks the resulting tactic body.
+	if declarationStart.MatchString(proof) && strings.HasPrefix(proof, "by") {
+		proof = strings.TrimSpace(proof[len("by"):])
+	}
 	if proof == "" {
 		return "", fmt.Errorf("proof is empty")
 	}
