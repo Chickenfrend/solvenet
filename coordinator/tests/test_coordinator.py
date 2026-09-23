@@ -103,6 +103,43 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['assignments'][0]['failure_class'], 'permanent')
         self.assertIsNone(self.store.claim('b', ['scripted']))
 
+    def test_assignment_rejection_promptly_requeues_without_spending_budget(self):
+        run_id = self.store.submit(
+            ': True', ['Init'], attempts=1, model='reject-test', max_assignments=1)['run_id']
+        first = self.store.claim('incompatible', ['reject-test'])
+        self.store.result(first['assignment_id'], {
+            'lease_token': first['lease_token'],
+            'status': 'rejected',
+            'rejection_kind': 'unsupported_protocol',
+            'error': 'unsupported protocol_version 2',
+        })
+
+        # Recovery is immediate: the lease has not elapsed, and a one-assignment
+        # budget remains because provider execution never began.
+        second = self.store.claim('compatible', ['reject-test'])
+        self.assertIsNotNone(second)
+        self.assertEqual(second['job']['id'], first['job']['id'])
+        run = self.store.run(run_id)
+        self.assertEqual(run['jobs'][0]['status'], 'assigned')
+        self.assertEqual(run['assignments'][0]['status'], 'rejected')
+        self.assertEqual(
+            run['assignments'][0]['rejection_kind'], 'unsupported_protocol')
+
+    def test_assignment_rejection_requires_lease_token(self):
+        first = self.store.claim('worker', ['scripted'])
+        payload = {
+            'lease_token': 'wrong',
+            'status': 'rejected',
+            'rejection_kind': 'malformed_assignment',
+            'error': 'job.statement is missing',
+        }
+        with self.assertRaises(Conflict):
+            self.store.result(first['assignment_id'], payload)
+        self.assertIsNone(self.store.claim('other', ['scripted']))
+        run = self.store.run(self.run)
+        self.assertEqual(run['assignments'][0]['status'], 'active')
+        self.assertEqual(run['jobs'][0]['status'], 'assigned')
+
     def test_old_worker_failure_defaults_to_transient(self):
         a = self.store.claim('a', ['scripted'])
         payload = {'lease_token': a['lease_token'], 'status': 'failed',
@@ -399,6 +436,35 @@ class APITests(unittest.TestCase):
         outcome = self.request('/v1/runs/' + run['run_id'])[1]
         self.assertEqual(outcome['status'], 'exhausted')
         self.assertEqual(outcome['assignments'][0]['failure_class'], 'permanent')
+
+    def test_rejection_validation_and_token_authentication(self):
+        _, run = self.request('/v1/runs', {
+            'statement': ': True', 'attempts': 1, 'max_assignments': 1})
+        _, assignment = self.request(
+            '/v1/claim', {'worker_id': 'w', 'models': ['scripted']})
+        route = '/v1/assignments/' + assignment['assignment_id'] + '/result'
+        base = {
+            'status': 'rejected',
+            'error': 'job.kind must be model.generate',
+            'rejection_kind': 'malformed_assignment',
+        }
+        self.assertEqual(self.request(route, {
+            **base, 'lease_token': assignment['lease_token'],
+            'rejection_kind': 'other'})[0], 400)
+        self.assertEqual(self.request(route, {
+            **base, 'lease_token': 'wrong'})[0], 409)
+        self.assertEqual(self.request(route, {
+            **base, 'lease_token': assignment['lease_token']})[0], 200)
+        self.assertEqual(self.request(route, {
+            **base, 'lease_token': assignment['lease_token']})[0], 200)
+
+        _, replacement = self.request(
+            '/v1/claim', {'worker_id': 'replacement', 'models': ['scripted']})
+        self.assertEqual(replacement['job']['id'], assignment['job']['id'])
+        outcome = self.request('/v1/runs/' + run['run_id'])[1]
+        self.assertEqual(outcome['assignments'][0]['status'], 'rejected')
+        self.assertEqual(
+            outcome['assignments'][0]['rejection_kind'], 'malformed_assignment')
 
     @unittest.skipUnless(shutil.which('go'), 'Go required')
     def test_go_ollama_worker_success_and_format_failure(self):

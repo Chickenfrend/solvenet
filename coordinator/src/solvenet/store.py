@@ -93,6 +93,7 @@ MAX_ASSIGNMENTS = 100
 MAX_REPAIRS = 2
 FAILURE_CLASSES = ('transient', 'permanent')
 DEFAULT_FAILURE_CLASS = 'transient'
+REJECTION_KINDS = ('malformed_assignment', 'unsupported_protocol')
 
 
 def repair_feedback(candidate, diagnostics):
@@ -216,7 +217,12 @@ class Store:
         self._refresh(db)
 
     def _retry(self, db, job_id):
-        count = db.execute("SELECT count(*) FROM assignments WHERE job_id=?", (job_id,)).fetchone()[0]
+        # Pre-execution protocol rejections did not spend model/provider work and
+        # do not consume the assignment budget. Expiry and execution failures do.
+        count = db.execute(
+            "SELECT count(*) FROM assignments WHERE job_id=? AND status!='rejected'",
+            (job_id,),
+        ).fetchone()[0]
         job = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         state = 'queued' if count < job['max_assignments'] else 'failed'
         db.execute("UPDATE jobs SET status=? WHERE id=?", (state, job_id))
@@ -276,11 +282,17 @@ class Store:
 
     def result(self, assignment, payload):
         payload = dict(payload)
+        if payload.get('status') not in ('completed', 'failed', 'rejected'):
+            raise ValueError('status must be completed, failed, or rejected')
         if payload.get('status') == 'failed':
             failure_class = payload.get('failure_class', DEFAULT_FAILURE_CLASS)
             if failure_class not in FAILURE_CLASSES:
                 raise ValueError('failure_class must be transient or permanent')
             payload['failure_class'] = failure_class
+        elif payload.get('status') == 'rejected':
+            if payload.get('rejection_kind') not in REJECTION_KINDS:
+                raise ValueError(
+                    'rejection_kind must be malformed_assignment or unsupported_protocol')
         canonical = json.dumps(payload, sort_keys=True, separators=(',', ':'))
         with self.transaction() as db:
             row = self._assignment(db, assignment, payload['lease_token'])
@@ -296,18 +308,22 @@ class Store:
                 return {"accepted": True}
             if row['status'] != 'active' or row['expires'] <= self.clock():
                 raise Conflict("Assignment expired")
-            db.execute("UPDATE assignments SET status='completed', result=? WHERE id=?", (canonical, assignment))
+            assignment_status = 'rejected' if payload['status'] == 'rejected' else 'completed'
+            db.execute("UPDATE assignments SET status=?, result=? WHERE id=?",
+                       (assignment_status, canonical, assignment))
             if payload['status'] == 'completed':
                 job = db.execute("SELECT model FROM jobs WHERE id=?", (row['job_id'],)).fetchone()
                 db.execute("INSERT INTO attempts (id, assignment_id, candidate, model, usage, generation) VALUES (?, ?, ?, ?, ?, ?)",
                            (identifier(), assignment, payload['output']['text'], job['model'],
                             json.dumps(payload.get('usage', {})), json.dumps(payload.get('generation', {}))))
                 db.execute("UPDATE jobs SET status='verifying' WHERE id=?", (row['job_id'],))
-            else:
+            elif payload['status'] == 'failed':
                 if payload['failure_class'] == 'permanent':
                     db.execute("UPDATE jobs SET status='failed' WHERE id=?", (row['job_id'],))
                 else:
                     self._retry(db, row['job_id'])
+            else:
+                self._retry(db, row['job_id'])
             self._refresh(db)
             return {"accepted": True}
 
@@ -367,9 +383,10 @@ class Store:
               WHERE j.run_id=? ORDER BY t.rowid""", (run_id,))]
             result['assignments'] = [dict(r) for r in db.execute("""SELECT a.id, a.job_id, a.worker_id,
                a.expires, a.status, json_extract(a.result, '$.error') AS error,
-               CASE WHEN json_extract(a.result, '$.status')='failed'
-                 THEN coalesce(json_extract(a.result, '$.failure_class'), 'transient')
-                 ELSE NULL END AS failure_class,
+                CASE WHEN json_extract(a.result, '$.status')='failed'
+                  THEN coalesce(json_extract(a.result, '$.failure_class'), 'transient')
+                  ELSE NULL END AS failure_class,
+                json_extract(a.result, '$.rejection_kind') AS rejection_kind,
                json_extract(a.result, '$.generation') AS generation,
               json_extract(a.result, '$.usage') AS usage
               FROM assignments a JOIN jobs j ON j.id=a.job_id WHERE j.run_id=?""", (run_id,))]

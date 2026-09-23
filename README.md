@@ -150,8 +150,14 @@ no coordinator messages; repair feedback remains the final user message.
 Before invoking a provider, the worker validates every required assignment and
 job field, including bounded strings and collections, repair linkage, heartbeat,
 and generation limits. Malformed assignments and unsupported protocol versions
-do not reach the provider. Lease expiration is decoded for protocol conformance,
-but renewal scheduling uses the heartbeat interval rather than the worker clock.
+do not reach the provider. If the assignment ID and lease token are usable, the
+worker submits an authenticated `rejected` result before starting heartbeats and
+the coordinator immediately requeues the job. This pre-execution rejection is
+visible through `assignments[].rejection_kind` and does not consume the assignment
+budget. Without both usable credentials the worker cannot safely release work, so
+lease expiry remains the fallback. Lease expiration is decoded for protocol
+conformance, but renewal scheduling uses the heartbeat interval rather than the
+worker clock.
 
 Extraction only trims whitespace and optionally removes a single Lean Markdown
 fence **inside** the proof field. Full declarations, outer `by`, missing/invalid
@@ -208,7 +214,10 @@ formatting failures stop that job without using its remaining allowance. Set
 repair jobs persist the same setting. Thus a three-job chain can involve more than
 three model calls if execution fails; with the default, it allows at most nine
 dispatches. In general the bound is
-`attempts * (1 + max_repairs) * max_assignments`.
+`attempts * (1 + max_repairs) * max_assignments` for provider execution,
+transient failures, and abandoned leases. Pre-execution malformed/unsupported
+assignment rejections are excluded, so repeated claims by an incompatible worker
+can make the raw dispatch count exceed that bound without spending model work.
 
 Repairs are opt-in: `max_repairs` defaults to 0 and accepts 0–2. This range is an
 API policy, not a database limit; the schema only requires nonnegative repair

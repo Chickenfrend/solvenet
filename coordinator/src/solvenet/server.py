@@ -18,6 +18,7 @@ from .store import (
     DEFAULT_MAX_ASSIGNMENTS,
     MAX_ASSIGNMENTS,
     MAX_GENERATION_TIMEOUT_SECONDS,
+    REJECTION_KINDS,
     Conflict,
     Store,
 )
@@ -177,8 +178,13 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                             failure_class = data.get('failure_class', DEFAULT_FAILURE_CLASS)
                             if failure_class not in FAILURE_CLASSES:
                                 raise ValueError('failure_class must be transient or permanent')
+                        elif data.get('status') == 'rejected':
+                            text(data.get('error'), 'error', 4096)
+                            if data.get('rejection_kind') not in REJECTION_KINDS:
+                                raise ValueError(
+                                    'rejection_kind must be malformed_assignment or unsupported_protocol')
                         else:
-                            raise ValueError('status must be completed or failed')
+                            raise ValueError('status must be completed, failed, or rejected')
                         return self.respond(200, coordinator.store.result(parts[2], data))
                 self.respond(404, {'error': 'Unknown endpoint'})
             except Conflict as error:

@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -106,14 +107,20 @@ type Execution struct {
 }
 
 type Result struct {
-	Token        string          `json:"lease_token"`
-	Status       string          `json:"status"`
-	Output       *Output         `json:"output,omitempty"`
-	Error        string          `json:"error,omitempty"`
-	FailureClass string          `json:"failure_class,omitempty"`
-	Usage        map[string]*int `json:"usage,omitempty"`
-	Generation   *Generation     `json:"generation,omitempty"`
+	Token         string          `json:"lease_token"`
+	Status        string          `json:"status"`
+	Output        *Output         `json:"output,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	FailureClass  string          `json:"failure_class,omitempty"`
+	RejectionKind string          `json:"rejection_kind,omitempty"`
+	Usage         map[string]*int `json:"usage,omitempty"`
+	Generation    *Generation     `json:"generation,omitempty"`
 }
+
+const (
+	RejectionMalformedAssignment = "malformed_assignment"
+	RejectionUnsupportedProtocol = "unsupported_protocol"
+)
 
 type FailureClass string
 
@@ -300,23 +307,91 @@ func (w *Worker) post(ctx context.Context, path string, body any, target any) (i
 		return resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, data)
 	}
 	if target != nil && resp.StatusCode != http.StatusNoContent {
-		err = json.Unmarshal(data, target)
+		if raw, ok := target.(*json.RawMessage); ok {
+			*raw = append((*raw)[:0], data...)
+		} else {
+			err = json.Unmarshal(data, target)
+		}
 	}
 	return resp.StatusCode, err
 }
 
+func recoverAssignmentCredentials(data []byte) (string, string, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return "", "", false
+	}
+	var id, token string
+	if err := json.Unmarshal(fields["assignment_id"], &id); err != nil {
+		return "", "", false
+	}
+	if err := json.Unmarshal(fields["lease_token"], &token); err != nil {
+		return "", "", false
+	}
+	if validateText(id, "assignment_id", maxIdentifierBytes) != nil ||
+		validateText(token, "lease_token", maxIdentifierBytes) != nil {
+		return "", "", false
+	}
+	return id, token, true
+}
+
+func (w *Worker) submitResult(ctx context.Context, assignmentID string, result Result) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		var code int
+		code, err = w.post(ctx, "/v1/assignments/"+url.PathEscape(assignmentID)+"/result", result, nil)
+		if err == nil {
+			return nil
+		}
+		if code >= 400 && code < 500 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 200 * time.Millisecond):
+		}
+	}
+	return err
+}
+
+func (w *Worker) rejectAssignment(ctx context.Context, data []byte, cause error) error {
+	id, token, ok := recoverAssignmentCredentials(data)
+	if !ok {
+		return cause
+	}
+	kind := RejectionMalformedAssignment
+	var unsupported *UnsupportedProtocolVersionError
+	if errors.As(cause, &unsupported) {
+		kind = RejectionUnsupportedProtocol
+	}
+	message := cause.Error()
+	if len(message) > 4000 {
+		message = message[:4000]
+	}
+	result := Result{Token: token, Status: "rejected", Error: message, RejectionKind: kind}
+	if err := w.submitResult(ctx, id, result); err != nil {
+		return fmt.Errorf("%w (assignment rejection failed: %v)", cause, err)
+	}
+	return cause
+}
+
 // Once claims at most one job. It returns false when no compatible work exists.
 func (w *Worker) Once(ctx context.Context) (bool, error) {
-	var a Assignment
-	code, err := w.post(ctx, "/v1/claim", map[string]any{"worker_id": w.ID, "models": []string{w.Model}}, &a)
+	var raw json.RawMessage
+	code, err := w.post(ctx, "/v1/claim", map[string]any{"worker_id": w.ID, "models": []string{w.Model}}, &raw)
 	if err != nil {
 		return false, err
 	}
 	if code == http.StatusNoContent {
 		return false, nil
 	}
+	var a Assignment
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return true, w.rejectAssignment(ctx, raw, fmt.Errorf("malformed assignment: %w", err))
+	}
 	if err := a.validate(w.Model); err != nil {
-		return true, err
+		return true, w.rejectAssignment(ctx, raw, err)
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Job.TimeoutSeconds)*time.Second)
 	defer cancel()
@@ -360,19 +435,5 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 		result.FailureClass = string(FailureClassOf(executeErr))
 	}
 	// The same payload is retried so a lost acknowledgement is harmless.
-	for attempt := 0; attempt < 3; attempt++ {
-		code, err = w.post(ctx, "/v1/assignments/"+a.ID+"/result", result, nil)
-		if err == nil {
-			return true, nil
-		}
-		if code >= 400 && code < 500 {
-			return true, err
-		}
-		select {
-		case <-ctx.Done():
-			return true, ctx.Err()
-		case <-time.After(time.Duration(attempt+1) * 200 * time.Millisecond):
-		}
-	}
-	return true, err
+	return true, w.submitResult(ctx, a.ID, result)
 }

@@ -252,6 +252,89 @@ func TestWorkerDistinguishesUnsupportedProtocolVersion(t *testing.T) {
 	}
 }
 
+func TestWorkerPromptlyRejectsUnusableAssignmentWithoutHeartbeat(t *testing.T) {
+	for _, test := range []struct {
+		name, kind string
+		payload    func() any
+	}{
+		{"malformed v1", daemon.RejectionMalformedAssignment, func() any {
+			a := validAssignment()
+			a.Job.Statement = ""
+			return a
+		}},
+		{"unsupported protocol", daemon.RejectionUnsupportedProtocol, func() any {
+			a := validAssignment()
+			a.Version = 2
+			return a
+		}},
+		{"malformed field type", daemon.RejectionMalformedAssignment, func() any {
+			return map[string]any{
+				"protocol_version": 1, "assignment_id": "assignment", "lease_token": "token",
+				"lease_expires_at": 1790000030, "heartbeat_seconds": "soon", "job": map[string]any{},
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var rejection daemon.Result
+			heartbeats, executions := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/claim":
+					json.NewEncoder(w).Encode(test.payload())
+				case "/v1/assignments/assignment/result":
+					json.NewDecoder(r.Body).Decode(&rejection)
+					w.Write([]byte(`{"accepted":true}`))
+				case "/v1/assignments/assignment/heartbeat":
+					heartbeats++
+				default:
+					t.Errorf("unexpected route %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			worker := daemon.Worker{URL: server.URL, ID: "test", Model: "scripted", Client: server.Client(), Executor: executorFunc(func(context.Context, daemon.Job) (daemon.Execution, error) {
+				executions++
+				return daemon.Execution{}, nil
+			})}
+			worked, err := worker.Once(context.Background())
+			if !worked || err == nil {
+				t.Fatalf("worked=%v err=%v", worked, err)
+			}
+			if executions != 0 || heartbeats != 0 {
+				t.Fatalf("executions=%d heartbeats=%d", executions, heartbeats)
+			}
+			if rejection.Status != "rejected" || rejection.Token != "token" || rejection.RejectionKind != test.kind || rejection.Error == "" {
+				t.Fatalf("rejection=%+v", rejection)
+			}
+		})
+	}
+}
+
+func TestWorkerCannotRejectWithoutUsableLeaseCredentials(t *testing.T) {
+	for _, payload := range []string{
+		`{"protocol_version":1,"assignment_id":"assignment","job":{}}`,
+		`{"protocol_version":1,"assignment_id":"assignment"`,
+	} {
+		requests := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if r.URL.Path != "/v1/claim" {
+				t.Errorf("unexpected unauthenticated release request %s", r.URL.Path)
+			}
+			w.Write([]byte(payload))
+		}))
+		worker := daemon.Worker{URL: server.URL, ID: "test", Model: "scripted", Client: server.Client(), Executor: executorFunc(func(context.Context, daemon.Job) (daemon.Execution, error) {
+			t.Fatal("executor called")
+			return daemon.Execution{}, nil
+		})}
+		worked, err := worker.Once(context.Background())
+		server.Close()
+		if !worked || err == nil || requests != 1 {
+			t.Fatalf("worked=%v err=%v requests=%d", worked, err, requests)
+		}
+	}
+}
+
 func TestWorkerAcceptsCompleteRepairAssignment(t *testing.T) {
 	parent := "parent"
 	a := validAssignment()
