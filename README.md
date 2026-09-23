@@ -37,6 +37,20 @@ PYTHONPATH=coordinator/src python3 -m solvenet.server \
 The API listens on `127.0.0.1:8080`. Docker is the default verifier; it does not
 silently fall back to executing candidate code on the host.
 
+Use `GET /health` for cheap coordinator liveness and `GET /ready` to check the
+configured verifier before submitting work:
+
+```sh
+curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:8080/ready
+```
+
+Readiness returns HTTP 200 with `{"status":"ready"}`, or HTTP 503 with bounded
+diagnostics when the local Lean project/toolchain or Docker image/runtime cannot
+run a trusted smoke source. It never uses candidate proof text. Docker readiness
+starts the configured image and local readiness starts Lean, so probe it less
+frequently than `/health`; results are not cached in this prototype.
+
 Verification has a 10-second total Lean deadline (including preflight). The
 Docker verifier has a 30-second outer deadline and requires at least one second
 beyond the Lean deadline for startup and cleanup. Override these with
@@ -244,7 +258,8 @@ PYTHONPATH=coordinator/src python3 -m unittest discover -s coordinator/tests -v
 ```
 
 The Python suite exercises persistence, retries, concurrent claims, idempotent
-submissions, HTTP handling, container-launch policy, and the Lean verifier. When
+submissions, HTTP handling, mocked verifier readiness, container-launch policy,
+and the Lean verifier. When
 Go is available, it also runs the actual Go worker against a fake Ollama HTTP
 server and verifies success, proof rejection, and formatting-error retention.
 With Lake on PATH, that integration uses real Lean. Lean-dependent tests are

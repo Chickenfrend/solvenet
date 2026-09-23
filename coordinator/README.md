@@ -27,6 +27,23 @@ The command prints JSON containing `status`, `diagnostics`, and `elapsed_ms`.
 Exit status is zero only for `verified`. Imports default to `Init`; repeat
 `--import MODULE` to select modules installed in the Lake environment.
 
+## Coordinator health checks
+
+`GET /health` is a cheap liveness check and always remains independent of the
+verifier runtime. `GET /ready` invokes the configured verifier's readiness check.
+Local readiness checks that the project directory contains `lean-toolchain` and
+`lakefile.toml`, then runs Lean on a generated trusted source that imports `Lean`
+and `Init`. Container readiness starts the configured image with networking and
+capabilities disabled and runs that same trusted check inside it. It uses
+`--pull=never`, so it reports a missing local image instead of downloading one.
+
+Success is HTTP 200 `{"status":"ready"}`. Missing project files, commands,
+Docker daemon/image, timeouts, or a failed trusted import return HTTP 503 with
+`status: "unavailable"` and at most 8 KiB of diagnostics. The check never accepts
+or executes a submitted theorem or candidate. It can still be relatively
+expensive, especially in Docker mode, and is intentionally uncached for this
+single-node prototype; use `/health` for frequent liveness polling.
+
 ## Acceptance and execution
 
 The statement and imports are trusted problem inputs. Each invocation first

@@ -169,6 +169,37 @@ class ContainerTests(unittest.TestCase):
         self.assertIn('exited with code 125', result.diagnostics)
         self.assertIn('Docker stderr: Unable to find image', result.diagnostics)
 
+    def test_readiness_checks_configured_image_without_candidate_input(self):
+        completed = subprocess.CompletedProcess(['docker', 'run'], 0, stderr=b'')
+        with patch('solvenet.sandbox._run_docker', return_value=completed) as run, \
+             patch('solvenet.sandbox.subprocess.run'):
+            result = ContainerVerifier(image='verifier:test').readiness()
+        self.assertTrue(result.ready)
+        command = run.call_args.args[0]
+        self.assertEqual(command[-2:], ['verifier:test', '--readiness'])
+        self.assertNotIn('--mount', command)
+        self.assertIn('--network=none', command)
+
+    def test_readiness_reports_missing_docker_and_image(self):
+        verifier = ContainerVerifier(image='missing:test')
+        with patch(
+            'solvenet.sandbox._run_docker', side_effect=FileNotFoundError('docker')
+        ), patch('solvenet.sandbox.subprocess.run'):
+            result = verifier.readiness()
+        self.assertFalse(result.ready)
+        self.assertIn('Could not run Docker', result.diagnostics)
+
+        completed = subprocess.CompletedProcess(
+            ['docker', 'run'], 125,
+            stderr=b'No such image: missing:test',
+        )
+        with patch('solvenet.sandbox._run_docker', return_value=completed), \
+             patch('solvenet.sandbox.subprocess.run'):
+            result = verifier.readiness()
+        self.assertFalse(result.ready)
+        self.assertIn('missing:test', result.diagnostics)
+        self.assertIn('No such image', result.diagnostics)
+
     def test_runtime_failure_stderr_is_truncated_utf8_safely_and_redacted(self):
         observed_workspace = None
 
@@ -202,6 +233,8 @@ class ContainerTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('SOLVENET_DOCKER_TEST') == '1', 'Opt-in Docker smoke test')
     def test_real_container(self):
         verifier = ContainerVerifier()
+        readiness = verifier.readiness()
+        self.assertTrue(readiness.ready, readiness.diagnostics)
         good = verifier.verify('(n : Nat) : n + 0 = n', 'rfl')
         self.assertTrue(good.verified, good.diagnostics)
         bad = verifier.verify(': False', 'sorry')

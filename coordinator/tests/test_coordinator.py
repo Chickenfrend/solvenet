@@ -14,15 +14,26 @@ from urllib.request import Request, urlopen
 
 from solvenet.server import Coordinator, make_server
 from solvenet.store import MAX_REPAIRS, Conflict, Store, SCHEMA
-from solvenet.verifier import LeanVerifier, VerificationResult, VerificationStatus
+from solvenet.verifier import (
+    LeanVerifier,
+    VerificationResult,
+    VerificationStatus,
+    VerifierReadiness,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeVerifier:
+    def __init__(self):
+        self.readiness_result = VerifierReadiness(True)
+
     def verify(self, statement, candidate, *, imports):
         status = VerificationStatus.VERIFIED if candidate == 'rfl' else VerificationStatus.REJECTED
         return VerificationResult(status, 'scripted test verifier', 0)
+
+    def readiness(self):
+        return self.readiness_result
 
 
 class StoreTests(unittest.TestCase):
@@ -476,6 +487,21 @@ class APITests(unittest.TestCase):
         code, encoded = self.request(f'/v1/runs/{encoded_id}')
         self.assertEqual(code, 200)
         self.assertEqual(encoded['id'], run_id)
+
+    def test_liveness_is_independent_from_verifier_readiness(self):
+        self.coordinator.verifier.readiness_result = VerifierReadiness(
+            False, 'Lean toolchain is unavailable')
+        self.assertEqual(self.request('/health'), (200, {'status': 'ok'}))
+
+    def test_readiness_reports_verifier_availability(self):
+        self.assertEqual(self.request('/ready'), (200, {'status': 'ready'}))
+
+        self.coordinator.verifier.readiness_result = VerifierReadiness(
+            False, 'Docker image is missing')
+        self.assertEqual(self.request('/ready'), (
+            503,
+            {'status': 'unavailable', 'diagnostics': 'Docker image is missing'},
+        ))
 
     def test_malformed_paths_return_json_errors(self):
         paths = (

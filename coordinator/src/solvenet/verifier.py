@@ -21,6 +21,7 @@ from typing import Sequence
 MAX_DIAGNOSTICS_BYTES = 64 * 1024
 DIAGNOSTICS_TRUNCATION_MARKER = "\n[diagnostics truncated]"
 DEFAULT_LEAN_TIMEOUT_SECONDS = 10.0
+MAX_READINESS_DIAGNOSTICS_BYTES = 8 * 1024
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,24 @@ class VerificationResult:
     @property
     def verified(self) -> bool:
         return self.status is VerificationStatus.VERIFIED
+
+
+@dataclass(frozen=True)
+class VerifierReadiness:
+    """Whether this verifier can accept work, with bounded operator diagnostics."""
+
+    ready: bool
+    diagnostics: str = ""
+
+
+def unavailable_readiness(diagnostics: str) -> VerifierReadiness:
+    """Build an unavailable result whose complete diagnostics fit the limit."""
+    encoded = diagnostics.encode("utf-8", errors="replace")
+    if len(encoded) > MAX_READINESS_DIAGNOSTICS_BYTES:
+        marker = DIAGNOSTICS_TRUNCATION_MARKER
+        budget = MAX_READINESS_DIAGNOSTICS_BYTES - len(marker.encode("utf-8"))
+        diagnostics = encoded[:budget].decode("utf-8", errors="ignore") + marker
+    return VerifierReadiness(False, diagnostics)
 
 
 class LeanVerifier:
@@ -157,6 +176,32 @@ class LeanVerifier:
             )
 
         return self._result(status, diagnostics, started)
+
+    def readiness(self) -> VerifierReadiness:
+        """Check the pinned project and Lean command using only trusted source text."""
+        if not self.project_dir.is_dir():
+            return unavailable_readiness("Lean project directory is missing")
+        missing = [
+            name for name in ("lean-toolchain", "lakefile.toml")
+            if not (self.project_dir / name).is_file()
+        ]
+        if missing:
+            return unavailable_readiness(
+                "Lean project is missing required file(s): " + ", ".join(missing)
+            )
+
+        started = time.monotonic()
+        try:
+            with tempfile.TemporaryDirectory(prefix="solvenet-ready-") as temp_dir:
+                source = Path(temp_dir) / "Readiness.lean"
+                source.write_text("import Lean\nimport Init\n#check True\n", encoding="utf-8")
+                status, diagnostics = self._run(source, started)
+        except (OSError, ValueError) as error:
+            return unavailable_readiness(f"Could not run Lean: {error}")
+        if status is not VerificationStatus.VERIFIED:
+            detail = diagnostics or f"Lean readiness command returned {status.value}"
+            return unavailable_readiness(detail)
+        return VerifierReadiness(True)
 
     def _run(self, path: Path, started: float) -> tuple[VerificationStatus, str]:
         output = bytearray()

@@ -182,6 +182,12 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 parts = self.segments()
                 if parts == ['health']:
                     return self.respond(200, {'status': 'ok'})
+                if parts == ['ready']:
+                    readiness = coordinator.verifier.readiness()
+                    value = {'status': 'ready' if readiness.ready else 'unavailable'}
+                    if readiness.diagnostics:
+                        value['diagnostics'] = readiness.diagnostics
+                    return self.respond(200 if readiness.ready else 503, value)
                 if (len(parts) == 3 and parts[:2] == ['v1', 'runs']
                         and self.identifier(parts[2])):
                     run = coordinator.store.run(parts[2])

@@ -11,10 +11,12 @@ from pathlib import Path
 
 from solvenet.verifier import (
     DIAGNOSTICS_TRUNCATION_MARKER,
+    MAX_READINESS_DIAGNOSTICS_BYTES,
     LeanVerifier,
     LeanVerifierConfig,
     VerificationStatus,
     truncate_diagnostics,
+    unavailable_readiness,
 )
 
 
@@ -77,6 +79,34 @@ class LeanVerifierUnitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "diagnostic"):
             LeanVerifierConfig(max_diagnostics_bytes=0)
 
+    def test_readiness_runs_trusted_smoke_source(self) -> None:
+        result = self.verifier().readiness()
+        self.assertTrue(result.ready, result.diagnostics)
+
+    def test_readiness_detects_missing_project_files_without_running_lean(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "solvenet.verifier.subprocess.Popen"
+        ) as run:
+            result = LeanVerifier(Path(directory)).readiness()
+        self.assertFalse(result.ready)
+        self.assertIn("lean-toolchain", result.diagnostics)
+        run.assert_not_called()
+
+    def test_readiness_detects_missing_lean_command(self) -> None:
+        result = LeanVerifier(
+            ROOT / "lean", command=("does-not-exist-solvenet",)
+        ).readiness()
+        self.assertFalse(result.ready)
+        self.assertIn("Could not run Lean", result.diagnostics)
+
+    def test_readiness_diagnostics_include_marker_within_bound(self) -> None:
+        result = unavailable_readiness("é" * MAX_READINESS_DIAGNOSTICS_BYTES)
+        self.assertFalse(result.ready)
+        self.assertTrue(result.diagnostics.endswith(DIAGNOSTICS_TRUNCATION_MARKER))
+        self.assertLessEqual(
+            len(result.diagnostics.encode("utf-8")), MAX_READINESS_DIAGNOSTICS_BYTES
+        )
+
 
 @unittest.skipUnless(shutil.which("lake"), "Lake is not installed")
 class LeanVerifierIntegrationTests(unittest.TestCase):
@@ -86,6 +116,10 @@ class LeanVerifierIntegrationTests(unittest.TestCase):
     def test_valid_proof(self) -> None:
         result = self.verifier.verify(": True", "exact True.intro")
         self.assertEqual(result.status, VerificationStatus.VERIFIED, result.diagnostics)
+
+    def test_readiness(self) -> None:
+        result = self.verifier.readiness()
+        self.assertTrue(result.ready, result.diagnostics)
 
     def test_invalid_proof(self) -> None:
         result = self.verifier.verify(": False", "exact True.intro")

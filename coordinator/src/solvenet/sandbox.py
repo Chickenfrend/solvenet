@@ -5,6 +5,7 @@ import math
 import os
 import selectors
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -16,9 +17,11 @@ from .verifier import (
     MAX_DIAGNOSTICS_BYTES,
     LeanVerifierConfig,
     LeanVerifier,
+    VerifierReadiness,
     VerificationResult,
     VerificationStatus,
     truncate_diagnostics,
+    unavailable_readiness,
 )
 
 
@@ -294,6 +297,42 @@ class ContainerVerifier:
             elapsed_ms = round((time.monotonic() - started) * 1000)
         return VerificationResult(status, diagnostics, elapsed_ms)
 
+    def readiness(self):
+        """Check Docker, the configured image, and its trusted Lean smoke test."""
+        name = 'solvenet-ready-' + uuid4().hex
+        command = [
+            'docker', 'run', '--rm', '--pull=never', '--name', name,
+            '--network=none', '--read-only', '--cap-drop=ALL',
+            '--security-opt=no-new-privileges',
+            f'--pids-limit={self.resources.pids}',
+            f'--memory={self.resources.memory}',
+            f'--memory-swap={self.resources.memory_swap}',
+            f'--cpus={self.resources.cpus:g}',
+            '--ulimit',
+            f'fsize={self.resources.file_size_bytes}:{self.resources.file_size_bytes}',
+            '--user', f'{os.getuid()}:{os.getgid()}',
+            '--tmpfs',
+            f'/tmp:rw,noexec,nosuid,size={self.resources.tmpfs_size},mode=1777',
+            self.image, '--readiness',
+        ]
+        try:
+            completed = _run_docker(command, self.container_config.deadline_seconds)
+            if completed.returncode == 0:
+                return VerifierReadiness(True)
+            diagnostics = _docker_error_diagnostics(
+                f'Verifier image readiness failed with code {completed.returncode}; '
+                f'check Docker and image {self.image}',
+                completed.stderr,
+                None,
+            )
+            return unavailable_readiness(diagnostics)
+        except subprocess.TimeoutExpired:
+            return unavailable_readiness('Verifier image readiness check timed out')
+        except OSError as error:
+            return unavailable_readiness(f'Could not run Docker: {error}')
+        finally:
+            self._remove(name)
+
     @staticmethod
     def _remove(name):
         try:
@@ -304,6 +343,13 @@ class ContainerVerifier:
 
 
 def main():
+    if sys.argv[1:] == ['--readiness']:
+        result = LeanVerifier(
+            Path('/opt/solvenet/lean'), command=('lean',),
+        ).readiness()
+        if not result.ready:
+            print(result.diagnostics, file=sys.stderr)
+        raise SystemExit(0 if result.ready else 1)
     request = json.loads(Path('/work/request.json').read_text(encoding='utf-8'))
     config = LeanVerifierConfig(
         timeout_seconds=request['timeout_seconds'],
