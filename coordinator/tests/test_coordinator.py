@@ -81,6 +81,47 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.claim('a', ['scripted']))
         self.assertEqual(self.store.run(self.run)['status'], 'exhausted')
 
+    def test_transient_failure_retries_and_is_exposed(self):
+        a = self.store.claim('a', ['scripted'])
+        self.store.result(a['assignment_id'], {
+            'lease_token': a['lease_token'], 'status': 'failed',
+            'failure_class': 'transient', 'error': 'service unavailable'})
+        run = self.store.run(self.run)
+        self.assertEqual(run['status'], 'running')
+        self.assertEqual(run['jobs'][0]['status'], 'queued')
+        self.assertEqual(run['assignments'][0]['failure_class'], 'transient')
+        self.assertIsNotNone(self.store.claim('b', ['scripted']))
+
+    def test_permanent_failure_terminates_job_immediately(self):
+        a = self.store.claim('a', ['scripted'])
+        self.store.result(a['assignment_id'], {
+            'lease_token': a['lease_token'], 'status': 'failed',
+            'failure_class': 'permanent', 'error': 'invalid worker configuration'})
+        run = self.store.run(self.run)
+        self.assertEqual(run['status'], 'exhausted')
+        self.assertEqual(run['jobs'][0]['status'], 'failed')
+        self.assertEqual(run['assignments'][0]['failure_class'], 'permanent')
+        self.assertIsNone(self.store.claim('b', ['scripted']))
+
+    def test_old_worker_failure_defaults_to_transient(self):
+        a = self.store.claim('a', ['scripted'])
+        payload = {'lease_token': a['lease_token'], 'status': 'failed',
+                   'error': 'legacy failure'}
+        self.assertEqual(self.store.result(a['assignment_id'], payload), {'accepted': True})
+        # Simulate a result persisted by a pre-classification coordinator.
+        with self.store.transaction() as db:
+            legacy = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            db.execute("UPDATE assignments SET result=? WHERE id=?",
+                       (legacy, a['assignment_id']))
+        self.assertEqual(self.store.result(a['assignment_id'], payload), {'accepted': True})
+        run = self.store.run(self.run)
+        self.assertEqual(run['jobs'][0]['status'], 'queued')
+        self.assertEqual(run['assignments'][0]['failure_class'], 'transient')
+        with self.store.connect() as db:
+            persisted = json.loads(db.execute(
+                "SELECT result FROM assignments WHERE id=?", (a['assignment_id'],)).fetchone()[0])
+        self.assertEqual(persisted['failure_class'], 'transient')
+
     def test_rejected_proof_is_not_retried(self):
         a = self.store.claim('a', ['scripted'])
         self.store.result(a['assignment_id'], self.payload(a, 'bad'))
@@ -256,6 +297,19 @@ class APITests(unittest.TestCase):
         self.assertEqual(outcome['jobs'][0]['status'], 'queued')
         self.assertEqual(outcome['assignments'][0]['generation'], payload['generation'])
         self.assertEqual(outcome['assignments'][0]['usage'], payload['usage'])
+        self.assertEqual(outcome['assignments'][0]['failure_class'], 'transient')
+
+    def test_failure_class_validation(self):
+        _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1})
+        _, a = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})
+        route = '/v1/assignments/' + a['assignment_id'] + '/result'
+        base = {'lease_token': a['lease_token'], 'status': 'failed', 'error': 'bad config'}
+        for invalid in ('retryable', '', None, 1, True):
+            self.assertEqual(self.request(route, {**base, 'failure_class': invalid})[0], 400)
+        self.assertEqual(self.request(route, {**base, 'failure_class': 'permanent'})[0], 200)
+        outcome = self.request('/v1/runs/' + run['run_id'])[1]
+        self.assertEqual(outcome['status'], 'exhausted')
+        self.assertEqual(outcome['assignments'][0]['failure_class'], 'permanent')
 
     @unittest.skipUnless(shutil.which('go'), 'Go required')
     def test_go_ollama_worker_success_and_format_failure(self):
@@ -281,7 +335,7 @@ class APITests(unittest.TestCase):
         try:
             if shutil.which('lake'):
                 self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
-            for expected in ('solved', 'exhausted', 'running'):
+            for index, expected in enumerate(('solved', 'exhausted', 'exhausted')):
                 _, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n', 'attempts': 1,
                                                  'model': 'ollama/test:7b', 'max_output_tokens': 64})
                 subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url,
@@ -294,7 +348,7 @@ class APITests(unittest.TestCase):
                 assignment = outcome['assignments'][0]
                 self.assertEqual(assignment['generation']['model'], 'test:7b-reported')
                 self.assertEqual(assignment['usage']['output_tokens'], 10)
-                if expected in ('solved', 'exhausted'):
+                if index < 2:
                     attempt = outcome['attempts'][0]
                     self.assertEqual(attempt['candidate'], 'rfl' if expected == 'solved' else 'refl')
                     self.assertEqual(attempt['verification_status'], 'verified' if expected == 'solved' else 'rejected')
@@ -303,6 +357,7 @@ class APITests(unittest.TestCase):
                 else:
                     self.assertEqual(assignment['generation']['raw_response'], 'not valid JSON')
                     self.assertIn('proof format', assignment['error'])
+                    self.assertEqual(assignment['failure_class'], 'permanent')
                     self.assertEqual(outcome['attempts'], [])
         finally:
             ollama.shutdown()

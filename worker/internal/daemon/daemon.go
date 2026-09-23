@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,12 +65,41 @@ type Execution struct {
 }
 
 type Result struct {
-	Token      string          `json:"lease_token"`
-	Status     string          `json:"status"`
-	Output     *Output         `json:"output,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	Usage      map[string]*int `json:"usage,omitempty"`
-	Generation *Generation     `json:"generation,omitempty"`
+	Token        string          `json:"lease_token"`
+	Status       string          `json:"status"`
+	Output       *Output         `json:"output,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	FailureClass string          `json:"failure_class,omitempty"`
+	Usage        map[string]*int `json:"usage,omitempty"`
+	Generation   *Generation     `json:"generation,omitempty"`
+}
+
+type FailureClass string
+
+const (
+	FailureTransient FailureClass = "transient"
+	FailurePermanent FailureClass = "permanent"
+)
+
+type executionError struct {
+	class FailureClass
+	err   error
+}
+
+func (e *executionError) Error() string { return e.err.Error() }
+func (e *executionError) Unwrap() error { return e.err }
+
+func Transient(err error) error { return &executionError{class: FailureTransient, err: err} }
+func Permanent(err error) error { return &executionError{class: FailurePermanent, err: err} }
+
+// FailureClassOf preserves the v1 retry behavior for executors that return an
+// ordinary, unclassified error.
+func FailureClassOf(err error) FailureClass {
+	var classified *executionError
+	if errors.As(err, &classified) {
+		return classified.class
+	}
+	return FailureTransient
 }
 
 type Executor interface {
@@ -166,7 +196,7 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	result := Result{Token: a.Token, Status: "completed", Output: &Output{Text: execution.Text},
 		Generation: execution.Generation, Usage: execution.Usage}
 	if executeErr == nil && (len(strings.TrimSpace(execution.Text)) == 0 || len(execution.Text) > 128*1024) {
-		executeErr = fmt.Errorf("executor output must be 1–131072 bytes")
+		executeErr = Permanent(fmt.Errorf("executor output must be 1–131072 bytes"))
 	}
 	if executeErr != nil {
 		message := executeErr.Error()
@@ -174,6 +204,7 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 			message = message[:4000]
 		}
 		result.Status, result.Error, result.Output = "failed", message, nil
+		result.FailureClass = string(FailureClassOf(executeErr))
 	}
 	// The same payload is retried so a lost acknowledgement is harmless.
 	for attempt := 0; attempt < 3; attempt++ {

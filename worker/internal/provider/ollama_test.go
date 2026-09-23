@@ -102,14 +102,16 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 		name       string
 		status     int
 		body, want string
+		class      daemon.FailureClass
 	}{
-		{"not-found", 404, `{"error":"model not found"}`, "HTTP 404"},
-		{"invalid-envelope", 200, `not JSON`, "invalid Ollama response JSON"},
-		{"error-envelope", 200, `{"error":"runner stopped"}`, "reported an error"},
-		{"invalid-proof", 200, `{"done":true,"message":{"content":"refl"},"eval_count":7}`, "proof format"},
-		{"incomplete", 200, `{"done":false,"message":{"content":"partial"}}`, "incomplete"},
-		{"truncated-json", 200, `{"done":true,"done_reason":"length","message":{"content":"{\"proof\":"}}`, "proof format"},
-		{"large", 200, strings.Repeat("x", maxOllamaResponse+1), "exceeded 1 MiB"},
+		{"not-found", 404, `{"error":"model not found"}`, "HTTP 404", daemon.FailurePermanent},
+		{"unavailable", 503, `service unavailable`, "HTTP 503", daemon.FailureTransient},
+		{"invalid-envelope", 200, `not JSON`, "invalid Ollama response JSON", daemon.FailurePermanent},
+		{"error-envelope", 200, `{"error":"runner stopped"}`, "reported an error", daemon.FailureTransient},
+		{"invalid-proof", 200, `{"done":true,"message":{"content":"refl"},"eval_count":7}`, "proof format", daemon.FailurePermanent},
+		{"incomplete", 200, `{"done":false,"message":{"content":"partial"}}`, "incomplete", daemon.FailurePermanent},
+		{"truncated-json", 200, `{"done":true,"done_reason":"length","message":{"content":"{\"proof\":"}}`, "proof format", daemon.FailurePermanent},
+		{"large", 200, strings.Repeat("x", maxOllamaResponse+1), "exceeded 1 MiB", daemon.FailurePermanent},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(test.status); w.Write([]byte(test.body)) }))
@@ -118,6 +120,9 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 			result, err := o.Execute(context.Background(), daemon.Job{MaxOutputTokens: 10})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("err=%v", err)
+			}
+			if class := daemon.FailureClassOf(err); class != test.class {
+				t.Fatalf("class=%q, want %q", class, test.class)
 			}
 			if result.Generation == nil || result.Generation.RawResponse == "" || len(result.Generation.RawResponse) > maxRawResponse {
 				t.Fatal("missing or unbounded raw response")
@@ -193,6 +198,9 @@ func TestOllamaRejectsIncompatibleOutputBudget(t *testing.T) {
 		_, err := o.Execute(context.Background(), daemon.Job{MaxOutputTokens: outputTokens})
 		if err == nil || !strings.Contains(err.Error(), "job.max_output_tokens") || !strings.Contains(err.Error(), "-ollama-context") {
 			t.Fatalf("output=%d err=%v", outputTokens, err)
+		}
+		if daemon.FailureClassOf(err) != daemon.FailurePermanent {
+			t.Fatalf("output=%d was not classified permanent", outputTokens)
 		}
 	}
 }

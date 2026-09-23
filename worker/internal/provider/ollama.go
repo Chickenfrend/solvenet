@@ -63,10 +63,10 @@ func rawGeneration(raw string) *daemon.Generation {
 func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution, error) {
 	var execution daemon.Execution
 	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > 32768 {
-		return execution, fmt.Errorf("invalid job output-token limit")
+		return execution, daemon.Permanent(fmt.Errorf("invalid job output-token limit"))
 	}
 	if job.MaxOutputTokens >= o.ContextSize {
-		return execution, fmt.Errorf("job.max_output_tokens (%d) must be less than Ollama context size (%d); reduce the job output budget or increase -ollama-context", job.MaxOutputTokens, o.ContextSize)
+		return execution, daemon.Permanent(fmt.Errorf("job.max_output_tokens (%d) must be less than Ollama context size (%d); reduce the job output budget or increase -ollama-context", job.MaxOutputTokens, o.ContextSize))
 	}
 	// Put trusted problem context before the coordinator's conversational context.
 	// For repair jobs this keeps the candidate and Lean feedback as the final,
@@ -98,28 +98,32 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return execution, err
+		return execution, daemon.Permanent(err)
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", o.URL+"/api/chat", bytes.NewReader(payload))
 	if err != nil {
-		return execution, err
+		return execution, daemon.Permanent(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	response, err := o.Client.Do(req)
 	if err != nil {
-		return execution, fmt.Errorf("Ollama request: %w", err)
+		return execution, daemon.Transient(fmt.Errorf("Ollama request: %w", err))
 	}
 	defer response.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, maxOllamaResponse+1))
 	execution.Generation = o.rawGeneration(strings.ToValidUTF8(string(data), "�"), job.MaxOutputTokens)
 	if readErr != nil {
-		return execution, fmt.Errorf("reading Ollama response: %w", readErr)
+		return execution, daemon.Transient(fmt.Errorf("reading Ollama response: %w", readErr))
 	}
 	if len(data) > maxOllamaResponse {
-		return execution, fmt.Errorf("Ollama response exceeded 1 MiB")
+		return execution, daemon.Permanent(fmt.Errorf("Ollama response exceeded 1 MiB"))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return execution, fmt.Errorf("Ollama HTTP %d (check service and installed model %q); response retained in generation.raw_response", response.StatusCode, o.Model)
+		err := fmt.Errorf("Ollama HTTP %d (check service and installed model %q); response retained in generation.raw_response", response.StatusCode, o.Model)
+		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+			return execution, daemon.Transient(err)
+		}
+		return execution, daemon.Permanent(err)
 	}
 	var reply struct {
 		Model   string `json:"model"`
@@ -137,10 +141,10 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		EvalDuration   *int64 `json:"eval_duration"`
 	}
 	if err := json.Unmarshal(data, &reply); err != nil {
-		return execution, fmt.Errorf("invalid Ollama response JSON: %w", err)
+		return execution, daemon.Permanent(fmt.Errorf("invalid Ollama response JSON: %w", err))
 	}
 	if reply.Error != "" {
-		return execution, fmt.Errorf("Ollama reported an error; response retained in generation.raw_response")
+		return execution, daemon.Transient(fmt.Errorf("Ollama reported an error; response retained in generation.raw_response"))
 	}
 	generation := o.rawGeneration(reply.Message.Content, job.MaxOutputTokens)
 	generation.Model, generation.FinishReason = reply.Model, reply.DoneReason
@@ -160,17 +164,17 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	}
 	if len(reply.Model) > 256 || len(reply.DoneReason) > 256 {
 		generation.Model, generation.FinishReason = "", ""
-		return execution, fmt.Errorf("Ollama model/finish metadata exceeded size limit")
+		return execution, daemon.Permanent(fmt.Errorf("Ollama model/finish metadata exceeded size limit"))
 	}
 	if !reply.Done {
-		return execution, fmt.Errorf("Ollama returned an incomplete non-streaming response")
+		return execution, daemon.Permanent(fmt.Errorf("Ollama returned an incomplete non-streaming response"))
 	}
 	if generation.RawResponseTruncated {
-		return execution, fmt.Errorf("Ollama generated text exceeded 128 KiB")
+		return execution, daemon.Permanent(fmt.Errorf("Ollama generated text exceeded 128 KiB"))
 	}
 	proof, err := extractProof(reply.Message.Content)
 	if err != nil {
-		return execution, fmt.Errorf("Ollama proof format: %w", err)
+		return execution, daemon.Permanent(fmt.Errorf("Ollama proof format: %w", err))
 	}
 	execution.Text = proof
 	return execution, nil

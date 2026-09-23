@@ -13,6 +13,8 @@ from .sandbox import (
     ContainerVerifierConfig,
 )
 from .store import (
+    DEFAULT_FAILURE_CLASS,
+    FAILURE_CLASSES,
     DEFAULT_MAX_ASSIGNMENTS,
     MAX_ASSIGNMENTS,
     MAX_GENERATION_TIMEOUT_SECONDS,
@@ -172,6 +174,9 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                             text(data['output'].get('text'), 'output.text', 128 * 1024)
                         elif data.get('status') == 'failed':
                             text(data.get('error'), 'error', 4096)
+                            failure_class = data.get('failure_class', DEFAULT_FAILURE_CLASS)
+                            if failure_class not in FAILURE_CLASSES:
+                                raise ValueError('failure_class must be transient or permanent')
                         else:
                             raise ValueError('status must be completed or failed')
                         return self.respond(200, coordinator.store.result(parts[2], data))

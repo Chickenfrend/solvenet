@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,5 +125,43 @@ func TestWorkerRejectsInvalidTimeout(t *testing.T) {
 	}
 	if called {
 		t.Fatal("executor called for invalid timeout")
+	}
+}
+
+func TestWorkerSubmitsFailureClassification(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"unclassified-default", errors.New("temporary provider error"), "transient"},
+		{"transient", daemon.Transient(errors.New("service unavailable")), "transient"},
+		{"permanent", daemon.Permanent(errors.New("invalid configuration")), "permanent"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var result daemon.Result
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/claim":
+					json.NewEncoder(w).Encode(daemon.Assignment{Version: 1, ID: "a", Token: "token", HeartbeatSeconds: 3600, Job: daemon.Job{Kind: "model.generate", Model: "scripted", TimeoutSeconds: 1}})
+				case "/v1/assignments/a/result":
+					json.NewDecoder(r.Body).Decode(&result)
+					w.Write([]byte(`{"accepted":true}`))
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			defer server.Close()
+			executor := executorFunc(func(context.Context, daemon.Job) (daemon.Execution, error) {
+				return daemon.Execution{}, test.err
+			})
+			worker := daemon.Worker{URL: server.URL, ID: "test", Model: "scripted", Client: server.Client(), Executor: executor}
+			if worked, err := worker.Once(context.Background()); err != nil || !worked {
+				t.Fatalf("worked=%v err=%v", worked, err)
+			}
+			if result.Status != "failed" || result.FailureClass != test.want {
+				t.Fatalf("result=%+v", result)
+			}
+		})
 	}
 }

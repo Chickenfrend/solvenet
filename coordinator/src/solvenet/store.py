@@ -61,6 +61,8 @@ DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 MAX_GENERATION_TIMEOUT_SECONDS = 24 * 60 * 60
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
+FAILURE_CLASSES = ('transient', 'permanent')
+DEFAULT_FAILURE_CLASS = 'transient'
 
 
 def repair_feedback(candidate, diagnostics):
@@ -227,12 +229,24 @@ class Store:
             return {"lease_expires_at": expires}
 
     def result(self, assignment, payload):
+        payload = dict(payload)
+        if payload.get('status') == 'failed':
+            failure_class = payload.get('failure_class', DEFAULT_FAILURE_CLASS)
+            if failure_class not in FAILURE_CLASSES:
+                raise ValueError('failure_class must be transient or permanent')
+            payload['failure_class'] = failure_class
         canonical = json.dumps(payload, sort_keys=True, separators=(',', ':'))
         with self.transaction() as db:
             row = self._assignment(db, assignment, payload['lease_token'])
             if row['result'] is not None:
-                if row['result'] != canonical:
+                existing = json.loads(row['result'])
+                if existing.get('status') == 'failed':
+                    existing.setdefault('failure_class', DEFAULT_FAILURE_CLASS)
+                existing_canonical = json.dumps(existing, sort_keys=True, separators=(',', ':'))
+                if existing_canonical != canonical:
                     raise Conflict("Assignment already has a different result")
+                if row['result'] != canonical:
+                    db.execute("UPDATE assignments SET result=? WHERE id=?", (canonical, assignment))
                 return {"accepted": True}
             if row['status'] != 'active' or row['expires'] <= self.clock():
                 raise Conflict("Assignment expired")
@@ -244,7 +258,10 @@ class Store:
                             json.dumps(payload.get('usage', {})), json.dumps(payload.get('generation', {}))))
                 db.execute("UPDATE jobs SET status='verifying' WHERE id=?", (row['job_id'],))
             else:
-                self._retry(db, row['job_id'])
+                if payload['failure_class'] == 'permanent':
+                    db.execute("UPDATE jobs SET status='failed' WHERE id=?", (row['job_id'],))
+                else:
+                    self._retry(db, row['job_id'])
             self._refresh(db)
             return {"accepted": True}
 
@@ -295,8 +312,11 @@ class Store:
               JOIN jobs j ON j.id=a.job_id LEFT JOIN verifications v ON v.attempt_id=t.id
               WHERE j.run_id=? ORDER BY t.rowid""", (run_id,))]
             result['assignments'] = [dict(r) for r in db.execute("""SELECT a.id, a.job_id, a.worker_id,
-              a.expires, a.status, json_extract(a.result, '$.error') AS error,
-              json_extract(a.result, '$.generation') AS generation,
+               a.expires, a.status, json_extract(a.result, '$.error') AS error,
+               CASE WHEN json_extract(a.result, '$.status')='failed'
+                 THEN coalesce(json_extract(a.result, '$.failure_class'), 'transient')
+                 ELSE NULL END AS failure_class,
+               json_extract(a.result, '$.generation') AS generation,
               json_extract(a.result, '$.usage') AS usage
               FROM assignments a JOIN jobs j ON j.id=a.job_id WHERE j.run_id=?""", (run_id,))]
             for attempt in result['attempts']:

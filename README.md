@@ -116,8 +116,11 @@ Allow a few seconds for verification after the worker submits. Inspect
 `attempts[].candidate`, `verification_status`, `usage`, and `generation`.
 `attempts[].model` is the requested identifier (`ollama/...`);
 `generation.model` is the model name returned by Ollama, not a pinned weight digest.
-For execution/formatting failures, inspect `assignments[].error`, `generation`,
-and `usage`. `-once` handles just one assignment; omit it to keep polling and
+For execution/formatting failures, inspect `assignments[].error`,
+`failure_class`, `generation`, and `usage`. Transient service/network failures
+retry within the job's assignment limit. Invalid worker configuration and
+deterministically malformed provider output are permanent and fail that job
+immediately. `-once` handles just one assignment; omit it to keep polling and
 process bounded retries. A model that emits an invalid tactic gives a completed,
 rejected attempt, not an executor error.
 
@@ -181,8 +184,10 @@ still exceed the configured model context.
 
 Only a Lean `rejected` outcome creates a repair. Success stops the run;
 `verifier_error` stops it with an error; verification timeout ends that chain.
-Provider/formatting failures and lost leases use the existing bounded assignment
-retries on the same job rather than creating a repair. Set `max_assignments` from
+Transient provider failures and lost leases use the existing bounded assignment
+retries on the same job rather than creating a repair. Permanent execution and
+formatting failures stop that job without using its remaining allowance. Set
+`max_assignments` from
 1–100 on run submission to choose that per-job limit (default 3). Initial and
 repair jobs persist the same setting. Thus a three-job chain can involve more than
 three model calls if execution fails; with the default, it allows at most nine
