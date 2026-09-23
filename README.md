@@ -147,6 +147,11 @@ strategy or repair feedback. The Ollama provider creates the model-facing proble
 message and is the sole owner of its JSON/proof output instructions. It appends
 coordinator messages in order without exact-string filtering. Initial jobs have
 no coordinator messages; repair feedback remains the final user message.
+Before invoking a provider, the worker validates every required assignment and
+job field, including bounded strings and collections, repair linkage, heartbeat,
+and generation limits. Malformed assignments and unsupported protocol versions
+do not reach the provider. Lease expiration is decoded for protocol conformance,
+but renewal scheduling uses the heartbeat interval rather than the worker clock.
 
 Extraction only trims whitespace and optionally removes a single Lean Markdown
 fence **inside** the proof field. Full declarations, outer `by`, missing/invalid
