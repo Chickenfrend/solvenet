@@ -144,6 +144,20 @@ class RepairTests(unittest.TestCase):
         self.assertLess(len(prompt.encode()), 9000)
         self.assertEqual(self.store.run(self.run)['attempts'][0]['diagnostics'], diagnostics)
 
+    def test_unknown_tactic_feedback_omits_failed_proof_but_retains_history(self):
+        parent = self.submit(self.claim(), 'ring_nf')
+        diagnostics = 'Candidate.lean:6:0: error: unknown tactic'
+        self.store.verified(parent, outcome(diagnostics=diagnostics))
+        repair = self.claim()['job']
+        prompt = repair['messages'][0]['content']
+        self.assertIn('Start a fresh proof', prompt)
+        self.assertIn('unknown tactic', prompt)
+        self.assertNotIn('ring_nf', prompt)
+        self.assertEqual(repair['parent_attempt_id'], parent)
+        attempt = self.store.run(self.run)['attempts'][0]
+        self.assertEqual(attempt['candidate'], 'ring_nf')
+        self.assertEqual(attempt['diagnostics'], diagnostics)
+
     def test_version_2_migration_leaves_existing_runs_independent(self):
         path = Path(self.temp.name) / 'v2.db'
         with sqlite3.connect(path) as db:
