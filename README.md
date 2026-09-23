@@ -184,6 +184,10 @@ still exceed the configured model context.
 
 Only a Lean `rejected` outcome creates a repair. Success stops the run;
 `verifier_error` stops it with an error; verification timeout ends that chain.
+Lean verification is authoritative when already-dispatched results arrive late:
+a verified proof upgrades an `error` or `exhausted` run to `solved`, while a late
+verifier error cannot downgrade `solved`. Active assignments may finish after a
+terminal transition; their candidates and verification outcomes remain recorded.
 Transient provider failures and lost leases use the existing bounded assignment
 retries on the same job rather than creating a repair. Permanent execution and
 formatting failures stop that job without using its remaining allowance. Set

@@ -134,6 +134,88 @@ class StoreTests(unittest.TestCase):
         self.store.verified(self.store.pending()['id'], VerificationResult(VerificationStatus.VERIFIER_ERROR, 'broken environment', 0))
         self.assertEqual(self.store.run(self.run)['status'], 'error')
 
+    def test_verified_proof_has_precedence_in_both_delivery_orders(self):
+        for first, second in (
+                (VerificationStatus.VERIFIER_ERROR, VerificationStatus.VERIFIED),
+                (VerificationStatus.VERIFIED, VerificationStatus.VERIFIER_ERROR)):
+            with self.subTest(first=first, second=second):
+                run_id = self.store.submit(
+                    ': True', ['Init'], attempts=2, model='terminal-order')['run_id']
+                assignments = [
+                    self.store.claim('worker', ['terminal-order']) for _ in range(2)]
+                attempt_ids = []
+                for assignment in assignments:
+                    self.store.result(assignment['assignment_id'], self.payload(assignment))
+                    attempt_ids.append(next(
+                        attempt['id'] for attempt in self.store.run(run_id)['attempts']
+                        if attempt['job_id'] == assignment['job']['id']))
+
+                self.store.verified(
+                    attempt_ids[0], VerificationResult(first, 'first outcome', 1))
+                expected_first = 'solved' if first is VerificationStatus.VERIFIED else 'error'
+                self.assertEqual(self.store.run(run_id)['status'], expected_first)
+                self.store.verified(
+                    attempt_ids[1], VerificationResult(second, 'second outcome', 1))
+
+                run = self.store.run(run_id)
+                self.assertEqual(run['status'], 'solved')
+                self.assertCountEqual(
+                    [attempt['verification_status'] for attempt in run['attempts']],
+                    ['verified', 'verifier_error'])
+
+    def test_already_assigned_job_finishes_after_terminal_state(self):
+        for terminal, late, expected in (
+                (VerificationStatus.VERIFIER_ERROR, VerificationStatus.VERIFIED, 'solved'),
+                (VerificationStatus.VERIFIED, VerificationStatus.VERIFIER_ERROR, 'solved')):
+            with self.subTest(terminal=terminal, late=late):
+                run_id = self.store.submit(
+                    ': True', ['Init'], attempts=2, model='late-terminal')['run_id']
+                first = self.store.claim('first', ['late-terminal'])
+                late_assignment = self.store.claim('late', ['late-terminal'])
+
+                self.store.result(first['assignment_id'], self.payload(first))
+                first_attempt = next(
+                    attempt['id'] for attempt in self.store.run(run_id)['attempts']
+                    if attempt['job_id'] == first['job']['id'])
+                self.store.verified(
+                    first_attempt, VerificationResult(terminal, 'terminal outcome', 1))
+
+                # Work claimed before the terminal transition remains valid.
+                self.assertEqual(
+                    self.store.result(late_assignment['assignment_id'], self.payload(late_assignment)),
+                    {'accepted': True})
+                late_attempt = next(
+                    attempt['id'] for attempt in self.store.run(run_id)['attempts']
+                    if attempt['job_id'] == late_assignment['job']['id'])
+                self.store.verified(late_attempt, VerificationResult(late, 'late outcome', 1))
+
+                run = self.store.run(run_id)
+                self.assertEqual(run['status'], expected)
+                self.assertEqual([job['status'] for job in run['jobs']], ['done', 'done'])
+
+    def test_concurrent_terminal_outcomes_and_duplicate_delivery_are_stable(self):
+        run_id = self.store.submit(
+            ': True', ['Init'], attempts=2, model='concurrent-terminal')['run_id']
+        assignments = [
+            self.store.claim('worker', ['concurrent-terminal']) for _ in range(2)]
+        for assignment in assignments:
+            self.store.result(assignment['assignment_id'], self.payload(assignment))
+        attempts = self.store.run(run_id)['attempts']
+        outcomes = (
+            VerificationResult(VerificationStatus.VERIFIED, 'valid proof', 1),
+            VerificationResult(VerificationStatus.VERIFIER_ERROR, 'broken verifier', 1),
+        )
+        deliveries = list(zip([attempt['id'] for attempt in attempts], outcomes))
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda delivery: self.store.verified(*delivery), deliveries * 2))
+
+        run = self.store.run(run_id)
+        self.assertEqual(run['status'], 'solved')
+        self.assertCountEqual(
+            [attempt['verification_status'] for attempt in run['attempts']],
+            ['verified', 'verifier_error'])
+
     def test_solved_run_cancels_queued_jobs(self):
         other = self.store.submit(': True', ['Init'], attempts=3)['run_id']
         first = self.store.claim('a', ['scripted'])

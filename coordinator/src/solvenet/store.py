@@ -203,10 +203,6 @@ class Store:
         return {"problem_id": problem, "run_id": run}
 
     def _refresh(self, db):
-        db.execute("""UPDATE runs SET status='error' WHERE status='running' AND id IN (
-          SELECT j.run_id FROM jobs j JOIN assignments a ON a.job_id=j.id
-          JOIN attempts t ON t.assignment_id=a.id JOIN verifications v ON v.attempt_id=t.id
-          WHERE v.status='verifier_error')""")
         db.execute("""UPDATE jobs SET status='cancelled' WHERE status='queued'
           AND run_id IN (SELECT id FROM runs WHERE status IN ('solved','error'))""")
         db.execute("""UPDATE runs SET status='exhausted' WHERE status='running' AND NOT EXISTS
@@ -331,7 +327,15 @@ class Store:
               JOIN attempts t ON t.assignment_id=a.id WHERE t.id=?""", (attempt,)).fetchone()
             db.execute("UPDATE jobs SET status='done' WHERE id=?", (job['id'],))
             if result.verified:
-                db.execute("UPDATE runs SET status='solved' WHERE id=?", (job['run_id'],))
+                # A Lean-verified proof is authoritative even if another
+                # already-dispatched attempt ended the run first.
+                db.execute("""UPDATE runs SET status='solved'
+                  WHERE id=? AND status IN ('running','exhausted','error')""", (job['run_id'],))
+            elif result.status == 'verifier_error':
+                # Infrastructure failure terminates only a running run. It
+                # must not overwrite a proof that Lean has already verified.
+                db.execute("""UPDATE runs SET status='error'
+                  WHERE id=? AND status='running'""", (job['run_id'],))
             elif result.status == 'rejected':
                 run = db.execute("SELECT * FROM runs WHERE id=?", (job['run_id'],)).fetchone()
                 if run['status'] == 'running' and job['repair_depth'] < run['max_repairs']:
