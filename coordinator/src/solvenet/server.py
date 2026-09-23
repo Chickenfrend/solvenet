@@ -25,6 +25,34 @@ def integer(value, field, maximum):
     return value
 
 
+def validate_generation(data):
+    """Metadata is accepted for successes AND execution/formatting failures."""
+    usage = data.get('usage', {})
+    if not isinstance(usage, dict):
+        raise ValueError('usage must be an object')
+    for key, value in usage.items():
+        if key not in ('input_tokens', 'output_tokens') or (value is not None and (type(value) is not int or not 0 <= value <= 2**63 - 1)):
+            raise ValueError('usage must contain nonnegative token counts or null')
+    generation = data.get('generation', {})
+    if not isinstance(generation, dict):
+        raise ValueError('generation must be an object')
+    strings = {'raw_response': 128 * 1024, 'model': 256, 'finish_reason': 256}
+    numbers = {'total_duration_ns', 'load_duration_ns', 'prompt_eval_duration_ns',
+               'eval_duration_ns', 'context_length', 'max_output_tokens'}
+    for key, value in generation.items():
+        if key in strings:
+            if not isinstance(value, str) or len(value.encode()) > strings[key]:
+                raise ValueError(f'generation.{key} must be a string of at most {strings[key]} bytes')
+        elif key == 'raw_response_truncated':
+            if type(value) is not bool:
+                raise ValueError('generation.raw_response_truncated must be boolean')
+        elif key in numbers:
+            if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                raise ValueError(f'generation.{key} must be a nonnegative integer')
+        else:
+            raise ValueError(f'Unknown generation field: {key}')
+
+
 class Coordinator:
     def __init__(self, store, verifier):
         self.store = store
@@ -79,8 +107,10 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
         def do_POST(self):
             try:
                 size = int(self.headers.get('Content-Length', '0'))
-                if not 0 < size <= 256 * 1024:
-                    return self.respond(413, {'error': 'Body must be 1–262144 bytes'})
+                # Candidate + raw response may both expand under JSON escaping.
+                limit = 2 * 1024 * 1024 if self.path.startswith('/v1/assignments/') and self.path.endswith('/result') else 256 * 1024
+                if not 0 < size <= limit:
+                    return self.respond(413, {'error': f'Body must be 1–{limit} bytes'})
                 data = json.loads(self.rfile.read(size))
                 if not isinstance(data, dict):
                     raise ValueError('Expected JSON object')
@@ -95,7 +125,8 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         statement, imports,
                         integer(data.get('attempts', 3), 'attempts', 100),
                         text(data.get('model', 'scripted'), 'model', 256),
-                        integer(data.get('max_output_tokens', 2048), 'max_output_tokens', 32768)))
+                        integer(data.get('max_output_tokens', 2048), 'max_output_tokens', 32768),
+                        max_repairs=data.get('max_repairs', 0)))
                 if self.path == '/v1/claim':
                     worker = text(data.get('worker_id'), 'worker_id', 256)
                     models = data.get('models')
@@ -111,16 +142,11 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     if parts[3] == 'heartbeat':
                         return self.respond(200, coordinator.store.heartbeat(parts[2], token))
                     if parts[3] == 'result':
+                        validate_generation(data)
                         if data.get('status') == 'completed':
                             if not isinstance(data.get('output'), dict):
                                 raise ValueError('output must be an object')
                             text(data['output'].get('text'), 'output.text', 128 * 1024)
-                            usage = data.get('usage', {})
-                            if not isinstance(usage, dict):
-                                raise ValueError('usage must be an object')
-                            for key, value in usage.items():
-                                if key not in ('input_tokens', 'output_tokens') or (value is not None and (type(value) is not int or value < 0)):
-                                    raise ValueError('usage must contain nonnegative token counts or null')
                         elif data.get('status') == 'failed':
                             text(data.get('error'), 'error', 4096)
                         else:

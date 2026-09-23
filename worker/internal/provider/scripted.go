@@ -14,13 +14,13 @@ type Scripted struct {
 	Delay time.Duration
 }
 
-func (s Scripted) Execute(ctx context.Context, _ daemon.Job) (string, error) {
+func (s Scripted) Execute(ctx context.Context, _ daemon.Job) (daemon.Execution, error) {
 	timer := time.NewTimer(s.Delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return daemon.Execution{}, ctx.Err()
 	case <-timer.C:
-		return s.Proof, nil
+		return daemon.Execution{Text: s.Proof}, nil
 	}
 }

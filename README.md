@@ -6,10 +6,11 @@ The idea is for this to be something like folding@home but for lean proofs with 
 
 ## Current prototype
 
-A Python coordinator stores independent proof-generation jobs in SQLite. A Go
-worker claims jobs over HTTP and returns a scripted proof. The coordinator checks
-the proof with Lean and persists the result. No API keys or external model calls
-are involved. The worker currently has one execution slot.
+A Python coordinator stores proof-generation jobs and bounded repair chains in SQLite. A Go
+worker claims jobs over HTTP and generates a proof using a local Ollama model or
+a scripted fixture. The coordinator checks the proof with Lean and persists the
+result, original model response, and reported usage. The worker currently has one
+execution slot.
 
 ### Run it locally
 
@@ -70,6 +71,107 @@ The database survives restarts. Unfinished verifications are picked up again;
 unacknowledged assignments are reclaimed when their leases expire. Stop the
 coordinator and worker with Ctrl-C.
 
+### Use your local Ollama model
+
+Ensure Ollama is running and the model has already been downloaded:
+
+```sh
+ollama list
+curl -sS http://127.0.0.1:11434/api/version
+```
+
+Restart the coordinator with the current code (Ctrl-C in its terminal, then the
+same start command). Existing SQLite databases migrate automatically to schema
+3, preserving previous results. Upgrade the coordinator before the worker
+so generation metadata is retained. The Lean verifier image does not need to be
+rebuilt for this adapter change.
+
+From the repository root, submit a model-specific run and save its ID in your
+shell so it can be used directly:
+
+```sh
+RUN_ID=$(curl -fsS http://127.0.0.1:8080/v1/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"statement":"(n : Nat) : n + 0 = n","attempts":1,"model":"ollama/qwen2.5-coder:7b","max_output_tokens":256}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
+
+(cd worker && go run ./cmd/solvenet-worker \
+  -provider ollama -model qwen2.5-coder:7b \
+  -ollama-url http://127.0.0.1:11434 -id archdeepthought -once)
+
+curl -fsS "http://127.0.0.1:8080/v1/runs/$RUN_ID" | python3 -m json.tool
+```
+
+Allow a few seconds for verification after the worker submits. Inspect
+`attempts[].candidate`, `verification_status`, `usage`, and `generation`.
+`attempts[].model` is the requested identifier (`ollama/...`);
+`generation.model` is the model name returned by Ollama, not a pinned weight digest.
+For execution/formatting failures, inspect `assignments[].error`, `generation`,
+and `usage`. `-once` handles just one assignment; omit it to keep polling and
+process bounded retries. A model that emits an invalid tactic gives a completed,
+rejected attempt, not an executor error.
+
+The adapter uses `/api/chat` with a JSON schema requiring `{"proof":"..."}`,
+the job's output-token limit, and a 4096-token context. Generation has the worker's
+120-second job deadline; a cold model load counts toward that deadline. Heartbeats
+continue during generation. Cancellation closes the HTTP request. The worker does
+not automatically download models. Repair requests carry explicit previous-proof
+and diagnostic text rather than provider-specific conversation state.
+
+Extraction only trims whitespace and optionally removes a single Lean Markdown
+fence **inside** the proof field. Full declarations, outer `by`, missing/invalid
+JSON, or an empty proof are execution failures. Tactic names and logic are never
+rewritten. Ollama response bodies are bounded to 1 MiB; retained generated text
+is capped at 128 KiB with an explicit truncation flag. Unknown token counts are
+null/omitted. Provider durations are reported in nanoseconds. If generation hits
+its token limit but still returns a complete proof object, that candidate is
+verified normally and the finish reason is retained.
+
+### Bounded repair runs
+
+Set `max_repairs` to 2 for one initial attempt followed by at most two repairs:
+
+```sh
+RUN_ID=$(curl -fsS http://127.0.0.1:8080/v1/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"statement":"(n : Nat) : n + 0 = n","attempts":1,"max_repairs":2,"model":"ollama/qwen2.5-coder:7b","max_output_tokens":256}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
+echo "$RUN_ID"
+
+(cd worker && go run ./cmd/solvenet-worker \
+  -provider ollama -model qwen2.5-coder:7b -id archdeepthought)
+```
+
+Leave this worker running: unlike `-once`, it will pick up repairs as the
+coordinator verifies each candidate. In another terminal, inspect the run using
+the printed ID (`RUN_ID` is a shell variable, not shared between terminals).
+Alternatively, stop the worker with Ctrl-C after it finishes submitting work and
+use the existing shell variable:
+
+```sh
+curl -fsS "http://127.0.0.1:8080/v1/runs/$RUN_ID" | python3 -m json.tool
+```
+
+The run reports `max_repairs`; jobs and attempts report `repair_depth` (0, 1, 2)
+and `parent_attempt_id`. Each repair receives the original problem, previous
+candidate, and up to 8 KiB of that attempt's Lean diagnostics. Full diagnostics
+remain stored. Repair feedback is the final model message and explicitly asks the
+model not to repeat the rejected candidate unchanged. Long problems/proofs can still exceed the model's 4096-token
+context; this first experiment is intended for short theorem problems.
+
+Only a Lean `rejected` outcome creates a repair. Success stops the run;
+`verifier_error` stops it with an error; verification timeout ends that chain.
+Provider/formatting failures and lost leases use the existing bounded assignment
+retries on the same job rather than creating a repair. Thus a three-job chain
+can involve more than three model calls if execution fails. Each job allows at
+most three assignments, so at most nine dispatches for this example.
+
+Repairs are opt-in: `max_repairs` defaults to 0 and accepts 0–2. `attempts` means
+the number of initial independent chains. To compare strategies, use
+`attempts: 3, max_repairs: 0` versus `attempts: 1, max_repairs: 2`. Record actual
+tokens and timings as well as requests because repair prompts are longer.
+Existing runs remain independent after migration; submit a new run to enable repairs.
+
 ### Tests
 
 ```sh
@@ -79,9 +181,16 @@ PYTHONPATH=coordinator/src python3 -m unittest discover -s coordinator/tests -v
 
 The Python suite exercises persistence, retries, concurrent claims, idempotent
 submissions, HTTP handling, container-launch policy, and the Lean verifier. When
-both Go and Lake are on PATH, it also runs the actual Go worker against the HTTP
-coordinator and checks its proof with real Lean. Lean-dependent tests are skipped
-when Lake is unavailable.
+Go is available, it also runs the actual Go worker against a fake Ollama HTTP
+server and verifies success, proof rejection, and formatting-error retention.
+With Lake on PATH, that integration uses real Lean. Lean-dependent tests are
+skipped when Lake is unavailable. Go tests cover the schema/options, conservative
+extraction, provider errors, output limits, missing usage, and cancellation.
+Automated tests do not contact a real Ollama server or download models.
+Repair tests cover bounds, linked history, restart recovery, duplicate verification
+delivery, execution retries, terminal runs, and migration. With Go and Lake,
+an end-to-end test exercises two repairs using actual Lean diagnostics and a
+fake Ollama server.
 
 After building the Docker image, explicitly test its runtime on your machine:
 
@@ -93,9 +202,10 @@ SOLVENET_DOCKER_TEST=1 PYTHONPATH=coordinator/src \
 ### Boundaries of this slice
 
 - One coordinator process per SQLite database; no authentication or public API.
-- Independent attempts with a bounded dispatch count, not dollar/token budgets.
-- Scripted execution only; a real provider adapter can implement the Go
-  `Executor` interface later.
+- Independent attempts and optional repair chains with a bounded dispatch count,
+  not dollar/token budgets.
+- Scripted and Ollama execution; hosted-provider adapters can implement the same
+  Go `Executor` interface later.
 - The container runs without networking, capabilities, credentials, or a Docker
   socket, with read-only rootfs and memory/CPU/process/file/output/time limits.
   Only the per-attempt workspace is bind-mounted writable.
