@@ -1,0 +1,644 @@
+{
+  "id": "c09ad9f5d23d41b5a1242e03648ae9bb",
+  "created_at": 1790206349.146145,
+  "config": {
+    "environment": "leanprover/lean4:v4.19.0",
+    "generation_settings": {
+      "seed": 11,
+      "temperature": 0.6
+    },
+    "generation_timeout_seconds": 120,
+    "initial_jobs": [
+      {
+        "count": 3,
+        "max_output_tokens": 256,
+        "model": "ollama/goedel-prover-v2-8b:q4_k_m"
+      }
+    ],
+    "max_assignments": 3,
+    "max_repairs": 0,
+    "set_id": "challenge",
+    "sha256": "cd199d3ccd299533a38b14ead2d768b7edf47565f7c6b2d14f63822030d85337",
+    "strategy": "independent",
+    "version": 1
+  },
+  "problem_count": 12,
+  "problems_solved": 7,
+  "solve_rate": 0.5833333333333334,
+  "run_statuses": {
+    "exhausted": 5,
+    "solved": 7
+  },
+  "requests": {
+    "completed": 28,
+    "provider_failure": 0,
+    "formatting_failure": 3,
+    "other_failure": 0,
+    "expired": 0,
+    "rejected": 0,
+    "active": 0
+  },
+  "usage": {
+    "input_tokens": {
+      "known_total": 3701,
+      "known_count": 31,
+      "unknown_count": 0,
+      "unit": "tokens"
+    },
+    "output_tokens": {
+      "known_total": 1912,
+      "known_count": 31,
+      "unknown_count": 0,
+      "unit": "tokens"
+    }
+  },
+  "provider_generation_time": {
+    "known_total": 40395657539,
+    "known_count": 31,
+    "unknown_count": 0,
+    "unit": "ns"
+  },
+  "lean_verification_time": {
+    "known_total": 36367,
+    "known_count": 28,
+    "unknown_count": 0,
+    "unit": "ms"
+  },
+  "time_to_first_verified_proof": {
+    "known_total": 339.60885071754456,
+    "known_count": 7,
+    "unknown_count": 0,
+    "unit": "seconds"
+  },
+  "successes": {
+    "initial": 7,
+    "repair": 0
+  },
+  "per_depth": {
+    "0": {
+      "jobs": 36,
+      "requests": {
+        "completed": 28,
+        "provider_failure": 0,
+        "formatting_failure": 3,
+        "other_failure": 0,
+        "expired": 0,
+        "rejected": 0,
+        "active": 0
+      },
+      "verifications": {
+        "rejected": 18,
+        "verified": 10
+      },
+      "verified_attempts": 10
+    }
+  },
+  "runs": [
+    {
+      "problem_id": "and-or-distribute",
+      "run_id": "d7dff3719fec4962b4f95dd68e3766c1",
+      "status": "exhausted",
+      "first_verified_attempt_id": null,
+      "time_to_first_verified_proof_seconds": null,
+      "attempts": [
+        {
+          "attempt_id": "1036ae6610e24a4fb7cc82c96e04ed47",
+          "assignment_id": "5293b8910d0c4c9c908e398050ba39e6",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "ae2584f78faf47a0b69567701f8868c1",
+          "assignment_id": "5ad4e9a4a70e4f0b91e54c972f779ef4",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "3ef148276ebc4af38bb8d20e6e1d6270",
+          "assignment_id": "a6eaf1b67f5446e2a3896cc0b1bab2d7",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "5293b8910d0c4c9c908e398050ba39e6",
+          "job_id": "62689753165f4a968f8a89e8147b4dc8",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "1036ae6610e24a4fb7cc82c96e04ed47"
+        },
+        {
+          "assignment_id": "5ad4e9a4a70e4f0b91e54c972f779ef4",
+          "job_id": "55c315086df14502b8f72b21afc8ae52",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "ae2584f78faf47a0b69567701f8868c1"
+        },
+        {
+          "assignment_id": "a6eaf1b67f5446e2a3896cc0b1bab2d7",
+          "job_id": "0fb9b079127540a8a666e53252d09d1c",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "3ef148276ebc4af38bb8d20e6e1d6270"
+        }
+      ]
+    },
+    {
+      "problem_id": "contrapositive-iff",
+      "run_id": "7919180ac1fc422aa36b0b76ec51a2f8",
+      "status": "exhausted",
+      "first_verified_attempt_id": null,
+      "time_to_first_verified_proof_seconds": null,
+      "attempts": [
+        {
+          "attempt_id": "6b9201cd923a40a8b60e8fd31bc4e438",
+          "assignment_id": "dc08f80227274162a9112da68a7fa257",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "ad6f9650dd4f4dfe8505923b7df5af89",
+          "assignment_id": "7e37550578074592b2cb969d49c2c8f0",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "29e7676e38df4787ae963cd9a23921be",
+          "assignment_id": "2bf942ecfabd4095ae6bb1adbca0ed68",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "dc08f80227274162a9112da68a7fa257",
+          "job_id": "6d31caa4e8fb49cca41fa3a53164a227",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "6b9201cd923a40a8b60e8fd31bc4e438"
+        },
+        {
+          "assignment_id": "7e37550578074592b2cb969d49c2c8f0",
+          "job_id": "ddec7bfc441340a8ae98ab578d9cb0be",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "ad6f9650dd4f4dfe8505923b7df5af89"
+        },
+        {
+          "assignment_id": "2bf942ecfabd4095ae6bb1adbca0ed68",
+          "job_id": "60dc9218affe4dd7b7001378ee04f750",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "29e7676e38df4787ae963cd9a23921be"
+        }
+      ]
+    },
+    {
+      "problem_id": "exists-and-distribute",
+      "run_id": "d183977a58e7446ab66128b717e9d854",
+      "status": "exhausted",
+      "first_verified_attempt_id": null,
+      "time_to_first_verified_proof_seconds": null,
+      "attempts": [
+        {
+          "attempt_id": "f7822711850f442da3f8fa5e75670f39",
+          "assignment_id": "b2257f2c514b4d8b95592f3cd867a60a",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "9ef4947a820b4672a4dfafde3c139555",
+          "assignment_id": "d95ac1b09dab45f78501511fa7bc4d7a",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "d561a633a96b467489d206e822ab3ed0",
+          "assignment_id": "94bb80660d7e4066b1c695afca7e58d5",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "b2257f2c514b4d8b95592f3cd867a60a",
+          "job_id": "9e3ffe02dffe4adda7c7eeac063d5953",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "f7822711850f442da3f8fa5e75670f39"
+        },
+        {
+          "assignment_id": "d95ac1b09dab45f78501511fa7bc4d7a",
+          "job_id": "1ab92f6c47b64196ac4660af3a7baf19",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "9ef4947a820b4672a4dfafde3c139555"
+        },
+        {
+          "assignment_id": "94bb80660d7e4066b1c695afca7e58d5",
+          "job_id": "d4471f54dc6e441a80872175d086c2ee",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "d561a633a96b467489d206e822ab3ed0"
+        }
+      ]
+    },
+    {
+      "problem_id": "forall-imp-compose",
+      "run_id": "2df4393c41c6479a95c1715ae4b090b5",
+      "status": "solved",
+      "first_verified_attempt_id": "f2145b885cce48c5b88b3195bfa29bde",
+      "time_to_first_verified_proof_seconds": 23.5101957321167,
+      "attempts": [
+        {
+          "attempt_id": "f2145b885cce48c5b88b3195bfa29bde",
+          "assignment_id": "d32818f9c9ec49e7ab6f8ad0a59c9784",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        },
+        {
+          "attempt_id": "c44cbc8ca092417a9ecebdead5849da2",
+          "assignment_id": "7dffd84466ad4b96abf3d9d7222cf30c",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "d32818f9c9ec49e7ab6f8ad0a59c9784",
+          "job_id": "a889b4f4c1e14e80af4436b0520cef8d",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "f2145b885cce48c5b88b3195bfa29bde"
+        },
+        {
+          "assignment_id": "7dffd84466ad4b96abf3d9d7222cf30c",
+          "job_id": "411d38ca5745455fbdeae955928ca9f0",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "c44cbc8ca092417a9ecebdead5849da2"
+        }
+      ]
+    },
+    {
+      "problem_id": "nat-add-succ-swap",
+      "run_id": "2d289a1e249145c399af166eb06b2566",
+      "status": "solved",
+      "first_verified_attempt_id": "bcdbf3788b754e05ac64af5fdeb73b94",
+      "time_to_first_verified_proof_seconds": 29.631706953048706,
+      "attempts": [
+        {
+          "attempt_id": "8e6a03ef4b0142c8a7ffd91bb97073fa",
+          "assignment_id": "b8168ddfe6b44639a1e524886e7d3a2c",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "bcdbf3788b754e05ac64af5fdeb73b94",
+          "assignment_id": "764d61a602d44b2389eb6b42bf5a0977",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        },
+        {
+          "attempt_id": "260b9088abc74736bb97fdf1de34030b",
+          "assignment_id": "5b2aed273c8d4bb083be4e964e98ba9b",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "b8168ddfe6b44639a1e524886e7d3a2c",
+          "job_id": "a042c43eea804fb6ad4a6510b47f6862",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "8e6a03ef4b0142c8a7ffd91bb97073fa"
+        },
+        {
+          "assignment_id": "764d61a602d44b2389eb6b42bf5a0977",
+          "job_id": "f87565bff35e4e56b8f89ffb5603b7e8",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "bcdbf3788b754e05ac64af5fdeb73b94"
+        },
+        {
+          "assignment_id": "5b2aed273c8d4bb083be4e964e98ba9b",
+          "job_id": "2e787c7c68be4b88b7a2dbdf7ef1c637",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "260b9088abc74736bb97fdf1de34030b"
+        }
+      ]
+    },
+    {
+      "problem_id": "nat-mul-add-distribute",
+      "run_id": "469065b9fda04d09b0a31144385e53ec",
+      "status": "exhausted",
+      "first_verified_attempt_id": null,
+      "time_to_first_verified_proof_seconds": null,
+      "attempts": [
+        {
+          "attempt_id": "2e8d354ee89f466f9b15af2cba04d2e7",
+          "assignment_id": "7d8c19aca6814ed381225787b787a4ea",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "5e98f336a83c41e6be09bfa2e4cef6a0",
+          "assignment_id": "6fd8acbb708944679fff45ce20781bb5",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "7343dffff72c47368e968fa9610c3aca",
+          "assignment_id": "a953904d4eaf4e4fb4bd21370d729f5a",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "7d8c19aca6814ed381225787b787a4ea",
+          "job_id": "8eb70d4a12af413c8429a88c3579bce5",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "2e8d354ee89f466f9b15af2cba04d2e7"
+        },
+        {
+          "assignment_id": "6fd8acbb708944679fff45ce20781bb5",
+          "job_id": "e52a86607ac4497983f028a961819bb6",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "5e98f336a83c41e6be09bfa2e4cef6a0"
+        },
+        {
+          "assignment_id": "a953904d4eaf4e4fb4bd21370d729f5a",
+          "job_id": "5dcae6c0e0d14051b603b08324d751c4",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "7343dffff72c47368e968fa9610c3aca"
+        }
+      ]
+    },
+    {
+      "problem_id": "nat-add-cancel",
+      "run_id": "32593235fc6d4e35a67e0e52ac3ab020",
+      "status": "solved",
+      "first_verified_attempt_id": "86867595bcaf4f7ab0f0e755f5273b1e",
+      "time_to_first_verified_proof_seconds": 38.588396072387695,
+      "attempts": [
+        {
+          "attempt_id": "86867595bcaf4f7ab0f0e755f5273b1e",
+          "assignment_id": "be1a4fa5b20645a8b563981c660c2b49",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        },
+        {
+          "attempt_id": "4a12f8c60ba948c0adcd28113f4f73c6",
+          "assignment_id": "9910dfbba34549739d8cdc9caed1c6ee",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "be1a4fa5b20645a8b563981c660c2b49",
+          "job_id": "700202b0a4e8421eac249fd6f521c721",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "86867595bcaf4f7ab0f0e755f5273b1e"
+        },
+        {
+          "assignment_id": "9910dfbba34549739d8cdc9caed1c6ee",
+          "job_id": "521eb3feba6046d5a9a8f7a37a0e6d8c",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "4a12f8c60ba948c0adcd28113f4f73c6"
+        }
+      ]
+    },
+    {
+      "problem_id": "list-append-assoc",
+      "run_id": "a69db3d0b32b41dc8df0b24ac04b5fd5",
+      "status": "exhausted",
+      "first_verified_attempt_id": null,
+      "time_to_first_verified_proof_seconds": null,
+      "attempts": [
+        {
+          "attempt_id": "728191000621473db92df7a402bb5f28",
+          "assignment_id": "1da053bbdae7473e814594e4589c24be",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "c2de4a05befa4549a22b7c57842a69d4",
+          "job_id": "9925b59c93f0468787b9049be001bcdd",
+          "depth": 0,
+          "outcome": "formatting_failure",
+          "attempt_id": null
+        },
+        {
+          "assignment_id": "030d4c0c53c44286bc057323b588b711",
+          "job_id": "527a4871dfe44f199acb6ae31c2454fe",
+          "depth": 0,
+          "outcome": "formatting_failure",
+          "attempt_id": null
+        },
+        {
+          "assignment_id": "1da053bbdae7473e814594e4589c24be",
+          "job_id": "27e535f383d3455db253b6cd7d70f683",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "728191000621473db92df7a402bb5f28"
+        }
+      ]
+    },
+    {
+      "problem_id": "list-map-append",
+      "run_id": "f280511bb5d041409a5e58776fb1f650",
+      "status": "solved",
+      "first_verified_attempt_id": "12502c2282884403a0c0775fdf3b3163",
+      "time_to_first_verified_proof_seconds": 54.38184452056885,
+      "attempts": [
+        {
+          "attempt_id": "12502c2282884403a0c0775fdf3b3163",
+          "assignment_id": "b11a4bc4c5e94b27b9078b7accec235b",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        },
+        {
+          "attempt_id": "8a9f9d1c1da64f5188b9b44d508599f4",
+          "assignment_id": "f0ad13c51bf44cd88a67da8862f222a1",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "b11a4bc4c5e94b27b9078b7accec235b",
+          "job_id": "f252ebe75e134dc2940526b8b5f021d8",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "12502c2282884403a0c0775fdf3b3163"
+        },
+        {
+          "assignment_id": "f0ad13c51bf44cd88a67da8862f222a1",
+          "job_id": "dac4d21d3e0846ef9ccd9f81530bd61c",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "8a9f9d1c1da64f5188b9b44d508599f4"
+        }
+      ]
+    },
+    {
+      "problem_id": "list-reverse-append",
+      "run_id": "a4eee32c0a5d43959d15bd06e687ba52",
+      "status": "solved",
+      "first_verified_attempt_id": "3e797f877d634dd29f8bf16b4e94301a",
+      "time_to_first_verified_proof_seconds": 58.58647179603577,
+      "attempts": [
+        {
+          "attempt_id": "3e797f877d634dd29f8bf16b4e94301a",
+          "assignment_id": "b6428d54d9dd49c490814c40addca1a7",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        },
+        {
+          "attempt_id": "038ea76d10934c31a3f3b1aa752800a5",
+          "assignment_id": "89b478d383df43d58f2cf1164f25f38b",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "b6428d54d9dd49c490814c40addca1a7",
+          "job_id": "9b6532d430b941d18e365ee5bf215be1",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "3e797f877d634dd29f8bf16b4e94301a"
+        },
+        {
+          "assignment_id": "89b478d383df43d58f2cf1164f25f38b",
+          "job_id": "8093f97aaf7c4efe9c4d7ec48eab1646",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "038ea76d10934c31a3f3b1aa752800a5"
+        }
+      ]
+    },
+    {
+      "problem_id": "list-length-reverse",
+      "run_id": "4fc8a40d8b8845d998106b7908b21333",
+      "status": "solved",
+      "first_verified_attempt_id": "da25bd2c02ac449ea19761d44f906810",
+      "time_to_first_verified_proof_seconds": 61.6419517993927,
+      "attempts": [
+        {
+          "attempt_id": "da25bd2c02ac449ea19761d44f906810",
+          "assignment_id": "b6db99797c1e4267b9e6b403fa77a0b2",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "b6db99797c1e4267b9e6b403fa77a0b2",
+          "job_id": "527c0a30187b4fcfbfcd3f95f1e0195e",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "da25bd2c02ac449ea19761d44f906810"
+        },
+        {
+          "assignment_id": "33e662a7f71d418b8816a9c1a4421139",
+          "job_id": "712a19741e5d49419edcbfc2d9c3c3cb",
+          "depth": 0,
+          "outcome": "formatting_failure",
+          "attempt_id": null
+        }
+      ]
+    },
+    {
+      "problem_id": "bool-xor-assoc",
+      "run_id": "3b40c69df4ad4933a26ce16633c0bdd4",
+      "status": "solved",
+      "first_verified_attempt_id": "89147f87d07c4f4bbc697cdf7859543c",
+      "time_to_first_verified_proof_seconds": 73.26828384399414,
+      "attempts": [
+        {
+          "attempt_id": "4a7a9d0c11a746c8ad71d7ca80cf8b32",
+          "assignment_id": "a4ca0586e15440a19041cea45952cdca",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "12d579c7edbb46a5995c5174347aba2e",
+          "assignment_id": "8e8943c32e8a44eb9dc8386ee53b9df8",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "rejected"
+        },
+        {
+          "attempt_id": "89147f87d07c4f4bbc697cdf7859543c",
+          "assignment_id": "1c403c2a4a4047eea08364bed54ce4cd",
+          "depth": 0,
+          "parent_attempt_id": null,
+          "verification_status": "verified"
+        }
+      ],
+      "assignments": [
+        {
+          "assignment_id": "a4ca0586e15440a19041cea45952cdca",
+          "job_id": "ead2ab1b571b4a39bb7f75ff6a30a7bf",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "4a7a9d0c11a746c8ad71d7ca80cf8b32"
+        },
+        {
+          "assignment_id": "8e8943c32e8a44eb9dc8386ee53b9df8",
+          "job_id": "a7deba7238fa48c38c6239b9e7498f10",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "12d579c7edbb46a5995c5174347aba2e"
+        },
+        {
+          "assignment_id": "1c403c2a4a4047eea08364bed54ce4cd",
+          "job_id": "1876306eb75849f6aca046f469b3483c",
+          "depth": 0,
+          "outcome": "completed",
+          "attempt_id": "89147f87d07c4f4bbc697cdf7859543c"
+        }
+      ]
+    }
+  ],
+  "limitations": "Requests count leases (including retries), not model generations or equal token budgets. Token and provider duration totals cover known reported values only; unknown_count includes unreported, rejected, expired and active leases. Provider duration is provider-reported total_duration_ns, not end-to-end wall time. Failure categories come from workers when available; historical results fall back to Ollama error prefixes. Time to first proof is measured from run creation to persisted Lean verification, including queue and retry time; historical rows without timestamps are unavailable. Running experiments have provisional solve rates."
+}
