@@ -10,7 +10,10 @@ A Python coordinator stores proof-generation jobs and bounded repair chains in S
 worker claims jobs over HTTP and generates a proof using a local Ollama model or
 a scripted fixture. The coordinator checks the proof with Lean and persists the
 result, original model response, and reported usage. The worker currently has one
-execution slot.
+execution slot. A run currently selects one model for all its jobs; multiple
+initial search chains may be served by the same worker daemon. Logical agents
+are a research goal, not separately identified or scheduled objects today. See
+[the terminology glossary](docs/ticket-18-terminology.md).
 
 ### Run it locally
 
@@ -88,8 +91,8 @@ heartbeats; `-id worker-2` identifies another worker process.
 curl -sS http://127.0.0.1:8080/v1/runs/RUN_ID | python3 -m json.tool
 ```
 
-After verification the run should be `solved`, with one `verified` attempt and
-two cancelled queued jobs. Submit `: False` with the same worker to see a rejected
+After verification the run should be `solved`, with one `verified` candidate
+attempt and two cancelled queued jobs. Submit `: False` with the same worker to see a rejected
 proof and eventual `exhausted` run (use the continuously polling worker).
 
 The database survives restarts. Unfinished verifications are picked up again in
@@ -192,7 +195,8 @@ verified normally and the finish reason is retained.
 
 ### Bounded repair runs
 
-Set `max_repairs` to 2 for one initial attempt followed by at most two repairs:
+Set `max_repairs` to 2 for one initial search chain (one initial job) followed
+by at most two repair jobs:
 
 ```sh
 RUN_ID=$(curl -fsS http://127.0.0.1:8080/v1/runs \
@@ -234,18 +238,24 @@ formatting failures stop that job without using its remaining allowance. Set
 `max_assignments` from
 1–100 on run submission to choose that per-job limit (default 3). Initial and
 repair jobs persist the same setting. Thus a three-job chain can involve more than
-three model calls if execution fails; with the default, it allows at most nine
-dispatches. In general the bound is
-`attempts * (1 + max_repairs) * max_assignments` for provider execution,
-transient failures, and abandoned leases. Pre-execution malformed/unsupported
-assignment rejections are excluded, so repeated claims by an incompatible worker
-can make the raw dispatch count exceed that bound without spending model work.
+three assignments if execution fails; with the default, it allows at most nine
+budgeted assignments. In general there are at most
+`attempts * (1 + max_repairs)` jobs and at most
+`attempts * (1 + max_repairs) * max_assignments` budgeted assignments across
+them (where `attempts` is the v1 request field). Expired leases and transient
+failures spend this allowance even if no model call completes. A permanent failure
+ends a job early. Pre-execution malformed/unsupported assignment rejections do
+not spend the allowance, so raw claim/assignment count has no finite bound if
+an incompatible worker repeatedly reclaims work. Neither bound guarantees the
+number of completed candidate attempts or actual model calls.
 
 Repairs are opt-in: `max_repairs` defaults to 0 and accepts 0–2. This range is an
 API policy, not a database limit; the schema only requires nonnegative repair
 budgets and depths, so changing the API ceiling does not require another table
-migration. `attempts` means
-the number of initial independent chains. To compare strategies, use
+migration. The submission field `attempts` counts initial search chains, not
+entries in the inspection response's `attempts[]` (completed candidates). All
+chains in a run target the same requested model and may use the same worker.
+To compare strategies, use
 `attempts: 3, max_repairs: 0` versus `attempts: 1, max_repairs: 2`. Record actual
 tokens and timings as well as requests because repair prompts are longer.
 Existing runs remain independent after migration; submit a new run to enable repairs.
@@ -281,7 +291,7 @@ SOLVENET_DOCKER_TEST=1 PYTHONPATH=coordinator/src \
 ### Boundaries of this slice
 
 - One coordinator process per SQLite database; no authentication or public API.
-- Independent attempts and optional repair chains with a bounded dispatch count,
+- Initial search chains and optional repairs with bounded budgeted assignments,
   not dollar/token budgets.
 - Scripted and Ollama execution; hosted-provider adapters can implement the same
   Go `Executor` interface later.

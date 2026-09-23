@@ -10,12 +10,17 @@ This project is currently at an early prototype stage. Prefer simple, working im
 
 The project will likely have two major components:
 
-* **Coordinator** — manages problems, agent tasks, results, and global search state.
+* **Coordinator** — manages problems, jobs, candidate results, and global search state.
 * **Worker daemon** — runs model-backed jobs on local or remote machines and reports results to the coordinator.
 
 Keep these concepts separate, but do not over-engineer their interface before it is needed.
 
-A worker daemon is a machine/process-level component. An agent is a logical reasoning process. One worker may eventually run multiple agents.
+A worker daemon is a machine/process-level component; an agent is a logical
+reasoning process, not yet a first-class scheduled object. A run currently
+requests one model and may start multiple search chains, but these do not imply
+distinct agents or worker daemons. One worker may eventually run multiple
+agents. The [terminology glossary](docs/ticket-18-terminology.md) distinguishes
+jobs, leased assignments, and completed candidate attempts.
 
 For now, the coordinator will be in python, and the worker daemon will be in go.
 
@@ -24,7 +29,7 @@ For now, the coordinator will be in python, and the worker daemon will be in go.
 Build the smallest end-to-end system that can:
 
 1. Accept a Lean theorem.
-2. Ask multiple LLM agents for candidate proofs.
+2. Ask for multiple candidate proofs (eventually from collaborating logical agents).
 3. Run the candidates through Lean.
 4. Report which candidates verify.
 
@@ -57,7 +62,7 @@ In particular, do not prematurely build:
 * sophisticated scheduling algorithms
 * large plugin systems
 
-The immediate goal is to determine whether collaborative proof-search strategies can outperform independent LLM attempts under comparable compute budgets.
+The immediate goal is to determine whether collaborative proof-search strategies can outperform independent initial search chains under comparable compute budgets.
 
 ## Working Style
 
@@ -68,4 +73,3 @@ When asked to implement something:
 3. Preserve existing interfaces unless there is a clear reason to change them.
 4. Run relevant tests and formatters when available.
 5. Do not invent requirements that are not present in the repository or task.
-

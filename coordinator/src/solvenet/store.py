@@ -1,4 +1,8 @@
-"""Small, transactional SQLite job queue. Times are Unix seconds."""
+"""Small, transactional SQLite job queue. Times are Unix seconds.
+
+Submission ``attempts`` starts that many initial search chains/jobs; the
+``attempts`` table instead records completed candidate proofs from assignments.
+"""
 
 import json
 import secrets
@@ -182,6 +186,7 @@ class Store:
     def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
                max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
                max_assignments=DEFAULT_MAX_ASSIGNMENTS):
+        """Create one run targeting ``model`` with ``attempts`` initial jobs."""
         if type(max_repairs) is not int or not 0 <= max_repairs <= MAX_REPAIRS:
             raise ValueError(f'max_repairs must be an integer between 0 and {MAX_REPAIRS}')
         if (type(generation_timeout_seconds) is not int or

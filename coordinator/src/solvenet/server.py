@@ -223,6 +223,8 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         text(module, 'import', limits.MAX_IMPORT_BYTES)
                     return self.respond(201, coordinator.store.submit(
                         statement, imports,
+                        # v1 `attempts` counts initial search chains/jobs, not
+                        # completed candidates in run inspection's attempts[].
                         integer(data.get('attempts', 3), 'attempts', 100),
                         text(data.get('model', 'scripted'), 'model', limits.MAX_MODEL_BYTES),
                         integer(data.get('max_output_tokens', 2048), 'max_output_tokens', limits.MAX_OUTPUT_TOKENS),
