@@ -23,6 +23,7 @@ from .store import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL,
     FAILURE_CLASSES,
+    FAILURE_CATEGORIES,
     DEFAULT_MAX_ASSIGNMENTS,
     MAX_ASSIGNMENTS,
     MAX_INITIAL_JOBS,
@@ -355,6 +356,9 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                             failure_class = data.get('failure_class', DEFAULT_FAILURE_CLASS)
                             if failure_class not in FAILURE_CLASSES:
                                 raise ValueError('failure_class must be transient or permanent')
+                            if ('failure_category' in data and
+                                    data['failure_category'] not in FAILURE_CATEGORIES):
+                                raise ValueError('failure_category must be provider_failure, formatting_failure, or other_failure')
                         elif data.get('status') == 'rejected':
                             text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
                             if data.get('rejection_kind') not in REJECTION_KINDS:

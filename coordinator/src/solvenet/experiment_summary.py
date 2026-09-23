@@ -77,7 +77,9 @@ def summary(db, experiment):
         status = row['assignment_status']
         if status == 'completed' and payload.get('status') == 'failed':
             error = payload.get('error', '')
-            if error.startswith('Ollama proof format:'):
+            if payload.get('failure_category'):
+                kind = payload['failure_category']
+            elif error.startswith('Ollama proof format:'):
                 kind = 'formatting_failure'
             elif error.startswith(('Ollama ', 'reading Ollama ', 'invalid Ollama ')):
                 kind = 'provider_failure'
@@ -129,8 +131,8 @@ def summary(db, experiment):
         'Requests count leases (including retries), not model generations or equal token budgets. '
         'Token and provider duration totals cover known reported values only; unknown_count includes '
         'unreported, rejected, expired and active leases. Provider duration is provider-reported '
-        'total_duration_ns, not end-to-end wall time. Formatting failures are identified by the '
-        'Ollama proof format error prefix; unclassified worker failures are other_failure. '
+        'total_duration_ns, not end-to-end wall time. Failure categories come from workers when '
+        'available; historical results fall back to Ollama error prefixes. '
         'Time to first proof is measured from run creation to persisted Lean verification, '
         'including queue and retry time; historical rows without timestamps are unavailable. '
         'Running experiments have provisional solve rates.')

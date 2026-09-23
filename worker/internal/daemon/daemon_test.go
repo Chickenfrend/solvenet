@@ -400,6 +400,7 @@ func TestWorkerSubmitsFailureClassification(t *testing.T) {
 		{"unclassified-default", errors.New("temporary provider error"), "transient"},
 		{"transient", daemon.Transient(errors.New("service unavailable")), "transient"},
 		{"permanent", daemon.Permanent(errors.New("invalid configuration")), "permanent"},
+		{"categorized", daemon.Categorize(daemon.Permanent(errors.New("arbitrary wording")), daemon.FormattingFailure), "permanent"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var result daemon.Result
@@ -427,6 +428,37 @@ func TestWorkerSubmitsFailureClassification(t *testing.T) {
 			if result.Status != "failed" || result.FailureClass != test.want {
 				t.Fatalf("result=%+v", result)
 			}
+			if result.FailureCategory != daemon.FailureCategoryOf(test.err) {
+				t.Fatalf("category=%q", result.FailureCategory)
+			}
 		})
+	}
+}
+
+func TestWorkerCategorizesInvalidExecutorOutput(t *testing.T) {
+	for _, output := range []string{"  ", strings.Repeat("x", daemon.MaxCandidateBytes+1)} {
+		var result daemon.Result
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/claim":
+				a := validAssignment()
+				a.ID = "a"
+				json.NewEncoder(w).Encode(a)
+			case "/v1/assignments/a/result":
+				json.NewDecoder(r.Body).Decode(&result)
+				w.Write([]byte(`{"accepted":true}`))
+			default:
+				w.WriteHeader(404)
+			}
+		}))
+		worker := daemon.Worker{URL: server.URL, ID: "test", Model: "scripted", Client: server.Client(),
+			Executor: executorFunc(func(context.Context, daemon.Job) (daemon.Execution, error) {
+				return daemon.Execution{Text: output}, nil
+			})}
+		worked, err := worker.Once(context.Background())
+		server.Close()
+		if err != nil || !worked || result.Status != "failed" || result.FailureClass != "permanent" || result.FailureCategory != daemon.FormattingFailure {
+			t.Fatalf("worked=%v err=%v result=%+v", worked, err, result)
+		}
 	}
 }

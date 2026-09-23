@@ -13,7 +13,7 @@ func TestScriptedRejectsUnsupportedSettings(t *testing.T) {
 	_, err := (Scripted{Proof: "trivial"}).Execute(context.Background(), daemon.Job{
 		GenerationSettings: daemon.GenerationSettings{Seed: &seed},
 	})
-	if err == nil || daemon.FailureClassOf(err) != daemon.FailurePermanent || !strings.Contains(err.Error(), "generation_settings") {
+	if err == nil || daemon.FailureClassOf(err) != daemon.FailurePermanent || daemon.FailureCategoryOf(err) != daemon.ProviderFailure || !strings.Contains(err.Error(), "generation_settings") {
 		t.Fatalf("expected explicit permanent unsupported-settings error, got %v", err)
 	}
 	result, err := (Scripted{Proof: "trivial"}).Execute(context.Background(), daemon.Job{})

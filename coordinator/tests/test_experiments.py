@@ -351,6 +351,28 @@ class ExperimentsTest(unittest.TestCase):
         self.assertEqual(report['time_to_first_verified_proof']['unknown_count'], 1)
         self.assertEqual(self.request('/v1/experiments/' + '0' * 32 + '/summary')[0], 404)
 
+    def test_failure_category_overrides_prose_and_validates(self):
+        experiment = self.request('/v1/experiments', self.config('independent'))[1]
+        a = self.store.claim('w', ['scripted'])
+        path = '/v1/assignments/' + a['assignment_id'] + '/result'
+        payload = {'lease_token': a['lease_token'], 'status': 'failed',
+                   'failure_class': 'transient', 'error': 'Ollama proof format: arbitrary prose',
+                   'failure_category': 'provider_failure'}
+        for invalid in ('unrecognized', None, 1, ['provider_failure']):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(self.request(path, payload | {'failure_category': invalid})[0], 400)
+        self.assertEqual(self.request(path, payload)[0], 200)
+        self.assertEqual(self.request(path, payload)[0], 200)
+        self.assertEqual(self.request(path, payload | {'failure_category': 'formatting_failure'})[0], 409)
+        with self.store.connect() as db:
+            stored = json.loads(db.execute('SELECT result FROM assignments WHERE id=?',
+                                           (a['assignment_id'],)).fetchone()[0])
+        self.assertEqual(stored['failure_category'], 'provider_failure')
+        report = self.store.experiment_summary(experiment['id'])
+        self.assertEqual(report['requests']['provider_failure'], 1)
+        self.assertEqual(report['requests']['formatting_failure'], 0)
+        self.assertEqual(report['runs'][0]['assignments'][0]['outcome'], 'provider_failure')
+
     def test_v7_migration_keeps_historical_proofs_without_inventing_time(self):
         old = Path(self.temp.name) / 'old.db'
         with sqlite3.connect(old) as db:

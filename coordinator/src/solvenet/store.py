@@ -125,6 +125,7 @@ MAX_REPAIRS = 2
 MAX_INITIAL_JOBS = 100
 FAILURE_CLASSES = ('transient', 'permanent')
 DEFAULT_FAILURE_CLASS = 'transient'
+FAILURE_CATEGORIES = ('provider_failure', 'formatting_failure', 'other_failure')
 REJECTION_KINDS = ('malformed_assignment', 'unsupported_protocol')
 
 
@@ -470,6 +471,8 @@ class Store:
             if failure_class not in FAILURE_CLASSES:
                 raise ValueError('failure_class must be transient or permanent')
             payload['failure_class'] = failure_class
+            if 'failure_category' in payload and payload['failure_category'] not in FAILURE_CATEGORIES:
+                raise ValueError('failure_category must be provider_failure, formatting_failure, or other_failure')
         elif payload.get('status') == 'rejected':
             if payload.get('rejection_kind') not in REJECTION_KINDS:
                 raise ValueError(

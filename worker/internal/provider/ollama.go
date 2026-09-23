@@ -63,11 +63,13 @@ func rawGeneration(raw string) *daemon.Generation {
 
 func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution, error) {
 	var execution daemon.Execution
+	providerFailure := func(err error) error { return daemon.Categorize(err, daemon.ProviderFailure) }
+	formattingFailure := func(err error) error { return daemon.Categorize(err, daemon.FormattingFailure) }
 	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > daemon.MaxOutputTokens {
-		return execution, daemon.Permanent(fmt.Errorf("invalid job output-token limit"))
+		return execution, providerFailure(daemon.Permanent(fmt.Errorf("invalid job output-token limit")))
 	}
 	if job.MaxOutputTokens >= o.ContextSize {
-		return execution, daemon.Permanent(fmt.Errorf("job.max_output_tokens (%d) must be less than Ollama context size (%d); reduce the job output budget or increase -ollama-context", job.MaxOutputTokens, o.ContextSize))
+		return execution, providerFailure(daemon.Permanent(fmt.Errorf("job.max_output_tokens (%d) must be less than Ollama context size (%d); reduce the job output budget or increase -ollama-context", job.MaxOutputTokens, o.ContextSize)))
 	}
 	// The provider owns its output contract. Put trusted structured problem
 	// context before the coordinator's strategy or repair feedback.
@@ -94,25 +96,25 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return execution, daemon.Permanent(err)
+		return execution, providerFailure(daemon.Permanent(err))
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", o.URL+"/api/chat", bytes.NewReader(payload))
 	if err != nil {
-		return execution, daemon.Permanent(err)
+		return execution, providerFailure(daemon.Permanent(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	digest := o.modelDigest(ctx)
 	if err := ctx.Err(); err != nil {
-		return execution, err
+		return execution, providerFailure(err)
 	}
 	execution.Generation = o.rawGeneration("", job)
 	execution.Generation.ModelDigest = digest
 	response, err := o.Client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return execution, ctx.Err()
+			return execution, providerFailure(ctx.Err())
 		}
-		return execution, daemon.Transient(fmt.Errorf("Ollama request failed (check local service)"))
+		return execution, providerFailure(daemon.Transient(fmt.Errorf("Ollama request failed (check local service)")))
 	}
 	defer response.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, maxOllamaResponse+1))
@@ -120,19 +122,19 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	execution.Generation.ModelDigest = digest
 	if readErr != nil {
 		if ctx.Err() != nil {
-			return execution, ctx.Err()
+			return execution, providerFailure(ctx.Err())
 		}
-		return execution, daemon.Transient(fmt.Errorf("reading Ollama response: %w", readErr))
+		return execution, providerFailure(daemon.Transient(fmt.Errorf("reading Ollama response: %w", readErr)))
 	}
 	if len(data) > maxOllamaResponse {
-		return execution, daemon.Permanent(fmt.Errorf("Ollama response exceeded 1 MiB"))
+		return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama response exceeded 1 MiB")))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		err := fmt.Errorf("Ollama HTTP %d (check service and installed model %q); response retained in generation.raw_response", response.StatusCode, o.Model)
 		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
-			return execution, daemon.Transient(err)
+			return execution, providerFailure(daemon.Transient(err))
 		}
-		return execution, daemon.Permanent(err)
+		return execution, providerFailure(daemon.Permanent(err))
 	}
 	var reply struct {
 		Model   string `json:"model"`
@@ -150,10 +152,10 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		EvalDuration   *int64 `json:"eval_duration"`
 	}
 	if err := json.Unmarshal(data, &reply); err != nil {
-		return execution, daemon.Permanent(fmt.Errorf("invalid Ollama response JSON: %w", err))
+		return execution, providerFailure(daemon.Permanent(fmt.Errorf("invalid Ollama response JSON: %w", err)))
 	}
 	if reply.Error != "" {
-		return execution, daemon.Transient(fmt.Errorf("Ollama reported an error; response retained in generation.raw_response"))
+		return execution, providerFailure(daemon.Transient(fmt.Errorf("Ollama reported an error; response retained in generation.raw_response")))
 	}
 	generation := o.rawGeneration(reply.Message.Content, job)
 	generation.ModelDigest = digest
@@ -174,17 +176,17 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	}
 	if len(reply.Model) > daemon.MaxModelBytes || len(reply.DoneReason) > daemon.MaxFinishReasonBytes {
 		generation.Model, generation.FinishReason = "", ""
-		return execution, daemon.Permanent(fmt.Errorf("Ollama model/finish metadata exceeded size limit"))
+		return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama model/finish metadata exceeded size limit")))
 	}
 	if !reply.Done {
-		return execution, daemon.Permanent(fmt.Errorf("Ollama returned an incomplete non-streaming response"))
+		return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama returned an incomplete non-streaming response")))
 	}
 	if generation.RawResponseTruncated {
-		return execution, daemon.Permanent(fmt.Errorf("Ollama generated text exceeded %d bytes", daemon.MaxRawResponseBytes))
+		return execution, formattingFailure(daemon.Permanent(fmt.Errorf("Ollama generated text exceeded %d bytes", daemon.MaxRawResponseBytes)))
 	}
 	proof, err := extractProof(reply.Message.Content)
 	if err != nil {
-		return execution, daemon.Permanent(fmt.Errorf("Ollama proof format: %w", err))
+		return execution, formattingFailure(daemon.Permanent(fmt.Errorf("Ollama proof format: %w", err)))
 	}
 	execution.Text = proof
 	return execution, nil

@@ -132,14 +132,15 @@ type Execution struct {
 }
 
 type Result struct {
-	Token         string          `json:"lease_token"`
-	Status        string          `json:"status"`
-	Output        *Output         `json:"output,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	FailureClass  string          `json:"failure_class,omitempty"`
-	RejectionKind string          `json:"rejection_kind,omitempty"`
-	Usage         map[string]*int `json:"usage,omitempty"`
-	Generation    *Generation     `json:"generation,omitempty"`
+	Token           string          `json:"lease_token"`
+	Status          string          `json:"status"`
+	Output          *Output         `json:"output,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	FailureClass    string          `json:"failure_class,omitempty"`
+	FailureCategory string          `json:"failure_category,omitempty"`
+	RejectionKind   string          `json:"rejection_kind,omitempty"`
+	Usage           map[string]*int `json:"usage,omitempty"`
+	Generation      *Generation     `json:"generation,omitempty"`
 }
 
 const (
@@ -157,6 +158,32 @@ const (
 type executionError struct {
 	class FailureClass
 	err   error
+}
+
+const (
+	ProviderFailure   = "provider_failure"
+	FormattingFailure = "formatting_failure"
+	OtherFailure      = "other_failure"
+)
+
+type categorizedError struct {
+	category string
+	err      error
+}
+
+func (e *categorizedError) Error() string { return e.err.Error() }
+func (e *categorizedError) Unwrap() error { return e.err }
+
+func Categorize(err error, category string) error {
+	return &categorizedError{category: category, err: err}
+}
+
+func FailureCategoryOf(err error) string {
+	var categorized *categorizedError
+	if errors.As(err, &categorized) {
+		return categorized.category
+	}
+	return OtherFailure
 }
 
 func (e *executionError) Error() string { return e.err.Error() }
@@ -456,12 +483,13 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	result := Result{Token: a.Token, Status: "completed", Output: &Output{Text: execution.Text},
 		Generation: execution.Generation, Usage: execution.Usage}
 	if executeErr == nil && (len(strings.TrimSpace(execution.Text)) == 0 || len(execution.Text) > MaxCandidateBytes) {
-		executeErr = Permanent(fmt.Errorf("executor output must be 1–%d bytes", MaxCandidateBytes))
+		executeErr = Categorize(Permanent(fmt.Errorf("executor output must be 1–%d bytes", MaxCandidateBytes)), FormattingFailure)
 	}
 	if executeErr != nil {
 		message := boundedError(executeErr)
 		result.Status, result.Error, result.Output = "failed", message, nil
 		result.FailureClass = string(FailureClassOf(executeErr))
+		result.FailureCategory = FailureCategoryOf(executeErr)
 	}
 	// The same payload is retried so a lost acknowledgement is harmless.
 	return true, w.submitResult(ctx, a.ID, result)

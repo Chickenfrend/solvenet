@@ -185,15 +185,16 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 		status     int
 		body, want string
 		class      daemon.FailureClass
+		category   string
 	}{
-		{"not-found", 404, `{"error":"model not found"}`, "HTTP 404", daemon.FailurePermanent},
-		{"unavailable", 503, `service unavailable`, "HTTP 503", daemon.FailureTransient},
-		{"invalid-envelope", 200, `not JSON`, "invalid Ollama response JSON", daemon.FailurePermanent},
-		{"error-envelope", 200, `{"error":"runner stopped"}`, "reported an error", daemon.FailureTransient},
-		{"invalid-proof", 200, `{"done":true,"message":{"content":"refl"},"eval_count":7}`, "proof format", daemon.FailurePermanent},
-		{"incomplete", 200, `{"done":false,"message":{"content":"partial"}}`, "incomplete", daemon.FailurePermanent},
-		{"truncated-json", 200, `{"done":true,"done_reason":"length","message":{"content":"{\"proof\":"}}`, "proof format", daemon.FailurePermanent},
-		{"large", 200, strings.Repeat("x", maxOllamaResponse+1), "exceeded 1 MiB", daemon.FailurePermanent},
+		{"not-found", 404, `{"error":"model not found"}`, "HTTP 404", daemon.FailurePermanent, daemon.ProviderFailure},
+		{"unavailable", 503, `service unavailable`, "HTTP 503", daemon.FailureTransient, daemon.ProviderFailure},
+		{"invalid-envelope", 200, `not JSON`, "invalid Ollama response JSON", daemon.FailurePermanent, daemon.ProviderFailure},
+		{"error-envelope", 200, `{"error":"runner stopped"}`, "reported an error", daemon.FailureTransient, daemon.ProviderFailure},
+		{"invalid-proof", 200, `{"done":true,"message":{"content":"refl"},"eval_count":7}`, "proof format", daemon.FailurePermanent, daemon.FormattingFailure},
+		{"incomplete", 200, `{"done":false,"message":{"content":"partial"}}`, "incomplete", daemon.FailurePermanent, daemon.ProviderFailure},
+		{"truncated-json", 200, `{"done":true,"done_reason":"length","message":{"content":"{\"proof\":"}}`, "proof format", daemon.FailurePermanent, daemon.FormattingFailure},
+		{"large", 200, strings.Repeat("x", maxOllamaResponse+1), "exceeded 1 MiB", daemon.FailurePermanent, daemon.ProviderFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(test.status); w.Write([]byte(test.body)) }))
@@ -206,6 +207,9 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 			if class := daemon.FailureClassOf(err); class != test.class {
 				t.Fatalf("class=%q, want %q", class, test.class)
 			}
+			if category := daemon.FailureCategoryOf(err); category != test.category {
+				t.Fatalf("category=%q, want %q", category, test.category)
+			}
 			if result.Generation == nil || result.Generation.RawResponse == "" || len(result.Generation.RawResponse) > daemon.MaxRawResponseBytes {
 				t.Fatal("missing or unbounded raw response")
 			}
@@ -217,6 +221,27 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 			}
 			if test.name == "large" && !result.Generation.RawResponseTruncated {
 				t.Fatal("missing truncation marker")
+			}
+		})
+	}
+}
+
+func TestOllamaTransportAndSettingsCategories(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	o, _ := NewOllama(server.URL, "test", 20)
+	server.Close()
+	for _, test := range []struct {
+		name  string
+		job   daemon.Job
+		class daemon.FailureClass
+	}{
+		{"transport", daemon.Job{MaxOutputTokens: 10}, daemon.FailureTransient},
+		{"context-size", daemon.Job{MaxOutputTokens: 20}, daemon.FailurePermanent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := o.Execute(context.Background(), test.job)
+			if err == nil || daemon.FailureCategoryOf(err) != daemon.ProviderFailure || daemon.FailureClassOf(err) != test.class {
+				t.Fatalf("err=%v category=%q class=%q", err, daemon.FailureCategoryOf(err), daemon.FailureClassOf(err))
 			}
 		})
 	}
