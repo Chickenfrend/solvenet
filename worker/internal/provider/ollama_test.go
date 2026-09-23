@@ -16,6 +16,10 @@ import (
 
 func TestOllamaRequestAndMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			json.NewEncoder(w).Encode(map[string]any{"models": []any{map[string]string{"name": "qwen2.5-coder:7b", "digest": strings.Repeat("a", 64)}}})
+			return
+		}
 		if r.Method != "POST" || r.URL.Path != "/api/chat" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -29,8 +33,10 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 				Additional bool     `json:"additionalProperties"`
 			} `json:"format"`
 			Options struct {
-				Predict int `json:"num_predict"`
-				Context int `json:"num_ctx"`
+				Predict     int      `json:"num_predict"`
+				Context     int      `json:"num_ctx"`
+				Temperature *float64 `json:"temperature"`
+				Seed        *int64   `json:"seed"`
 			} `json:"options"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -38,6 +44,9 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 		}
 		if request.Model != "qwen2.5-coder:7b" || request.Stream || request.Options.Predict != 256 || request.Options.Context != 8192 {
 			t.Errorf("wrong model/options: %+v", request)
+		}
+		if request.Options.Temperature == nil || *request.Options.Temperature != 0 || request.Options.Seed == nil || *request.Options.Seed != 42 {
+			t.Errorf("missing controlled options: %+v", request.Options)
 		}
 		if request.Format.Type != "object" || len(request.Format.Required) != 1 || request.Format.Required[0] != "proof" || request.Format.Additional {
 			t.Error("missing schema")
@@ -67,7 +76,8 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 	}
 	result, err := o.Execute(context.Background(), daemon.Job{
 		Statement: "(n : Nat) : n + 0 = n", Imports: []string{"Mathlib"}, MaxOutputTokens: 256,
-		Messages: []daemon.Message{{Role: "user", Content: "Try simplification before rewriting."}, {Role: "user", Content: "Previous attempt: refl"}},
+		GenerationSettings: daemon.GenerationSettings{Temperature: floatPointer(0), Seed: int64Pointer(42)},
+		Messages:           []daemon.Message{{Role: "user", Content: "Try simplification before rewriting."}, {Role: "user", Content: "Previous attempt: refl"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,12 +85,22 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 	if result.Text != "rfl" || *result.Usage["input_tokens"] != 52 || *result.Usage["output_tokens"] != 12 || result.Generation.Model != "qwen2.5-coder:7b-reported" || result.Generation.FinishReason != "stop" || result.Generation.ContextLength != 8192 || result.Generation.MaxOutputTokens != 256 || *result.Generation.EvalDurationNS != 300 || !strings.Contains(result.Generation.RawResponse, "```lean") {
 		t.Fatalf("lost output/metadata: %+v", result)
 	}
+	if result.Generation.ModelDigest != "sha256:"+strings.Repeat("a", 64) || *result.Generation.Temperature != 0 || *result.Generation.Seed != 42 {
+		t.Fatalf("lost settings/digest: %+v", result.Generation)
+	}
 }
+
+func floatPointer(v float64) *float64 { return &v }
+func int64Pointer(v int64) *int64     { return &v }
 
 func TestOllamaDoesNotDeduplicateCoordinatorMessagesByContent(t *testing.T) {
 	statement := ": True"
 	var messages []daemon.Message
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		var request struct {
 			Messages []daemon.Message `json:"messages"`
 		}

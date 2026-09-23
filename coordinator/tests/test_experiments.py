@@ -42,7 +42,7 @@ class ExperimentsTest(unittest.TestCase):
         except HTTPError as error:
             response = error
         with response:
-            return response.status, json.load(response)
+            return response.status, json.load(response) if response.status != 204 else None
 
     def config(self, strategy='repair', **overrides):
         return dict(idempotency_key='baseline-repair', set_id=self.fixture.set_id,
@@ -88,6 +88,42 @@ class ExperimentsTest(unittest.TestCase):
                 self.assertEqual(self.request('/v1/experiments', independent | update)[0], 400)
         self.assertEqual(self.request('/v1/experiments', independent | {'model': 'other'})[0], 409)
         self.assertEqual(self.request('/v1/runs', {'statement': ': True'})[0], 201)
+
+    def test_generation_settings_on_experiment_and_ad_hoc_runs(self):
+        settings = {'temperature': 0, 'seed': 42}
+        config = self.config(generation_settings=settings)
+        config['model'] = 'ollama/test'
+        status, experiment = self.request('/v1/experiments', config)
+        self.assertEqual(status, 201)
+        self.assertEqual(experiment['config']['generation_settings'], settings)
+        run = self.request('/v1/runs/' + experiment['runs'][0]['run_id'])[1]
+        self.assertEqual(run['generation_settings'], settings)
+        self.assertEqual(run['jobs'][0]['generation_settings'], settings)
+        old_claim = {'worker_id': 'old-worker', 'models': ['ollama/test']}
+        self.assertEqual(self.request('/v1/claim', old_claim)[0], 204)
+        self.assertEqual(self.request('/v1/runs/' + experiment['runs'][0]['run_id'])[1]['assignments'], [])
+        self.assertEqual(self.request('/v1/claim', old_claim | {
+            'capabilities': ['unrecognized']})[0], 400)
+        status, claimed = self.request('/v1/claim', old_claim | {
+            'capabilities': ['generation_settings']})
+        self.assertEqual(status, 200)
+        self.assertEqual(claimed['job']['generation_settings'], settings)
+        status, _ = self.request('/v1/runs', {
+            'statement': ': True', 'model': 'ollama/test', 'attempts': 1})
+        self.assertEqual(status, 201)
+        self.assertEqual(self.request('/v1/claim', old_claim)[1]['job']['generation_settings'], {})
+        status, ad_hoc = self.request('/v1/runs', {
+            'statement': ': True', 'model': 'ollama/test', 'attempts': 1,
+            'generation_settings': settings})
+        self.assertEqual(status, 201)
+        self.assertEqual(self.request('/v1/runs/' + ad_hoc['run_id'])[1]['generation_settings'], settings)
+        for invalid in ({'seed': True}, {'seed': -1}, {'temperature': 3},
+                        {'top_p': 0.9}, None):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(self.request('/v1/runs', {
+                    'statement': ': True', 'generation_settings': invalid})[0], 400)
+        self.assertEqual(self.request('/v1/experiments', self.config(
+            generation_settings=settings))[0], 400)
 
     def test_heterogeneous_and_concurrent_idempotency(self):
         config = self.config()
@@ -237,7 +273,7 @@ class ExperimentsTest(unittest.TestCase):
         self.assertIsNone(report['runs'][0]['time_to_first_verified_proof_seconds'])
         self.assertEqual(report['time_to_first_verified_proof']['unknown_count'], 1)
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 9)
             self.assertIsNone(db.execute("SELECT created_at FROM runs WHERE id='r'").fetchone()[0])
             self.assertIsNone(db.execute("SELECT verified_at FROM verifications WHERE attempt_id='t'").fetchone()[0])
 

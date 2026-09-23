@@ -89,6 +89,31 @@ func TestNoWork(t *testing.T) {
 	}
 }
 
+func TestClaimAdvertisesGenerationSettingsOnlyWhenEnabled(t *testing.T) {
+	requests := make(chan map[string]json.RawMessage, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	worker := daemon.Worker{URL: server.URL, ID: "worker", Model: "ollama/test", Client: server.Client()}
+	for _, enabled := range []bool{false, true} {
+		worker.SupportsGenerationSettings = enabled
+		if worked, err := worker.Once(context.Background()); err != nil || worked {
+			t.Fatalf("worked=%v err=%v", worked, err)
+		}
+		body := <-requests
+		_, present := body["capabilities"]
+		if present != enabled || (enabled && string(body["capabilities"]) != `["generation_settings"]`) {
+			t.Fatalf("enabled=%v, claim=%s", enabled, body)
+		}
+	}
+}
+
 func TestWorkerUsesCoordinatorTimeoutAboveOldCap(t *testing.T) {
 	var remaining time.Duration
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

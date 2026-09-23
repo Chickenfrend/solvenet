@@ -91,7 +91,8 @@ func main() {
 	if cfg.providerName == "ollama" && cfg.id == "local-scripted-worker" {
 		cfg.id = "local-ollama-worker"
 	}
-	w := daemon.Worker{URL: cfg.coordinatorURL, ID: cfg.id, Model: requestedModel, Client: &http.Client{Timeout: 10 * time.Second}, Executor: executor}
+	w := daemon.Worker{URL: cfg.coordinatorURL, ID: cfg.id, Model: requestedModel, Client: &http.Client{Timeout: 10 * time.Second}, Executor: executor,
+		SupportsGenerationSettings: cfg.providerName == "ollama"}
 	log.Printf("worker %s offering %s", cfg.id, requestedModel)
 	for ctx.Err() == nil {
 		worked, err := w.Once(ctx)

@@ -77,11 +77,18 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 			"\nTheorem (text after its name):\n" + job.Statement},
 	}
 	messages = append(messages, job.Messages...)
+	options := map[string]any{"num_predict": job.MaxOutputTokens, "num_ctx": o.ContextSize}
+	if job.GenerationSettings.Temperature != nil {
+		options["temperature"] = *job.GenerationSettings.Temperature
+	}
+	if job.GenerationSettings.Seed != nil {
+		options["seed"] = *job.GenerationSettings.Seed
+	}
 	body := map[string]any{
 		"model": o.Model, "messages": messages, "stream": false,
 		"format": map[string]any{"type": "object", "properties": map[string]any{
 			"proof": map[string]string{"type": "string"}}, "required": []string{"proof"}, "additionalProperties": false},
-		"options": map[string]int{"num_predict": job.MaxOutputTokens, "num_ctx": o.ContextSize},
+		"options": options,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -92,13 +99,20 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		return execution, daemon.Permanent(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	digest := o.modelDigest(ctx)
+	if err := ctx.Err(); err != nil {
+		return execution, err
+	}
+	execution.Generation = o.rawGeneration("", job)
+	execution.Generation.ModelDigest = digest
 	response, err := o.Client.Do(req)
 	if err != nil {
-		return execution, daemon.Transient(fmt.Errorf("Ollama request: %w", err))
+		return execution, daemon.Transient(fmt.Errorf("Ollama request failed (check local service)"))
 	}
 	defer response.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, maxOllamaResponse+1))
-	execution.Generation = o.rawGeneration(strings.ToValidUTF8(string(data), "�"), job.MaxOutputTokens)
+	execution.Generation = o.rawGeneration(strings.ToValidUTF8(string(data), "�"), job)
+	execution.Generation.ModelDigest = digest
 	if readErr != nil {
 		return execution, daemon.Transient(fmt.Errorf("reading Ollama response: %w", readErr))
 	}
@@ -133,7 +147,8 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if reply.Error != "" {
 		return execution, daemon.Transient(fmt.Errorf("Ollama reported an error; response retained in generation.raw_response"))
 	}
-	generation := o.rawGeneration(reply.Message.Content, job.MaxOutputTokens)
+	generation := o.rawGeneration(reply.Message.Content, job)
+	generation.ModelDigest = digest
 	generation.Model, generation.FinishReason = reply.Model, reply.DoneReason
 	generation.TotalDurationNS, generation.LoadDurationNS = reply.TotalDuration, reply.LoadDuration
 	generation.PromptEvalDurationNS, generation.EvalDurationNS = reply.PromptDuration, reply.EvalDuration
@@ -167,12 +182,52 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	return execution, nil
 }
 
-func (o *Ollama) rawGeneration(raw string, maxOutputTokens int) *daemon.Generation {
+func (o *Ollama) rawGeneration(raw string, job daemon.Job) *daemon.Generation {
 	generation := rawGeneration(raw)
 	generation.ContextLength = o.ContextSize
-	generation.MaxOutputTokens = maxOutputTokens
+	generation.MaxOutputTokens = job.MaxOutputTokens
+	generation.Temperature = job.GenerationSettings.Temperature
+	generation.Seed = job.GenerationSettings.Seed
 	return generation
 }
+
+func (o *Ollama) modelDigest(ctx context.Context) string {
+	// Best effort: /api/tags reports the installed model's SHA-256 digest.
+	// No endpoint or lookup errors are sent to the coordinator.
+	req, err := http.NewRequestWithContext(ctx, "GET", o.URL+"/api/tags", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := o.Client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxOllamaResponse+1))
+	if err != nil || len(data) > maxOllamaResponse {
+		return ""
+	}
+	var tags struct {
+		Models []struct {
+			Name   string `json:"name"`
+			Digest string `json:"digest"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(data, &tags) != nil {
+		return ""
+	}
+	for _, model := range tags.Models {
+		if model.Name == o.Model && modelDigestPattern.MatchString(model.Digest) {
+			return "sha256:" + model.Digest
+		}
+	}
+	return ""
+}
+
+var modelDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var declarationStart = regexp.MustCompile(`^(?:by|theorem|lemma|example|def|abbrev|axiom|opaque|namespace|import)(?:\s|$)`)
 

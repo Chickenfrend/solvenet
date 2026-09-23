@@ -22,19 +22,26 @@ type Message struct {
 }
 
 type Job struct {
-	ID                     string    `json:"id"`
-	Kind                   string    `json:"kind"`
-	Model                  string    `json:"model"`
-	Statement              string    `json:"statement"`
-	Imports                []string  `json:"imports"`
-	Messages               []Message `json:"messages"`
-	MaxOutputTokens        int       `json:"max_output_tokens"`
-	TimeoutSeconds         int       `json:"timeout_seconds"`
-	ParentAttemptID        *string   `json:"parent_attempt_id"`
-	RepairDepth            int       `json:"repair_depth"`
+	ID                     string             `json:"id"`
+	Kind                   string             `json:"kind"`
+	Model                  string             `json:"model"`
+	Statement              string             `json:"statement"`
+	Imports                []string           `json:"imports"`
+	Messages               []Message          `json:"messages"`
+	MaxOutputTokens        int                `json:"max_output_tokens"`
+	TimeoutSeconds         int                `json:"timeout_seconds"`
+	ParentAttemptID        *string            `json:"parent_attempt_id"`
+	RepairDepth            int                `json:"repair_depth"`
+	GenerationSettings     GenerationSettings `json:"generation_settings,omitempty"`
 	messagesPresent        bool
 	parentAttemptIDPresent bool
 	repairDepthPresent     bool
+}
+
+// GenerationSettings is the bounded v1 set of optional provider controls.
+type GenerationSettings struct {
+	Temperature *float64 `json:"temperature,omitempty"`
+	Seed        *int64   `json:"seed,omitempty"`
 }
 
 func (j *Job) UnmarshalJSON(data []byte) error {
@@ -48,6 +55,20 @@ func (j *Job) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*j = Job(decoded)
+	if raw, ok := fields["generation_settings"]; ok {
+		var settings map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &settings); err != nil || settings == nil {
+			return fmt.Errorf("job.generation_settings must be an object")
+		}
+		for key := range settings {
+			if key != "temperature" && key != "seed" {
+				return fmt.Errorf("unsupported job.generation_settings field %q", key)
+			}
+		}
+		if bytes.Equal(bytes.TrimSpace(settings["temperature"]), []byte("null")) || bytes.Equal(bytes.TrimSpace(settings["seed"]), []byte("null")) {
+			return fmt.Errorf("job.generation_settings values must not be null")
+		}
+	}
 	_, j.messagesPresent = fields["messages"]
 	_, j.parentAttemptIDPresent = fields["parent_attempt_id"]
 	_, j.repairDepthPresent = fields["repair_depth"]
@@ -89,16 +110,19 @@ type Output struct {
 // Generation describes the provider response, including failed extraction.
 // Model is provider-reported; the requested model remains on the job.
 type Generation struct {
-	RawResponse          string `json:"raw_response"`
-	RawResponseTruncated bool   `json:"raw_response_truncated,omitempty"`
-	Model                string `json:"model,omitempty"`
-	FinishReason         string `json:"finish_reason,omitempty"`
-	TotalDurationNS      *int64 `json:"total_duration_ns,omitempty"`
-	LoadDurationNS       *int64 `json:"load_duration_ns,omitempty"`
-	PromptEvalDurationNS *int64 `json:"prompt_eval_duration_ns,omitempty"`
-	EvalDurationNS       *int64 `json:"eval_duration_ns,omitempty"`
-	ContextLength        int    `json:"context_length,omitempty"`
-	MaxOutputTokens      int    `json:"max_output_tokens,omitempty"`
+	RawResponse          string   `json:"raw_response"`
+	RawResponseTruncated bool     `json:"raw_response_truncated,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	ModelDigest          string   `json:"model_digest,omitempty"`
+	Temperature          *float64 `json:"temperature,omitempty"`
+	Seed                 *int64   `json:"seed,omitempty"`
+	FinishReason         string   `json:"finish_reason,omitempty"`
+	TotalDurationNS      *int64   `json:"total_duration_ns,omitempty"`
+	LoadDurationNS       *int64   `json:"load_duration_ns,omitempty"`
+	PromptEvalDurationNS *int64   `json:"prompt_eval_duration_ns,omitempty"`
+	EvalDurationNS       *int64   `json:"eval_duration_ns,omitempty"`
+	ContextLength        int      `json:"context_length,omitempty"`
+	MaxOutputTokens      int      `json:"max_output_tokens,omitempty"`
 }
 
 type Execution struct {
@@ -167,11 +191,12 @@ type Executor interface {
 }
 
 type Worker struct {
-	URL      string
-	ID       string
-	Model    string
-	Client   *http.Client
-	Executor Executor
+	URL                        string
+	ID                         string
+	Model                      string
+	Client                     *http.Client
+	Executor                   Executor
+	SupportsGenerationSettings bool
 }
 
 const protocolVersion = 1
@@ -252,6 +277,12 @@ func (a Assignment) validate(workerModel string) error {
 	}
 	if a.Job.MaxOutputTokens <= 0 || a.Job.MaxOutputTokens > MaxOutputTokens {
 		return fmt.Errorf("job.max_output_tokens must be between 1 and %d", MaxOutputTokens)
+	}
+	if t := a.Job.GenerationSettings.Temperature; t != nil && (math.IsNaN(*t) || math.IsInf(*t, 0) || *t < 0 || *t > 2) {
+		return fmt.Errorf("job.generation_settings.temperature must be between 0 and 2")
+	}
+	if s := a.Job.GenerationSettings.Seed; s != nil && *s < 0 {
+		return fmt.Errorf("job.generation_settings.seed must be nonnegative")
 	}
 	if a.Job.TimeoutSeconds <= 0 || a.Job.TimeoutSeconds > MaxGenerationTimeoutSeconds {
 		return fmt.Errorf("job.timeout_seconds must be between 1 and %d", MaxGenerationTimeoutSeconds)
@@ -376,7 +407,11 @@ func (w *Worker) rejectAssignment(ctx context.Context, data []byte, cause error)
 // Once claims at most one job. It returns false when no compatible work exists.
 func (w *Worker) Once(ctx context.Context) (bool, error) {
 	var raw json.RawMessage
-	code, err := w.post(ctx, "/v1/claim", map[string]any{"worker_id": w.ID, "models": []string{w.Model}}, &raw)
+	claim := map[string]any{"worker_id": w.ID, "models": []string{w.Model}}
+	if w.SupportsGenerationSettings {
+		claim["capabilities"] = []string{"generation_settings"}
+	}
+	code, err := w.post(ctx, "/v1/claim", claim, &raw)
 	if err != nil {
 		return false, err
 	}

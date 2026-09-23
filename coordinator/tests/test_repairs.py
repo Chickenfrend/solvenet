@@ -191,7 +191,7 @@ class RepairTests(unittest.TestCase):
             {'model': 'scripted', 'count': 1, 'max_output_tokens': 256}])
         self.assertEqual([attempt['id'] for attempt in run['attempts']], ['t0', 't1'])
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 9)
             self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
             indexes = {row['name'] for row in db.execute("PRAGMA index_list('jobs')")}
             self.assertIn('jobs_status', indexes)
@@ -230,4 +230,6 @@ class RepairTests(unittest.TestCase):
                 db.execute("UPDATE jobs SET repair_depth=-1 WHERE id='j2'")
         with self.assertRaises(sqlite3.IntegrityError):
             with migrated.transaction() as db:
-                db.execute("INSERT INTO jobs VALUES ('duplicate', 'r', 'queued', 'scripted', 256, 4, 't1', 3, 321)")
+                db.execute("""INSERT INTO jobs (id, run_id, status, model, max_output_tokens,
+                           max_assignments, parent_attempt_id, repair_depth, generation_timeout_seconds)
+                           VALUES ('duplicate', 'r', 'queued', 'scripted', 256, 4, 't1', 3, 321)""")

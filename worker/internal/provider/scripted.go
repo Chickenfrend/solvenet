@@ -3,6 +3,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"solvenet/worker/internal/daemon"
@@ -14,7 +15,10 @@ type Scripted struct {
 	Delay time.Duration
 }
 
-func (s Scripted) Execute(ctx context.Context, _ daemon.Job) (daemon.Execution, error) {
+func (s Scripted) Execute(ctx context.Context, job daemon.Job) (daemon.Execution, error) {
+	if job.GenerationSettings.Seed != nil || job.GenerationSettings.Temperature != nil {
+		return daemon.Execution{}, daemon.Permanent(fmt.Errorf("scripted executor does not support generation_settings"))
+	}
 	timer := time.NewTimer(s.Delay)
 	defer timer.Stop()
 	select {

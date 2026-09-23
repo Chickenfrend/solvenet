@@ -27,6 +27,7 @@ from .store import (
     REJECTION_KINDS,
     Conflict,
     Store,
+    validate_settings,
 )
 from .verifier import (
     DEFAULT_LEAN_TIMEOUT_SECONDS,
@@ -64,16 +65,21 @@ def validate_generation(data):
     if not isinstance(generation, dict):
         raise ValueError('generation must be an object')
     strings = {'raw_response': limits.MAX_RAW_RESPONSE_BYTES,
-               'model': limits.MAX_MODEL_BYTES, 'finish_reason': limits.MAX_FINISH_REASON_BYTES}
+               'model': limits.MAX_MODEL_BYTES, 'finish_reason': limits.MAX_FINISH_REASON_BYTES,
+               'model_digest': 256}
     numbers = {'total_duration_ns', 'load_duration_ns', 'prompt_eval_duration_ns',
                'eval_duration_ns', 'context_length', 'max_output_tokens'}
     for key, value in generation.items():
         if key in strings:
             if not isinstance(value, str) or len(value.encode()) > strings[key]:
                 raise ValueError(f'generation.{key} must be a string of at most {strings[key]} bytes')
+            if key == 'model_digest' and not re.fullmatch(r'sha256:[0-9a-f]{64}', value):
+                raise ValueError('generation.model_digest must be a SHA-256 digest')
         elif key == 'raw_response_truncated':
             if type(value) is not bool:
                 raise ValueError('generation.raw_response_truncated must be boolean')
+        elif key in ('temperature', 'seed'):
+            validate_settings({key: value})
         elif key in numbers:
             if type(value) is not int or not 0 <= value <= 2**63 - 1:
                 raise ValueError(f'generation.{key} must be a nonnegative integer')
@@ -242,8 +248,9 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     return
                 if parts == ['v1', 'experiments']:
                     allowed = {'idempotency_key', 'set_id', 'version', 'sha256', 'strategy',
-                               'model', 'initial_jobs', 'attempts', 'max_repairs',
-                               'max_output_tokens', 'generation_timeout_seconds', 'max_assignments'}
+                                'model', 'initial_jobs', 'attempts', 'max_repairs',
+                                'max_output_tokens', 'generation_timeout_seconds', 'max_assignments',
+                                'generation_settings'}
                     unknown = set(data) - allowed
                     if unknown:
                         raise ValueError(f'Unknown experiment fields: {", ".join(sorted(unknown))}')
@@ -278,10 +285,14 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                                   data.get('generation_timeout_seconds', 120),
                                   'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
                               'max_assignments': integer(data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
-                                                         'max_assignments', MAX_ASSIGNMENTS)}
+                                                          'max_assignments', MAX_ASSIGNMENTS)}
+                    if 'generation_settings' in data:
+                        config['generation_settings'] = data['generation_settings']
                     experiment, created = coordinator.store.create_experiment(key, config, fixture.problems)
                     return self.respond(201 if created else 200, experiment)
                 if parts == ['v1', 'runs']:
+                    if 'generation_settings' in data and data['generation_settings'] is None:
+                        raise ValueError('generation_settings must be an object')
                     statement = text(data.get('statement'), 'statement', limits.MAX_STATEMENT_BYTES)
                     imports = data.get('imports', ['Init'])
                     if not isinstance(imports, list) or not 1 <= len(imports) <= limits.MAX_IMPORTS:
@@ -315,7 +326,8 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         max_assignments=integer(
                             data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
                             'max_assignments', MAX_ASSIGNMENTS),
-                        initial_jobs=initial_jobs))
+                        initial_jobs=initial_jobs,
+                        generation_settings=data.get('generation_settings')))
                 if parts == ['v1', 'claim']:
                     worker = text(data.get('worker_id'), 'worker_id', limits.MAX_IDENTIFIER_BYTES)
                     models = data.get('models')
@@ -323,7 +335,13 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         raise ValueError(f'models must be a nonempty list of up to {limits.MAX_CLAIM_MODELS} identifiers')
                     for model in models:
                         text(model, 'model', limits.MAX_MODEL_BYTES)
-                    claim = coordinator.store.claim(worker, models)
+                    capabilities = data.get('capabilities', [])
+                    if (not isinstance(capabilities, list) or
+                            capabilities not in ([], ['generation_settings'])):
+                        raise ValueError('capabilities must be [] or ["generation_settings"]')
+                    claim = coordinator.store.claim(
+                        worker, models,
+                        supports_generation_settings='generation_settings' in capabilities)
                     return self.respond(200 if claim else 204, claim)
                 if (len(parts) == 4 and parts[:2] == ['v1', 'assignments']
                         and self.identifier(parts[2])

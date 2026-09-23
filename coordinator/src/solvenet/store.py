@@ -109,6 +109,12 @@ ALTER TABLE verifications ADD COLUMN verified_at REAL;
 PRAGMA user_version = 8;
 """
 
+MIGRATION_9 = """
+ALTER TABLE runs ADD COLUMN generation_settings TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE jobs ADD COLUMN generation_settings TEXT NOT NULL DEFAULT '{}';
+PRAGMA user_version = 9;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
@@ -117,6 +123,25 @@ MAX_INITIAL_JOBS = 100
 FAILURE_CLASSES = ('transient', 'permanent')
 DEFAULT_FAILURE_CLASS = 'transient'
 REJECTION_KINDS = ('malformed_assignment', 'unsupported_protocol')
+
+
+def validate_settings(settings):
+    if not isinstance(settings, dict) or set(settings) - {'temperature', 'seed'}:
+        raise ValueError('generation_settings must contain only temperature and seed')
+    if 'temperature' in settings and (
+            type(settings['temperature']) not in (int, float) or
+            not 0 <= settings['temperature'] <= 2):
+        raise ValueError('generation_settings.temperature must be a number between 0 and 2')
+    if 'seed' in settings and (
+            type(settings['seed']) is not int or
+            not 0 <= settings['seed'] <= 2**63 - 1):
+        raise ValueError('generation_settings.seed must be an integer between 0 and 9223372036854775807')
+    return dict(settings)
+
+
+def validate_job_settings(groups, settings):
+    if settings and any(group['model'] == 'scripted' for group in groups):
+        raise ValueError('scripted model does not support generation_settings')
 
 
 def repair_feedback(candidate, diagnostics):
@@ -183,7 +208,10 @@ class Store:
             if version == 7:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_8 + "COMMIT;")
                 version = 8
-            if version != 8:
+            if version == 8:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_9 + "COMMIT;")
+                version = 9
+            if version != 9:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -209,13 +237,15 @@ class Store:
 
     def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
                 max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
-                max_assignments=DEFAULT_MAX_ASSIGNMENTS, *, initial_jobs=None):
+                max_assignments=DEFAULT_MAX_ASSIGNMENTS, *, initial_jobs=None, generation_settings=None):
         """Create initial jobs in request order; each repair inherits its parent job."""
         initial_jobs = self._validate_run(attempts, model, max_output_tokens, max_repairs,
                                           generation_timeout_seconds, max_assignments, initial_jobs)
+        settings = validate_settings(generation_settings if generation_settings is not None else {})
+        validate_job_settings(initial_jobs, settings)
         with self.transaction() as db:
             return self._insert_run(db, statement, imports, initial_jobs, max_repairs,
-                                    generation_timeout_seconds, max_assignments)
+                                    generation_timeout_seconds, max_assignments, generation_settings=settings)
 
     def _validate_run(self, attempts, model, max_output_tokens, max_repairs,
                       generation_timeout_seconds, max_assignments, initial_jobs):
@@ -262,22 +292,23 @@ class Store:
 
     def _insert_run(self, db, statement, imports, initial_jobs, max_repairs,
                     generation_timeout_seconds, max_assignments, experiment_id=None,
-                    fixture_problem_id=None):
+                    fixture_problem_id=None, generation_settings=None):
+        settings_json = json.dumps(generation_settings or {}, sort_keys=True)
         problem, run = identifier(), identifier()
         db.execute("INSERT INTO problems VALUES (?, ?, ?)", (problem, statement, json.dumps(imports)))
         db.execute("""INSERT INTO runs
           (id, problem_id, status, max_repairs, generation_timeout_seconds, max_assignments,
-           experiment_id, fixture_problem_id, created_at)
-           VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)""",
+           experiment_id, fixture_problem_id, created_at, generation_settings)
+           VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)""",
                    (run, problem, max_repairs, generation_timeout_seconds, max_assignments,
-                    experiment_id, fixture_problem_id, self.clock()))
+                    experiment_id, fixture_problem_id, self.clock(), settings_json))
         for group in initial_jobs:
             for _ in range(group['count']):
                 db.execute("""INSERT INTO jobs
-                  (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds)
-                  VALUES (?, ?, 'queued', ?, ?, ?, ?)""",
+                   (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds, generation_settings)
+                   VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)""",
                            (identifier(), run, group['model'], group['max_output_tokens'],
-                            max_assignments, generation_timeout_seconds))
+                            max_assignments, generation_timeout_seconds, settings_json))
         return {"problem_id": problem, "run_id": run}
 
     def create_experiment(self, idempotency_key, config, problems):
@@ -285,7 +316,11 @@ class Store:
         groups = self._validate_run(3, 'scripted', 2048, config['max_repairs'],
                                     config['generation_timeout_seconds'], config['max_assignments'],
                                     config['initial_jobs'])
+        settings = validate_settings(config.get('generation_settings', {}))
+        validate_job_settings(groups, settings)
         config = dict(config, initial_jobs=groups)
+        if 'generation_settings' in config:
+            config['generation_settings'] = settings
         serialized = json.dumps(config, sort_keys=True, separators=(',', ':'))
         with self.transaction() as db:
             existing = db.execute("SELECT id, config FROM experiments WHERE idempotency_key=?",
@@ -300,7 +335,7 @@ class Store:
             for problem in problems:
                 self._insert_run(db, problem.statement, problem.imports, groups,
                                  config['max_repairs'], config['generation_timeout_seconds'],
-                                 config['max_assignments'], experiment_id, problem.id)
+                                 config['max_assignments'], experiment_id, problem.id, settings)
             return self._experiment(db, experiment_id), True
 
     def _experiment(self, db, experiment_id):
@@ -353,7 +388,7 @@ class Store:
         with self.transaction() as db:
             self._expire(db)
 
-    def claim(self, worker_id, models):
+    def claim(self, worker_id, models, *, supports_generation_settings=False):
         with self.transaction() as db:
             self._expire(db)
             if not models:
@@ -363,7 +398,8 @@ class Store:
               JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
               WHERE j.status='queued' AND r.status='running'
               AND j.model IN ({placeholders})
-              ORDER BY j.rowid, j.id LIMIT 1""", tuple(models)).fetchone()
+              AND (? OR j.generation_settings='{{}}')
+              ORDER BY j.rowid, j.id LIMIT 1""", (*models, supports_generation_settings)).fetchone()
             if job is None:
                 return None
             assignment, token = identifier(), secrets.token_urlsafe(32)
@@ -385,8 +421,9 @@ class Store:
                              "statement": job['statement'], "imports": json.loads(job['imports']),
                              "parent_attempt_id": job['parent_attempt_id'], "repair_depth": job['repair_depth'],
                              "max_output_tokens": job['max_output_tokens'],
-                             "timeout_seconds": job['generation_timeout_seconds'],
-                             "messages": messages}}
+                              "timeout_seconds": job['generation_timeout_seconds'],
+                              "messages": messages,
+                              "generation_settings": json.loads(job['generation_settings'])}}
 
     def _assignment(self, db, assignment, token):
         row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment,)).fetchone()
@@ -485,12 +522,12 @@ class Store:
                 run = db.execute("SELECT * FROM runs WHERE id=?", (job['run_id'],)).fetchone()
                 if run['status'] == 'running' and job['repair_depth'] < run['max_repairs']:
                     db.execute("""INSERT INTO jobs
-                      (id, run_id, status, model, max_output_tokens, max_assignments,
-                       parent_attempt_id, repair_depth, generation_timeout_seconds)
-                      VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)""",
-                               (identifier(), job['run_id'], job['model'], job['max_output_tokens'],
+                       (id, run_id, status, model, max_output_tokens, max_assignments,
+                        parent_attempt_id, repair_depth, generation_timeout_seconds, generation_settings)
+                       VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)""",
+                                (identifier(), job['run_id'], job['model'], job['max_output_tokens'],
                                  job['max_assignments'], attempt, job['repair_depth'] + 1,
-                                 job['generation_timeout_seconds']))
+                                 job['generation_timeout_seconds'], job['generation_settings']))
             self._refresh(db)
 
     def run(self, run_id):
@@ -499,11 +536,14 @@ class Store:
             if run is None:
                 return None
             result = dict(run)
+            result['generation_settings'] = json.loads(result['generation_settings'])
             problem = db.execute("SELECT * FROM problems WHERE id=?", (run['problem_id'],)).fetchone()
             result['problem'] = dict(problem)
             result['problem']['imports'] = json.loads(problem['imports'])
             result['jobs'] = [dict(r) for r in db.execute(
                 "SELECT * FROM jobs WHERE run_id=? ORDER BY rowid, id", (run_id,))]
+            for job in result['jobs']:
+                job['generation_settings'] = json.loads(job['generation_settings'])
             # Initial rows retain the selected model/budget and insertion order.
             # Adjacent identical groups are equivalent, so no separate run-level
             # strategy column is needed (including for pre-existing databases).
