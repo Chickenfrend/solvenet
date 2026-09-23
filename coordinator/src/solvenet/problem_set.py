@@ -12,6 +12,11 @@ from pathlib import Path
 
 
 DEFAULT_SET = Path(__file__).resolve().parents[3] / "problems" / "core-v1.json"
+# Only these checked-in files can be selected through the experiment API.
+EXPERIMENT_SETS = {
+    ("core", 1): DEFAULT_SET,
+    ("challenge", 1): DEFAULT_SET.parent / "challenge-v1.json",
+}
 MODULE = re.compile(r"[A-Za-z_][A-Za-z0-9_'.]*\Z")
 ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
@@ -106,6 +111,19 @@ def load(path: Path = DEFAULT_SET) -> ProblemSet:
         ))
     return ProblemSet(set_id, version, environment, hashlib.sha256(content).hexdigest(),
                       tuple(problems))
+
+
+def load_experiment_set(set_id: object, version: object, sha256: object) -> ProblemSet:
+    """Select a known local fixture by identity, never by a client-supplied path."""
+    if type(set_id) is not str or type(version) is not int:
+        raise ValueError("Unknown or changed checked-in problem set/version/hash")
+    path = EXPERIMENT_SETS.get((set_id, version))
+    if path is None:
+        raise ValueError("Unknown or changed checked-in problem set/version/hash")
+    fixture = load(path)
+    if (fixture.set_id, fixture.version, fixture.sha256) != (set_id, version, sha256):
+        raise ValueError("Unknown or changed checked-in problem set/version/hash")
+    return fixture
 
 
 def main() -> int:

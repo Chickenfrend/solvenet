@@ -2,8 +2,10 @@
 
 ## Versioned experiments
 
-The coordinator loads the checked-in `problems/core-v1.json` itself. Start all
-runs for the set in one request (substitute the exact SHA-256 of the fixture):
+The coordinator selects the checked-in `problems/core-v1.json` (`core`, version
+`1`) or `problems/challenge-v1.json` (`challenge`, version `1`) by set ID and
+version. Start all runs for the selected set in one request (substitute the
+exact SHA-256 of its fixture):
 
 ```sh
 sha256sum problems/core-v1.json
@@ -11,6 +13,12 @@ curl -X POST http://127.0.0.1:8080/v1/experiments \
   -H 'Content-Type: application/json' \
   -d '{"idempotency_key":"core-repair-001","set_id":"core","version":1,"sha256":"<sha256>","strategy":"repair","model":"ollama/qwen2.5-coder:7b"}'
 ```
+
+For the harder challenge set, use `sha256sum problems/challenge-v1.json` and
+send `"set_id":"challenge","version":1` with its hash and a distinct
+idempotency key. Submit separate independent and repair experiments against
+the same hash to compare strategies. The API uses an explicit checked-in set
+allowlist and does not accept fixture paths from requests.
 
 `strategy: "independent"` defaults to 3 initial chains and 0 repairs;
 `"repair"` defaults to 1 initial chain and up to 2 repairs. Each default

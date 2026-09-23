@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from solvenet.problem_set import DEFAULT_SET, load, main
+from solvenet.problem_set import DEFAULT_SET, EXPERIMENT_SETS, load, load_experiment_set, main
 from solvenet.verifier import LeanVerifier, VerificationStatus
 
 
@@ -70,6 +70,29 @@ class ProblemSetTests(unittest.TestCase):
                 path.write_text(json.dumps(data))
                 with self.assertRaisesRegex(ValueError, error):
                     load(path)
+
+    def test_checked_in_experiment_set_selection(self):
+        for (set_id, version), path in EXPERIMENT_SETS.items():
+            with self.subTest(set_id=set_id):
+                fixture = load(path)
+                self.assertEqual(load_experiment_set(set_id, version, fixture.sha256), fixture)
+                with self.assertRaisesRegex(ValueError, "Unknown or changed"):
+                    load_experiment_set(set_id, version, "0" * 64)
+        for set_id, version in (("unknown", 1), ("challenge", 2), ("challenge", True)):
+            with self.assertRaisesRegex(ValueError, "Unknown or changed"):
+                load_experiment_set(set_id, version, "0" * 64)
+
+    def test_challenge_references_with_real_lean(self):
+        self.assertIsNotNone(shutil.which("lake"), "Put the pinned Lean lake on PATH")
+        fixture = load(EXPERIMENT_SETS[("challenge", 1)])
+        self.assertEqual(len(fixture.problems), 12)
+        self.assertEqual(fixture.environment, (ROOT / "lean" / "lean-toolchain").read_text().strip())
+        verifier = LeanVerifier(ROOT / "lean")
+        for problem in fixture.problems:
+            with self.subTest(id=problem.id):
+                result = verifier.verify(problem.statement, problem.reference_proof,
+                                         imports=problem.imports)
+                self.assertEqual(result.status, VerificationStatus.VERIFIED, result.diagnostics)
 
 
 @unittest.skipUnless(shutil.which("lake"), "Lake is not installed")

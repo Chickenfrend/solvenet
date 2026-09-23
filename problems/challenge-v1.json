@@ -1,0 +1,103 @@
+{
+  "set_id": "challenge",
+  "version": 1,
+  "environment": "leanprover/lean4:v4.19.0",
+  "problems": [
+    {
+      "id": "and-or-distribute",
+      "title": "Conjunction distributes over disjunction",
+      "category": "propositional",
+      "statement": "(p q r : Prop) : p ∧ (q ∨ r) ↔ (p ∧ q) ∨ (p ∧ r)",
+      "imports": ["Init"],
+      "reference_proof": "constructor\n· intro ⟨hp, h⟩\n  cases h with\n  | inl hq => exact Or.inl ⟨hp, hq⟩\n  | inr hr => exact Or.inr ⟨hp, hr⟩\n· intro h\n  cases h with\n  | inl hpq => exact ⟨hpq.1, Or.inl hpq.2⟩\n  | inr hpr => exact ⟨hpr.1, Or.inr hpr.2⟩"
+    },
+    {
+      "id": "contrapositive-iff",
+      "title": "Equivalence transports negation",
+      "category": "propositional",
+      "statement": "(p q : Prop) : (p ↔ q) → (¬p ↔ ¬q)",
+      "imports": ["Init"],
+      "reference_proof": "intro h\nconstructor\n· intro hnp hq\n  exact hnp (h.mpr hq)\n· intro hnq hp\n  exact hnq (h.mp hp)"
+    },
+    {
+      "id": "exists-and-distribute",
+      "title": "Existential distributes over a fixed conjunct",
+      "category": "quantifiers",
+      "statement": "(α : Type) (p : α → Prop) (q : Prop) : (∃ x, p x ∧ q) ↔ (∃ x, p x) ∧ q",
+      "imports": ["Init"],
+      "reference_proof": "constructor\n· intro ⟨x, hpx, hq⟩\n  exact ⟨⟨x, hpx⟩, hq⟩\n· intro ⟨⟨x, hpx⟩, hq⟩\n  exact ⟨x, hpx, hq⟩"
+    },
+    {
+      "id": "forall-imp-compose",
+      "title": "Pointwise implications compose",
+      "category": "quantifiers",
+      "statement": "(α : Type) (p q r : α → Prop) : (∀ x, p x → q x) → (∀ x, q x → r x) → ∀ x, p x → r x",
+      "imports": ["Init"],
+      "reference_proof": "intro hpq hqr x hpx\nexact hqr x (hpq x hpx)"
+    },
+    {
+      "id": "nat-add-succ-swap",
+      "title": "Swap successors on either side of a sum",
+      "category": "arithmetic",
+      "statement": "(a b : Nat) : Nat.succ a + b = a + Nat.succ b",
+      "imports": ["Init"],
+      "reference_proof": "rw [Nat.succ_add, Nat.add_succ]"
+    },
+    {
+      "id": "nat-mul-add-distribute",
+      "title": "Multiply a sum by a natural number",
+      "category": "arithmetic",
+      "statement": "(a b c : Nat) : a * (b + c) = a * b + a * c",
+      "imports": ["Init"],
+      "reference_proof": "induction c with\n| zero => simp\n| succ c ih =>\n  rw [Nat.add_succ, Nat.mul_succ, ih, Nat.mul_succ, Nat.add_assoc]"
+    },
+    {
+      "id": "nat-add-cancel",
+      "title": "Cancel the same summand on the right",
+      "category": "arithmetic",
+      "statement": "(a b c : Nat) : a + c = b + c → a = b",
+      "imports": ["Init"],
+      "reference_proof": "intro h\ninduction c with\n| zero => simpa using h\n| succ c ih =>\n  apply ih\n  rw [Nat.add_succ, Nat.add_succ] at h\n  exact Nat.succ.inj h"
+    },
+    {
+      "id": "list-append-assoc",
+      "title": "List append is associative",
+      "category": "lists",
+      "statement": "(α : Type) (xs ys zs : List α) : (xs ++ ys) ++ zs = xs ++ (ys ++ zs)",
+      "imports": ["Init"],
+      "reference_proof": "induction xs with\n| nil => rfl\n| cons x xs ih => simp [List.append, ih]"
+    },
+    {
+      "id": "list-map-append",
+      "title": "Mapping distributes over append",
+      "category": "lists",
+      "statement": "(α β : Type) (f : α → β) (xs ys : List α) : (xs ++ ys).map f = xs.map f ++ ys.map f",
+      "imports": ["Init"],
+      "reference_proof": "induction xs with\n| nil => rfl\n| cons x xs ih => simp [List.append, List.map, ih]"
+    },
+    {
+      "id": "list-reverse-append",
+      "title": "Reversing append swaps its operands",
+      "category": "lists",
+      "statement": "(α : Type) (xs ys : List α) : (xs ++ ys).reverse = ys.reverse ++ xs.reverse",
+      "imports": ["Init"],
+      "reference_proof": "induction xs with\n| nil => simp\n| cons x xs ih => simp [List.reverse_cons, ih, List.append_assoc]"
+    },
+    {
+      "id": "list-length-reverse",
+      "title": "Reversing a list preserves length",
+      "category": "lists",
+      "statement": "(α : Type) (xs : List α) : xs.reverse.length = xs.length",
+      "imports": ["Init"],
+      "reference_proof": "induction xs with\n| nil => rfl\n| cons x xs ih => simp [List.reverse_cons, List.length_append, ih]"
+    },
+    {
+      "id": "bool-xor-assoc",
+      "title": "Exclusive or is associative",
+      "category": "booleans",
+      "statement": "(a b c : Bool) : (xor (xor a b) c) = xor a (xor b c)",
+      "imports": ["Init"],
+      "reference_proof": "cases a <;> cases b <;> cases c <;> rfl"
+    }
+  ]
+}

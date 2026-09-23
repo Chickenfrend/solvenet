@@ -11,7 +11,7 @@ from urllib.parse import unquote_to_bytes, urlsplit
 
 from . import protocol_limits as limits
 from .experiment_summary import markdown
-from .problem_set import load as load_problem_set
+from .problem_set import load_experiment_set
 from .sandbox import (
     DEFAULT_CONTAINER_TIMEOUT_SECONDS,
     ContainerVerifier,
@@ -255,10 +255,8 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     if unknown:
                         raise ValueError(f'Unknown experiment fields: {", ".join(sorted(unknown))}')
                     key = text(data.get('idempotency_key'), 'idempotency_key', 256)
-                    fixture = load_problem_set()
-                    if (data.get('set_id'), data.get('version'), data.get('sha256')) != (
-                            fixture.set_id, fixture.version, fixture.sha256):
-                        raise ValueError('Unknown or changed checked-in problem set/version/hash')
+                    fixture = load_experiment_set(data.get('set_id'), data.get('version'),
+                                                  data.get('sha256'))
                     strategy = data.get('strategy')
                     if strategy not in ('independent', 'repair'):
                         raise ValueError('strategy must be independent or repair')

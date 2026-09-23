@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from solvenet.problem_set import load
+from solvenet.problem_set import EXPERIMENT_SETS, load
 from solvenet.server import Coordinator, make_server
 from solvenet.store import (MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5,
                             MIGRATION_6, MIGRATION_7, SCHEMA, Store)
@@ -87,6 +87,31 @@ class ExperimentsTest(unittest.TestCase):
             with self.subTest(update=update):
                 self.assertEqual(self.request('/v1/experiments', independent | update)[0], 400)
         self.assertEqual(self.request('/v1/experiments', independent | {'model': 'other'})[0], 409)
+        self.assertEqual(self.request('/v1/runs', {'statement': ': True'})[0], 201)
+
+    def test_challenge_persists_without_reference_proofs(self):
+        challenge = load(EXPERIMENT_SETS[('challenge', 1)])
+        config = self.config('independent')
+        config.update(idempotency_key='challenge-independent', set_id=challenge.set_id,
+                      version=challenge.version, sha256=challenge.sha256)
+        status, experiment = self.request('/v1/experiments', config)
+        self.assertEqual(status, 201)
+        self.assertEqual(experiment['config']['set_id'], 'challenge')
+        self.assertEqual([run['problem_id'] for run in experiment['runs']],
+                         [problem.id for problem in challenge.problems])
+        self.assertEqual(self.request('/v1/experiments', config), (200, experiment))
+        self.assertEqual(self.store.experiment(experiment['id']), experiment)
+        claim = self.store.claim('worker', ['scripted'])
+        self.assertEqual(claim['job']['statement'], challenge.problems[0].statement)
+        self.assertNotIn('reference_proof', json.dumps(claim))
+        with sqlite3.connect(self.path) as db:
+            persisted = db.execute('SELECT p.statement, p.imports FROM problems p '
+                                   'JOIN runs r ON r.problem_id=p.id WHERE r.id=?',
+                                   (experiment['runs'][0]['run_id'],)).fetchone()
+            self.assertEqual(persisted, (challenge.problems[0].statement, '["Init"]'))
+        self.assertNotIn(challenge.problems[0].reference_proof.encode(), self.path.read_bytes())
+        self.assertEqual(self.request('/v1/experiments', config | {'set_id': '../challenge'})[0], 400)
+        self.assertEqual(self.request('/v1/experiments', config | {'sha256': '0' * 64})[0], 400)
         self.assertEqual(self.request('/v1/runs', {'statement': ': True'})[0], 201)
 
     def test_generation_settings_on_experiment_and_ad_hoc_runs(self):
