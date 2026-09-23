@@ -91,7 +91,7 @@ curl -sS http://127.0.0.1:11434/api/version
 
 Restart the coordinator with the current code (Ctrl-C in its terminal, then the
 same start command). Existing SQLite databases migrate automatically to schema
-3, preserving previous results. Upgrade the coordinator before the worker
+5, preserving previous results. Upgrade the coordinator before the worker
 so generation metadata is retained. The Lean verifier image does not need to be
 rebuilt for this adapter change.
 
@@ -182,9 +182,12 @@ still exceed the configured model context.
 Only a Lean `rejected` outcome creates a repair. Success stops the run;
 `verifier_error` stops it with an error; verification timeout ends that chain.
 Provider/formatting failures and lost leases use the existing bounded assignment
-retries on the same job rather than creating a repair. Thus a three-job chain
-can involve more than three model calls if execution fails. Each job allows at
-most three assignments, so at most nine dispatches for this example.
+retries on the same job rather than creating a repair. Set `max_assignments` from
+1–100 on run submission to choose that per-job limit (default 3). Initial and
+repair jobs persist the same setting. Thus a three-job chain can involve more than
+three model calls if execution fails; with the default, it allows at most nine
+dispatches. In general the bound is
+`attempts * (1 + max_repairs) * max_assignments`.
 
 Repairs are opt-in: `max_repairs` defaults to 0 and accepts 0–2. `attempts` means
 the number of initial independent chains. To compare strategies, use

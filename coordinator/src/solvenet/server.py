@@ -12,7 +12,13 @@ from .sandbox import (
     ContainerVerifier,
     ContainerVerifierConfig,
 )
-from .store import MAX_GENERATION_TIMEOUT_SECONDS, Conflict, Store
+from .store import (
+    DEFAULT_MAX_ASSIGNMENTS,
+    MAX_ASSIGNMENTS,
+    MAX_GENERATION_TIMEOUT_SECONDS,
+    Conflict,
+    Store,
+)
 from .verifier import (
     DEFAULT_LEAN_TIMEOUT_SECONDS,
     LeanVerifier,
@@ -140,7 +146,10 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         max_repairs=data.get('max_repairs', 0),
                         generation_timeout_seconds=integer(
                             data.get('generation_timeout_seconds', 120),
-                            'generation_timeout_seconds', MAX_GENERATION_TIMEOUT_SECONDS)))
+                            'generation_timeout_seconds', MAX_GENERATION_TIMEOUT_SECONDS),
+                        max_assignments=integer(
+                            data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
+                            'max_assignments', MAX_ASSIGNMENTS)))
                 if self.path == '/v1/claim':
                     worker = text(data.get('worker_id'), 'worker_id', 256)
                     models = data.get('models')

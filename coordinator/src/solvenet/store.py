@@ -52,8 +52,15 @@ ALTER TABLE jobs ADD COLUMN generation_timeout_seconds INTEGER NOT NULL DEFAULT 
 PRAGMA user_version = 4;
 """
 
+MIGRATION_5 = """
+ALTER TABLE runs ADD COLUMN max_assignments INTEGER NOT NULL DEFAULT 3 CHECK (max_assignments BETWEEN 1 AND 100);
+PRAGMA user_version = 5;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 MAX_GENERATION_TIMEOUT_SECONDS = 24 * 60 * 60
+DEFAULT_MAX_ASSIGNMENTS = 3
+MAX_ASSIGNMENTS = 100
 
 
 def repair_feedback(candidate, diagnostics):
@@ -93,7 +100,10 @@ class Store:
             if version == 3:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_4 + "COMMIT;")
                 version = 4
-            if version != 4:
+            if version == 4:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_5 + "COMMIT;")
+                version = 5
+            if version != 5:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -118,24 +128,28 @@ class Store:
                 raise
 
     def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
-               max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS):
+               max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
+               max_assignments=DEFAULT_MAX_ASSIGNMENTS):
         if type(max_repairs) is not int or not 0 <= max_repairs <= 2:
             raise ValueError('max_repairs must be an integer between 0 and 2')
         if (type(generation_timeout_seconds) is not int or
                 not 1 <= generation_timeout_seconds <= MAX_GENERATION_TIMEOUT_SECONDS):
             raise ValueError('generation_timeout_seconds must be an integer between 1 and 86400')
+        if type(max_assignments) is not int or not 1 <= max_assignments <= MAX_ASSIGNMENTS:
+            raise ValueError(f'max_assignments must be an integer between 1 and {MAX_ASSIGNMENTS}')
         problem, run = identifier(), identifier()
         with self.transaction() as db:
             db.execute("INSERT INTO problems VALUES (?, ?, ?)", (problem, statement, json.dumps(imports)))
             db.execute("""INSERT INTO runs
-              (id, problem_id, status, max_repairs, generation_timeout_seconds)
-              VALUES (?, ?, 'running', ?, ?)""",
-                       (run, problem, max_repairs, generation_timeout_seconds))
+              (id, problem_id, status, max_repairs, generation_timeout_seconds, max_assignments)
+              VALUES (?, ?, 'running', ?, ?, ?)""",
+                       (run, problem, max_repairs, generation_timeout_seconds, max_assignments))
             for _ in range(attempts):
                 db.execute("""INSERT INTO jobs
                   (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds)
-                  VALUES (?, ?, 'queued', ?, ?, 3, ?)""",
-                           (identifier(), run, model, max_output_tokens, generation_timeout_seconds))
+                  VALUES (?, ?, 'queued', ?, ?, ?, ?)""",
+                           (identifier(), run, model, max_output_tokens, max_assignments,
+                            generation_timeout_seconds))
         return {"problem_id": problem, "run_id": run}
 
     def _refresh(self, db):

@@ -121,8 +121,9 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 4)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 5)
         self.assertEqual(run['generation_timeout_seconds'], 120)
+        self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
         # Opening again must not repeat ALTER TABLE; new work must still function.
         migrated = Store(path, clock=lambda: self.now)
@@ -150,6 +151,27 @@ class StoreTests(unittest.TestCase):
         run = restarted.run(run_id)
         self.assertEqual(run['generation_timeout_seconds'], 321)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 321)
+
+    def test_custom_assignment_limit_is_persisted_across_restart(self):
+        # Leave the default job assigned so the custom queued job is claimed next.
+        self.store.claim('other-worker', ['scripted'])
+        run_id = self.store.submit(': True', ['Init'], attempts=1, max_assignments=2)['run_id']
+        restarted = Store(self.path, clock=lambda: self.now)
+        claim = restarted.claim('worker', ['scripted'])
+        restarted.result(claim['assignment_id'], {
+            'lease_token': claim['lease_token'], 'status': 'failed',
+            'error': 'provider unavailable'})
+        restarted = Store(self.path, clock=lambda: self.now)
+        claim = restarted.claim('worker', ['scripted'])
+        restarted.result(claim['assignment_id'], {
+            'lease_token': claim['lease_token'], 'status': 'failed',
+            'error': 'provider unavailable'})
+        self.assertIsNone(restarted.claim('worker', ['scripted']))
+        run = Store(self.path).run(run_id)
+        self.assertEqual(run['max_assignments'], 2)
+        self.assertEqual(run['jobs'][0]['max_assignments'], 2)
+        self.assertEqual(len(run['assignments']), 2)
+        self.assertEqual(run['status'], 'exhausted')
 
 
 class APITests(unittest.TestCase):
@@ -188,8 +210,14 @@ class APITests(unittest.TestCase):
                 'statement': ': True', 'generation_timeout_seconds': invalid})
             self.assertEqual(code, 400)
             self.assertIn('generation_timeout_seconds', error['error'])
+        for invalid in (0, 101, True, '3', None, 1.5):
+            code, error = self.request('/v1/runs', {
+                'statement': ': True', 'max_assignments': invalid})
+            self.assertEqual(code, 400)
+            self.assertIn('max_assignments', error['error'])
         code, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n',
-                                             'attempts': 1, 'generation_timeout_seconds': 321})
+                                             'attempts': 1, 'generation_timeout_seconds': 321,
+                                             'max_assignments': 2})
         self.assertEqual(code, 201)
         self.assertEqual(self.request('/v1/claim', {'worker_id': 'w', 'models': ['unknown']})[0], 204)
         _, a = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})
@@ -203,7 +231,9 @@ class APITests(unittest.TestCase):
         outcome = self.request('/v1/runs/' + run['run_id'])[1]
         self.assertEqual(outcome['status'], 'solved')
         self.assertEqual(outcome['generation_timeout_seconds'], 321)
+        self.assertEqual(outcome['max_assignments'], 2)
         self.assertEqual(outcome['jobs'][0]['generation_timeout_seconds'], 321)
+        self.assertEqual(outcome['jobs'][0]['max_assignments'], 2)
 
     def test_failed_generation_metadata_validation_and_retention(self):
         _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1})

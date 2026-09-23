@@ -21,7 +21,7 @@ class RepairTests(unittest.TestCase):
         self.store = Store(self.path, clock=lambda: self.now)
         self.run = self.store.submit('(n : Nat) : n + 0 = n', ['Init'], attempts=1,
                                      model='ollama/test', max_output_tokens=256, max_repairs=2,
-                                     generation_timeout_seconds=321)['run_id']
+                                     generation_timeout_seconds=321, max_assignments=2)['run_id']
 
     def claim(self):
         return self.store.claim('test-worker', ['ollama/test'])
@@ -47,6 +47,7 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(repair['repair_depth'], 1)
         self.assertEqual(repair['model'], first['job']['model'])
         self.assertEqual(repair['max_output_tokens'], 256)
+        self.assertEqual(self.store.run(self.run)['jobs'][1]['max_assignments'], 2)
         self.assertEqual(repair['timeout_seconds'], 321)
         self.assertEqual(repair['statement'], first['job']['statement'])
         self.assertEqual(repair['imports'], ['Init'])
@@ -101,10 +102,6 @@ class RepairTests(unittest.TestCase):
         self.assertNotEqual(retry['assignment_id'], repair['assignment_id'])
         # An expired repair assignment is also retried without increasing depth.
         self.now += 31
-        retry2 = self.claim()
-        self.assertEqual(retry2['job'], repair['job'])
-        self.store.result(retry2['assignment_id'], {'lease_token': retry2['lease_token'],
-                          'status': 'failed', 'error': 'still unavailable'})
         self.assertIsNone(self.claim())
         self.assertEqual(self.store.run(self.run)['status'], 'exhausted')
         self.assertEqual(len(self.store.run(self.run)['jobs']), 2)
