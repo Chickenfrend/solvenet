@@ -4,6 +4,10 @@ This is a project that's intended to get me more familiar with LLM harnesses.
 
 The idea is for this to be something like folding@home but for lean proofs with LLM agents collaborating to work on the same project.
 
+This is also shamelessly vibecoded. This is my first project like this. Other projects have been AI assisted, but not vibecoded to this degree. I figure the models are good enough now I should try this workflow out outside of work.
+
+The rest of this README after this section is AI generated.
+
 ## Current prototype
 
 A Python coordinator stores proof-generation jobs and bounded repair chains in SQLite. A Go
