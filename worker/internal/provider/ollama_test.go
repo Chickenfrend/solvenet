@@ -35,7 +35,7 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Model != "qwen2.5-coder:7b" || request.Stream || request.Options.Predict != 256 || request.Options.Context != 4096 {
+		if request.Model != "qwen2.5-coder:7b" || request.Stream || request.Options.Predict != 256 || request.Options.Context != 8192 {
 			t.Errorf("wrong model/options: %+v", request)
 		}
 		if request.Format.Type != "object" || len(request.Format.Required) != 1 || request.Format.Required[0] != "proof" || request.Format.Additional {
@@ -51,7 +51,7 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	o, err := NewOllama(server.URL, "qwen2.5-coder:7b")
+	o, err := NewOllama(server.URL, "qwen2.5-coder:7b", 8192)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "rfl" || *result.Usage["input_tokens"] != 52 || *result.Usage["output_tokens"] != 12 || result.Generation.Model != "qwen2.5-coder:7b-reported" || result.Generation.FinishReason != "stop" || *result.Generation.EvalDurationNS != 300 || !strings.Contains(result.Generation.RawResponse, "```lean") {
+	if result.Text != "rfl" || *result.Usage["input_tokens"] != 52 || *result.Usage["output_tokens"] != 12 || result.Generation.Model != "qwen2.5-coder:7b-reported" || result.Generation.FinishReason != "stop" || result.Generation.ContextLength != 8192 || result.Generation.MaxOutputTokens != 256 || *result.Generation.EvalDurationNS != 300 || !strings.Contains(result.Generation.RawResponse, "```lean") {
 		t.Fatalf("lost output/metadata: %+v", result)
 	}
 }
@@ -114,13 +114,16 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(test.status); w.Write([]byte(test.body)) }))
 			defer server.Close()
-			o, _ := NewOllama(server.URL, "test")
+			o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
 			result, err := o.Execute(context.Background(), daemon.Job{MaxOutputTokens: 10})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("err=%v", err)
 			}
 			if result.Generation == nil || result.Generation.RawResponse == "" || len(result.Generation.RawResponse) > maxRawResponse {
 				t.Fatal("missing or unbounded raw response")
+			}
+			if result.Generation.ContextLength != DefaultOllamaContext || result.Generation.MaxOutputTokens != 10 {
+				t.Fatalf("request metadata disagrees with options: %+v", result.Generation)
 			}
 			if test.name == "invalid-proof" && *result.Usage["output_tokens"] != 7 {
 				t.Fatal("lost usage on failure")
@@ -141,7 +144,7 @@ func TestOllamaCancellation(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	o, _ := NewOllama(server.URL, "test")
+	o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -163,9 +166,33 @@ func TestOllamaMissingUsageAndLengthFinish(t *testing.T) {
 		w.Write([]byte(`{"done":true,"done_reason":"length","message":{"content":"{\"proof\":\"rfl\"}"}}`))
 	}))
 	defer server.Close()
-	o, _ := NewOllama(server.URL, "test")
+	o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
 	result, err := o.Execute(context.Background(), daemon.Job{MaxOutputTokens: 10})
 	if err != nil || result.Text != "rfl" || result.Usage["input_tokens"] != nil || result.Generation.FinishReason != "length" {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestOllamaContextValidation(t *testing.T) {
+	for _, contextSize := range []int{0, -1, MaxOllamaContext + 1} {
+		if _, err := NewOllama("http://localhost:11434", "test", contextSize); err == nil || !strings.Contains(err.Error(), "ollama-context") {
+			t.Fatalf("context=%d err=%v", contextSize, err)
+		}
+	}
+	if _, err := NewOllama("http://localhost:11434", "test", MaxOllamaContext); err != nil {
+		t.Fatalf("maximum context rejected: %v", err)
+	}
+}
+
+func TestOllamaRejectsIncompatibleOutputBudget(t *testing.T) {
+	o, err := NewOllama("http://localhost:11434", "test", 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, outputTokens := range []int{256, 257} {
+		_, err := o.Execute(context.Background(), daemon.Job{MaxOutputTokens: outputTokens})
+		if err == nil || !strings.Contains(err.Error(), "job.max_output_tokens") || !strings.Contains(err.Error(), "-ollama-context") {
+			t.Fatalf("output=%d err=%v", outputTokens, err)
+		}
 	}
 }

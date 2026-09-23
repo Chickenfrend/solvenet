@@ -97,7 +97,8 @@ RUN_ID=$(curl -fsS http://127.0.0.1:8080/v1/runs \
 
 (cd worker && go run ./cmd/solvenet-worker \
   -provider ollama -model qwen2.5-coder:7b \
-  -ollama-url http://127.0.0.1:11434 -id archdeepthought -once)
+  -ollama-url http://127.0.0.1:11434 -ollama-context 8192 \
+  -id archdeepthought -once)
 
 curl -fsS "http://127.0.0.1:8080/v1/runs/$RUN_ID" | python3 -m json.tool
 ```
@@ -112,7 +113,13 @@ process bounded retries. A model that emits an invalid tactic gives a completed,
 rejected attempt, not an executor error.
 
 The adapter uses `/api/chat` with a JSON schema requiring `{"proof":"..."}`,
-the job's output-token limit, and a 4096-token context. Set
+the job's output-token limit, and the context selected by `-ollama-context`
+(default 4096 tokens; valid range 1–1048576). The same context is sent as
+Ollama's `num_ctx` and recorded as `generation.context_length`. A job is rejected
+before contacting Ollama when `max_output_tokens` is greater than or equal to the
+context size, because the nonempty prompt also needs context space. Choose a
+larger context or a smaller output budget. For smaller output budgets, Ollama is
+responsible for fitting or truncating the prompt within the selected context. Set
 `generation_timeout_seconds` on run submission to choose a 1–86400 second
 generation deadline (default 120); a cold model load counts toward that deadline.
 The coordinator persists the policy on each job, including repairs, and run
@@ -160,8 +167,8 @@ The run reports `max_repairs`; jobs and attempts report `repair_depth` (0, 1, 2)
 and `parent_attempt_id`. Each repair receives the original problem, previous
 candidate, and up to 8 KiB of that attempt's Lean diagnostics. Full diagnostics
 remain stored. Repair feedback is the final model message and explicitly asks the
-model not to repeat the rejected candidate unchanged. Long problems/proofs can still exceed the model's 4096-token
-context; this first experiment is intended for short theorem problems.
+model not to repeat the rejected candidate unchanged. Long problems/proofs can
+still exceed the configured model context.
 
 Only a Lean `rejected` outcome creates a repair. Success stops the run;
 `verifier_error` stops it with an error; verification timeout ends that chain.

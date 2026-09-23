@@ -18,6 +18,9 @@ import (
 const maxOllamaResponse = 1024 * 1024
 const maxRawResponse = 128 * 1024
 
+const DefaultOllamaContext = 4096
+const MaxOllamaContext = 1024 * 1024
+
 const proofInstructions = `Return a JSON object with exactly one field, "proof".
 The proof must contain only Lean 4 tactic commands that belong after "by".
 Do not include the enclosing "by", a theorem/example/def declaration, Markdown fences, or explanation.
@@ -25,12 +28,13 @@ Do not use sorry or admit. The coordinator will check the proof against the orig
 
 // Ollama uses a locally configured endpoint and model, never a URL from a job.
 type Ollama struct {
-	URL    string
-	Model  string
-	Client *http.Client
+	URL         string
+	Model       string
+	ContextSize int
+	Client      *http.Client
 }
 
-func NewOllama(baseURL, model string) (*Ollama, error) {
+func NewOllama(baseURL, model string, contextSize int) (*Ollama, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("ollama-url must be an HTTP(S) URL without credentials, query, or fragment")
@@ -38,7 +42,10 @@ func NewOllama(baseURL, model string) (*Ollama, error) {
 	if strings.TrimSpace(model) == "" || len("ollama/"+model) > 256 {
 		return nil, fmt.Errorf("model must be nonempty and at most 249 bytes")
 	}
-	return &Ollama{URL: strings.TrimRight(baseURL, "/"), Model: model,
+	if contextSize <= 0 || contextSize > MaxOllamaContext {
+		return nil, fmt.Errorf("ollama-context must be between 1 and %d tokens", MaxOllamaContext)
+	}
+	return &Ollama{URL: strings.TrimRight(baseURL, "/"), Model: model, ContextSize: contextSize,
 		Client: &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
@@ -57,6 +64,9 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	var execution daemon.Execution
 	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > 32768 {
 		return execution, fmt.Errorf("invalid job output-token limit")
+	}
+	if job.MaxOutputTokens >= o.ContextSize {
+		return execution, fmt.Errorf("job.max_output_tokens (%d) must be less than Ollama context size (%d); reduce the job output budget or increase -ollama-context", job.MaxOutputTokens, o.ContextSize)
 	}
 	// Put trusted problem context before the coordinator's conversational context.
 	// For repair jobs this keeps the candidate and Lean feedback as the final,
@@ -84,7 +94,7 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		"model": o.Model, "messages": messages, "stream": false,
 		"format": map[string]any{"type": "object", "properties": map[string]any{
 			"proof": map[string]string{"type": "string"}}, "required": []string{"proof"}, "additionalProperties": false},
-		"options": map[string]int{"num_predict": job.MaxOutputTokens, "num_ctx": 4096},
+		"options": map[string]int{"num_predict": job.MaxOutputTokens, "num_ctx": o.ContextSize},
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -101,7 +111,7 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	}
 	defer response.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, maxOllamaResponse+1))
-	execution.Generation = rawGeneration(strings.ToValidUTF8(string(data), "�"))
+	execution.Generation = o.rawGeneration(strings.ToValidUTF8(string(data), "�"), job.MaxOutputTokens)
 	if readErr != nil {
 		return execution, fmt.Errorf("reading Ollama response: %w", readErr)
 	}
@@ -132,9 +142,8 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if reply.Error != "" {
 		return execution, fmt.Errorf("Ollama reported an error; response retained in generation.raw_response")
 	}
-	generation := rawGeneration(reply.Message.Content)
+	generation := o.rawGeneration(reply.Message.Content, job.MaxOutputTokens)
 	generation.Model, generation.FinishReason = reply.Model, reply.DoneReason
-	generation.ContextLength, generation.MaxOutputTokens = 4096, job.MaxOutputTokens
 	generation.TotalDurationNS, generation.LoadDurationNS = reply.TotalDuration, reply.LoadDuration
 	generation.PromptEvalDurationNS, generation.EvalDurationNS = reply.PromptDuration, reply.EvalDuration
 	execution.Generation = generation
@@ -165,6 +174,13 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	}
 	execution.Text = proof
 	return execution, nil
+}
+
+func (o *Ollama) rawGeneration(raw string, maxOutputTokens int) *daemon.Generation {
+	generation := rawGeneration(raw)
+	generation.ContextLength = o.ContextSize
+	generation.MaxOutputTokens = maxOutputTokens
+	return generation
 }
 
 var declarationStart = regexp.MustCompile(`^(?:by|theorem|lemma|example|def|abbrev|axiom|opaque|namespace|import)(?:\s|$)`)
