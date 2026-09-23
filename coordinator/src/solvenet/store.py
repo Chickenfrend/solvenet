@@ -116,6 +116,7 @@ PRAGMA user_version = 9;
 """
 
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
+MAX_REPAIR_DIAGNOSTICS_BYTES = 8 * 1024
 DEFAULT_INITIAL_ATTEMPTS = 3
 DEFAULT_MODEL = 'scripted'
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
@@ -154,8 +155,8 @@ def validate_job_settings(groups, settings):
 def repair_feedback(candidate, diagnostics):
     # Keep diagnostic prompts bounded; the complete report remains in the DB.
     encoded = diagnostics.encode('utf-8')
-    diagnostic_excerpt = encoded[:8192].decode('utf-8', errors='ignore')
-    if len(encoded) > 8192:
+    diagnostic_excerpt = encoded[:MAX_REPAIR_DIAGNOSTICS_BYTES].decode('utf-8', errors='ignore')
+    if len(encoded) > MAX_REPAIR_DIAGNOSTICS_BYTES:
         diagnostic_excerpt += '\n[diagnostics truncated for repair prompt]'
     return ("The previous candidate was rejected by Lean. Produce a corrected proof body "
             "for the original theorem. Do not repeat the previous candidate unchanged. "

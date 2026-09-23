@@ -225,19 +225,7 @@ class LeanVerifier:
                             available = self.max_diagnostics_bytes - len(output)
                             output.extend(chunk[:available])
                             if len(chunk) > available:
-                                marker = "\n[output limit exceeded]"
-                                prefix_bytes = max(
-                                    0,
-                                    self.max_diagnostics_bytes
-                                    - len(marker.encode("utf-8")),
-                                )
-                                diagnostics = (
-                                    bytes(output[:prefix_bytes])
-                                    .decode("utf-8", errors="replace")
-                                    .strip()
-                                    + marker
-                                )
-                                return VerificationStatus.REJECTED, diagnostics
+                                return VerificationStatus.REJECTED, self._output_limit_diagnostics(output)
                     remaining = self.timeout_seconds - (time.monotonic() - started)
                     try:
                         code = process.wait(timeout=max(0, remaining))
@@ -323,6 +311,11 @@ run_cmd do
         if len(output) > len(clipped):
             text += "\n[diagnostics truncated]"
         return text
+
+    def _output_limit_diagnostics(self, output: bytearray) -> str:
+        marker = "\n[output limit exceeded]"
+        prefix_bytes = max(0, self.max_diagnostics_bytes - len(marker.encode("utf-8")))
+        return self._decode_output(bytes(output[:prefix_bytes])) + marker
 
     def _result(
         self, status: VerificationStatus, diagnostics: str, started: float

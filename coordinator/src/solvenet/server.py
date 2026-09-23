@@ -19,6 +19,7 @@ from .sandbox import (
 )
 from .store import (
     DEFAULT_FAILURE_CLASS,
+    DEFAULT_GENERATION_TIMEOUT_SECONDS,
     DEFAULT_INITIAL_ATTEMPTS,
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL,
@@ -134,7 +135,7 @@ def experiment_config(data, fixture):
               'sha256': fixture.sha256, 'environment': fixture.environment,
               'strategy': strategy, 'initial_jobs': groups, 'max_repairs': depth,
               'generation_timeout_seconds': integer(
-                  data.get('generation_timeout_seconds', 120),
+                  data.get('generation_timeout_seconds', DEFAULT_GENERATION_TIMEOUT_SECONDS),
                   'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
               'max_assignments': integer(data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
                                           'max_assignments', MAX_ASSIGNMENTS)}
@@ -159,7 +160,7 @@ def run_options(data):
                 attempts=attempts, model=model, max_output_tokens=budget,
                 max_repairs=data.get('max_repairs', 0),
                 generation_timeout_seconds=integer(
-                    data.get('generation_timeout_seconds', 120),
+                    data.get('generation_timeout_seconds', DEFAULT_GENERATION_TIMEOUT_SECONDS),
                     'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
                 max_assignments=integer(data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
                                         'max_assignments', MAX_ASSIGNMENTS),

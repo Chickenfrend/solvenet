@@ -212,6 +212,22 @@ class ContainerVerifier:
         self.resources = resources or DockerResourceLimits()
         self.container_config.validate(self.verifier_config)
 
+    def _docker_base_command(self, name):
+        return [
+            'docker', 'run', '--rm', '--pull=never', '--name', name,
+            '--network=none', '--read-only', '--cap-drop=ALL',
+            '--security-opt=no-new-privileges',
+            f'--pids-limit={self.resources.pids}',
+            f'--memory={self.resources.memory}',
+            f'--memory-swap={self.resources.memory_swap}',
+            f'--cpus={self.resources.cpus:g}',
+            '--ulimit',
+            f'fsize={self.resources.file_size_bytes}:{self.resources.file_size_bytes}',
+            '--user', f'{os.getuid()}:{os.getgid()}',
+            '--tmpfs',
+            f'/tmp:rw,noexec,nosuid,size={self.resources.tmpfs_size},mode=1777',
+        ]
+
     def verify(self, statement, candidate, *, imports=('Init',)):
         started = time.monotonic()
         name = 'solvenet-verify-' + uuid4().hex
@@ -237,19 +253,7 @@ class ContainerVerifier:
                     ),
                     encoding='utf-8',
                 )
-                command = [
-                    'docker', 'run', '--rm', '--pull=never', '--name', name,
-                    '--network=none', '--read-only', '--cap-drop=ALL',
-                    '--security-opt=no-new-privileges',
-                    f'--pids-limit={self.resources.pids}',
-                    f'--memory={self.resources.memory}',
-                    f'--memory-swap={self.resources.memory_swap}',
-                    f'--cpus={self.resources.cpus:g}',
-                    '--ulimit',
-                    f'fsize={self.resources.file_size_bytes}:{self.resources.file_size_bytes}',
-                    '--user', f'{os.getuid()}:{os.getgid()}',
-                    '--tmpfs',
-                    f'/tmp:rw,noexec,nosuid,size={self.resources.tmpfs_size},mode=1777',
+                command = self._docker_base_command(name) + [
                     '--mount', f'type=bind,src={path},dst=/work', self.image,
                 ]
                 try:
@@ -300,19 +304,7 @@ class ContainerVerifier:
     def readiness(self):
         """Check Docker, the configured image, and its trusted Lean smoke test."""
         name = 'solvenet-ready-' + uuid4().hex
-        command = [
-            'docker', 'run', '--rm', '--pull=never', '--name', name,
-            '--network=none', '--read-only', '--cap-drop=ALL',
-            '--security-opt=no-new-privileges',
-            f'--pids-limit={self.resources.pids}',
-            f'--memory={self.resources.memory}',
-            f'--memory-swap={self.resources.memory_swap}',
-            f'--cpus={self.resources.cpus:g}',
-            '--ulimit',
-            f'fsize={self.resources.file_size_bytes}:{self.resources.file_size_bytes}',
-            '--user', f'{os.getuid()}:{os.getgid()}',
-            '--tmpfs',
-            f'/tmp:rw,noexec,nosuid,size={self.resources.tmpfs_size},mode=1777',
+        command = self._docker_base_command(name) + [
             self.image, '--readiness',
         ]
         try:

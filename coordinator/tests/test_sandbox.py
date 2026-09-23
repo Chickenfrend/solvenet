@@ -90,6 +90,47 @@ class ContainerTests(unittest.TestCase):
         ):
             self.assertIn(option, observed['command'])
 
+    def test_verify_and_readiness_share_isolation_and_resource_flags(self):
+        commands = []
+
+        def execute(command, timeout):
+            commands.append(command)
+            if '--mount' in command:
+                mount = command[command.index('--mount') + 1]
+                directory = Path(mount.removeprefix('type=bind,src=').removesuffix(',dst=/work'))
+                (directory / 'result.json').write_text(json.dumps({
+                    'status': 'verified', 'diagnostics': '', 'elapsed_ms': 1,
+                }))
+            return subprocess.CompletedProcess(command, 0, stderr=b'')
+
+        verifier = ContainerVerifier(
+            image='verifier:test',
+            resources=DockerResourceLimits(
+                cpus=2, memory='2g', memory_swap='3g', pids=32,
+                file_size_bytes=2048, tmpfs_size='64m',
+            ),
+        )
+        with patch('solvenet.sandbox._run_docker', side_effect=execute), \
+             patch('solvenet.sandbox.subprocess.run'):
+            self.assertTrue(verifier.verify(': True', 'trivial').verified)
+            self.assertTrue(verifier.readiness().ready)
+
+        verify, readiness = commands
+        self.assertEqual(verify[:verify.index('--name')], readiness[:readiness.index('--name')])
+        self.assertEqual(verify[verify.index('--network=none'):verify.index('--mount')],
+                         readiness[readiness.index('--network=none'):-2])
+        for option in (
+            '--network=none', '--read-only', '--cap-drop=ALL',
+            '--security-opt=no-new-privileges', '--pids-limit=32',
+            '--memory=2g', '--memory-swap=3g', '--cpus=2',
+            'fsize=2048:2048', f'{os.getuid()}:{os.getgid()}',
+            '/tmp:rw,noexec,nosuid,size=64m,mode=1777',
+        ):
+            self.assertIn(option, verify)
+        self.assertEqual(verify[-1], 'verifier:test')
+        self.assertEqual(readiness[-2:], ['verifier:test', '--readiness'])
+        self.assertNotIn('--mount', readiness)
+
     def test_container_deadline_reserves_overhead(self):
         with self.assertRaisesRegex(ValueError, 'minimum 1 second'):
             ContainerVerifier(
