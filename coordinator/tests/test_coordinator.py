@@ -83,6 +83,35 @@ class StoreTests(unittest.TestCase):
                 self.assertEqual(
                     Store(path).run(older_run)['jobs'][0]['id'], claim['job']['id'])
 
+    def test_heterogeneous_claims_repairs_and_restart(self):
+        groups = [{'model': 'model-a', 'count': 2, 'max_output_tokens': 64},
+                  {'model': 'model-b', 'count': 1, 'max_output_tokens': 128}]
+        run_id = self.store.submit(': True', ['Init'], initial_jobs=groups,
+                                   max_repairs=1, max_assignments=2)['run_id']
+        restarted = Store(self.path, clock=lambda: self.now)
+        self.assertEqual(restarted.run(run_id)['initial_jobs'], groups)
+        self.assertIsNone(restarted.claim('unmatched', ['unknown']))
+        # Worker model order cannot override oldest compatible job.
+        first = restarted.claim('both', ['model-b', 'model-a'])
+        self.assertEqual((first['job']['model'], first['job']['max_output_tokens']), ('model-a', 64))
+        second = restarted.claim('b-only', ['model-b'])
+        self.assertEqual((second['job']['model'], second['job']['max_output_tokens']), ('model-b', 128))
+        for claim in (first, second):
+            restarted.result(claim['assignment_id'], self.payload(claim, 'bad'))
+            attempt = next(a['id'] for a in restarted.run(run_id)['attempts']
+                           if a['job_id'] == claim['job']['id'])
+            restarted.verified(attempt, VerificationResult(VerificationStatus.REJECTED, 'bad proof', 1))
+        restarted = Store(self.path, clock=lambda: self.now)
+        run = restarted.run(run_id)
+        self.assertEqual(run['initial_jobs'], groups)
+        self.assertEqual(len(run['jobs']), 5)
+        self.assertEqual([(j['model'], j['max_output_tokens']) for j in run['jobs'][3:]],
+                         [('model-a', 64), ('model-b', 128)])
+        repair = restarted.claim('b-only', ['model-b'])
+        self.assertEqual(repair['job']['repair_depth'], 1)
+        self.assertEqual(repair['job']['max_output_tokens'], 128)
+        self.assertEqual(run['jobs'][4]['max_assignments'], 2)
+
     def test_expiry_and_stale_result(self):
         a = self.store.claim('a', ['scripted'])
         self.now += 4
@@ -349,6 +378,8 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
+        self.assertEqual(run['initial_jobs'], [
+            {'model': 'scripted', 'count': 1, 'max_output_tokens': 2048}])
         # Opening again must not repeat ALTER TABLE; new work must still function.
         migrated = Store(path, clock=lambda: self.now)
         new = migrated.submit(': True', ['Init'], attempts=1)['run_id']
@@ -522,6 +553,47 @@ class APITests(unittest.TestCase):
         self.assertEqual(outcome['max_assignments'], 2)
         self.assertEqual(outcome['jobs'][0]['generation_timeout_seconds'], 321)
         self.assertEqual(outcome['jobs'][0]['max_assignments'], 2)
+
+    def test_initial_jobs_api_compatibility_and_bounds(self):
+        base = {'statement': ': True'}
+        groups = [{'model': 'a', 'count': 2, 'max_output_tokens': 64},
+                  {'model': 'b', 'count': 1}]
+        code, submitted = self.request('/v1/runs', {**base, 'initial_jobs': groups})
+        self.assertEqual(code, 201)
+        run = self.request('/v1/runs/' + submitted['run_id'])[1]
+        expected = [{'model': 'a', 'count': 2, 'max_output_tokens': 64},
+                    {'model': 'b', 'count': 1, 'max_output_tokens': 2048}]
+        self.assertEqual(run['initial_jobs'], expected)
+        self.assertEqual([j['model'] for j in run['jobs']], ['a', 'a', 'b'])
+        self.assertEqual(self.request('/v1/claim', {'worker_id': 'w', 'models': ['b']})[1]['job']['model'], 'b')
+        code, old = self.request('/v1/runs', {**base, 'model': 'legacy', 'attempts': 2,
+                                              'max_output_tokens': 32})
+        self.assertEqual(code, 201)
+        self.assertEqual(self.request('/v1/runs/' + old['run_id'])[1]['initial_jobs'],
+                         [{'model': 'legacy', 'count': 2, 'max_output_tokens': 32}])
+
+        for key, value in (('attempts', 3), ('model', 'scripted'), ('max_output_tokens', 2048)):
+            code, error = self.request('/v1/runs', {**base, 'initial_jobs': groups, key: value})
+            self.assertEqual(code, 400)
+            self.assertIn('initial_jobs cannot be combined', error['error'])
+        invalid_groups = (None, [], {}, 'a', [None], [{'model': 'a'}],
+                          [{'model': 'a', 'count': True}], [{'model': 'a', 'count': 0}],
+                          [{'model': 'a', 'count': 101}], [{'model': '', 'count': 1}],
+                          [{'model': 'é' * 129, 'count': 1}],
+                          [{'model': 'a', 'count': 1, 'max_output_tokens': 0}],
+                          [{'model': 'a', 'count': 1, 'max_output_tokens': True}],
+                          [{'model': 'a', 'count': 1, 'max_output_tokens': 32769}],
+                          [{'model': 'a', 'count': 1, 'extra': 1}],
+                          [{'model': 'a', 'count': 51}, {'model': 'b', 'count': 50}],
+                          [{'model': 'a', 'count': 1}] * 101)
+        for groups_value in invalid_groups:
+            with self.subTest(groups=groups_value):
+                code, error = self.request('/v1/runs', {**base, 'initial_jobs': groups_value})
+                self.assertEqual(code, 400)
+                self.assertIn('initial_jobs', error['error'])
+        self.assertEqual(self.request('/v1/runs', {
+            **base, 'initial_jobs': [{'model': 'a', 'count': 100,
+                                      'max_output_tokens': limits.MAX_OUTPUT_TOKENS}]})[0], 201)
 
     def test_max_repairs_api_upper_bound_is_accepted(self):
         code, submitted = self.request(

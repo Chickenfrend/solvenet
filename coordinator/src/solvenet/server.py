@@ -20,6 +20,7 @@ from .store import (
     FAILURE_CLASSES,
     DEFAULT_MAX_ASSIGNMENTS,
     MAX_ASSIGNMENTS,
+    MAX_INITIAL_JOBS,
     REJECTION_KINDS,
     Conflict,
     Store,
@@ -221,20 +222,34 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         raise ValueError(f'imports must be a nonempty list of up to {limits.MAX_IMPORTS} modules')
                     for module in imports:
                         text(module, 'import', limits.MAX_IMPORT_BYTES)
+                    if 'initial_jobs' in data and any(
+                            key in data for key in ('attempts', 'model', 'max_output_tokens')):
+                        raise ValueError('initial_jobs cannot be combined with attempts, model, or max_output_tokens')
+                    initial_jobs = data.get('initial_jobs') if 'initial_jobs' in data else None
+                    if 'initial_jobs' in data and initial_jobs is None:
+                        raise ValueError('initial_jobs must be a nonempty list of groups')
+                    # Legacy defaults apply only to the legacy form. The store
+                    # validates each group and the aggregate initial-job bound.
+                    if initial_jobs is None:
+                        attempts = integer(data.get('attempts', 3), 'attempts', MAX_INITIAL_JOBS)
+                        model = text(data.get('model', 'scripted'), 'model', limits.MAX_MODEL_BYTES)
+                        budget = integer(data.get('max_output_tokens', 2048),
+                                         'max_output_tokens', limits.MAX_OUTPUT_TOKENS)
+                    else:
+                        attempts, model, budget = 3, 'scripted', 2048
                     return self.respond(201, coordinator.store.submit(
                         statement, imports,
                         # v1 `attempts` counts initial search chains/jobs, not
                         # completed candidates in run inspection's attempts[].
-                        integer(data.get('attempts', 3), 'attempts', 100),
-                        text(data.get('model', 'scripted'), 'model', limits.MAX_MODEL_BYTES),
-                        integer(data.get('max_output_tokens', 2048), 'max_output_tokens', limits.MAX_OUTPUT_TOKENS),
+                        attempts, model, budget,
                         max_repairs=data.get('max_repairs', 0),
                         generation_timeout_seconds=integer(
                             data.get('generation_timeout_seconds', 120),
                             'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
                         max_assignments=integer(
                             data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
-                            'max_assignments', MAX_ASSIGNMENTS)))
+                            'max_assignments', MAX_ASSIGNMENTS),
+                        initial_jobs=initial_jobs))
                 if parts == ['v1', 'claim']:
                     worker = text(data.get('worker_id'), 'worker_id', limits.MAX_IDENTIFIER_BYTES)
                     models = data.get('models')

@@ -96,6 +96,7 @@ DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
 MAX_REPAIRS = 2
+MAX_INITIAL_JOBS = 100
 FAILURE_CLASSES = ('transient', 'permanent')
 DEFAULT_FAILURE_CLASS = 'transient'
 REJECTION_KINDS = ('malformed_assignment', 'unsupported_protocol')
@@ -185,8 +186,39 @@ class Store:
 
     def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
                max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
-               max_assignments=DEFAULT_MAX_ASSIGNMENTS):
-        """Create one run targeting ``model`` with ``attempts`` initial jobs."""
+               max_assignments=DEFAULT_MAX_ASSIGNMENTS, *, initial_jobs=None):
+        """Create initial jobs in request order; each repair inherits its parent job."""
+        if initial_jobs is None:
+            if type(attempts) is not int or not 1 <= attempts <= MAX_INITIAL_JOBS:
+                raise ValueError(f'attempts must be an integer between 1 and {MAX_INITIAL_JOBS}')
+            if not isinstance(model, str) or not model.strip() or len(model.encode()) > limits.MAX_MODEL_BYTES:
+                raise ValueError('model must be a nonempty string of at most 256 bytes')
+            if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= limits.MAX_OUTPUT_TOKENS:
+                raise ValueError(f'max_output_tokens must be an integer between 1 and {limits.MAX_OUTPUT_TOKENS}')
+            initial_jobs = [{'model': model, 'count': attempts, 'max_output_tokens': max_output_tokens}]
+        else:
+            if attempts != 3 or model != 'scripted' or max_output_tokens != 2048:
+                raise ValueError('initial_jobs cannot be combined with attempts, model, or max_output_tokens')
+            if not isinstance(initial_jobs, list) or not 1 <= len(initial_jobs) <= MAX_INITIAL_JOBS:
+                raise ValueError(f'initial_jobs must be a nonempty list of up to {MAX_INITIAL_JOBS} groups')
+            total = 0
+            for index, group in enumerate(initial_jobs):
+                label = f'initial_jobs[{index}]'
+                if not isinstance(group, dict) or set(group) - {'model', 'count', 'max_output_tokens'}:
+                    raise ValueError(f'{label} must contain only model, count, and max_output_tokens')
+                selected_model = group.get('model')
+                if (not isinstance(selected_model, str) or not selected_model.strip() or
+                        len(selected_model.encode()) > limits.MAX_MODEL_BYTES):
+                    raise ValueError(f'{label}.model must be a nonempty string of at most {limits.MAX_MODEL_BYTES} bytes')
+                count = group.get('count')
+                if type(count) is not int or not 1 <= count <= MAX_INITIAL_JOBS:
+                    raise ValueError(f'{label}.count must be an integer between 1 and {MAX_INITIAL_JOBS}')
+                budget = group.get('max_output_tokens', 2048)
+                if type(budget) is not int or not 1 <= budget <= limits.MAX_OUTPUT_TOKENS:
+                    raise ValueError(f'{label}.max_output_tokens must be an integer between 1 and {limits.MAX_OUTPUT_TOKENS}')
+                total += count
+            if total > MAX_INITIAL_JOBS:
+                raise ValueError(f'initial_jobs total count must be at most {MAX_INITIAL_JOBS}')
         if type(max_repairs) is not int or not 0 <= max_repairs <= MAX_REPAIRS:
             raise ValueError(f'max_repairs must be an integer between 0 and {MAX_REPAIRS}')
         if (type(generation_timeout_seconds) is not int or
@@ -201,12 +233,13 @@ class Store:
               (id, problem_id, status, max_repairs, generation_timeout_seconds, max_assignments)
               VALUES (?, ?, 'running', ?, ?, ?)""",
                        (run, problem, max_repairs, generation_timeout_seconds, max_assignments))
-            for _ in range(attempts):
-                db.execute("""INSERT INTO jobs
-                  (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds)
-                  VALUES (?, ?, 'queued', ?, ?, ?, ?)""",
-                           (identifier(), run, model, max_output_tokens, max_assignments,
-                            generation_timeout_seconds))
+            for group in initial_jobs:
+                for _ in range(group['count']):
+                    db.execute("""INSERT INTO jobs
+                      (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds)
+                      VALUES (?, ?, 'queued', ?, ?, ?, ?)""",
+                               (identifier(), run, group['model'], group.get('max_output_tokens', 2048),
+                                max_assignments, generation_timeout_seconds))
         return {"problem_id": problem, "run_id": run}
 
     def _refresh(self, db):
@@ -383,7 +416,23 @@ class Store:
             problem = db.execute("SELECT * FROM problems WHERE id=?", (run['problem_id'],)).fetchone()
             result['problem'] = dict(problem)
             result['problem']['imports'] = json.loads(problem['imports'])
-            result['jobs'] = [dict(r) for r in db.execute("SELECT * FROM jobs WHERE run_id=?", (run_id,))]
+            result['jobs'] = [dict(r) for r in db.execute(
+                "SELECT * FROM jobs WHERE run_id=? ORDER BY rowid, id", (run_id,))]
+            # Initial rows retain the selected model/budget and insertion order.
+            # Adjacent identical groups are equivalent, so no separate run-level
+            # strategy column is needed (including for pre-existing databases).
+            result['initial_jobs'] = []
+            for job in result['jobs']:
+                if job['repair_depth'] != 0:
+                    continue
+                group = {'model': job['model'], 'count': 1,
+                         'max_output_tokens': job['max_output_tokens']}
+                if (result['initial_jobs'] and
+                        all(result['initial_jobs'][-1][key] == group[key]
+                            for key in ('model', 'max_output_tokens'))):
+                    result['initial_jobs'][-1]['count'] += 1
+                else:
+                    result['initial_jobs'].append(group)
             result['attempts'] = [dict(r) for r in db.execute("""SELECT t.*, j.id AS job_id,
               j.parent_attempt_id, j.repair_depth, v.status AS verification_status,
               v.diagnostics, v.elapsed_ms FROM attempts t JOIN assignments a ON a.id=t.assignment_id

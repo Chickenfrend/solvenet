@@ -10,7 +10,7 @@ A Python coordinator stores proof-generation jobs and bounded repair chains in S
 worker claims jobs over HTTP and generates a proof using a local Ollama model or
 a scripted fixture. The coordinator checks the proof with Lean and persists the
 result, original model response, and reported usage. The worker currently has one
-execution slot. A run currently selects one model for all its jobs; multiple
+execution slot. A run can select multiple initial models; multiple
 initial search chains may be served by the same worker daemon. Logical agents
 are a research goal, not separately identified or scheduled objects today. See
 [the terminology glossary](docs/ticket-18-terminology.md).
@@ -74,6 +74,22 @@ curl -sS http://127.0.0.1:8080/v1/runs \
 ```
 
 Save the returned `run_id`.
+
+For a mixed-model run, supply ordered groups instead of `attempts`, `model`,
+and top-level `max_output_tokens`:
+
+```sh
+curl -sS http://127.0.0.1:8080/v1/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"statement":"(n : Nat) : n + 0 = n","initial_jobs":[{"model":"ollama/model-a","count":2,"max_output_tokens":256},{"model":"ollama/model-b","count":1,"max_output_tokens":512}],"max_repairs":1}'
+```
+
+Run inspection returns `initial_jobs` with the effective model, count and output
+budget for each group, plus each job's persisted settings. Repairs inherit their
+parent job's model and output budget. Group counts sum to at most 100; with `A`
+initial jobs, `R` repairs and `M` assignment retries, at most `A * (1 + R)` jobs
+and `A * (1 + R) * M` budgeted assignments can be created. Pre-execution
+rejections do not spend this budget. See [the protocol](protocol/v1.md) for bounds.
 
 **3. Run the scripted worker:**
 
@@ -240,9 +256,9 @@ formatting failures stop that job without using its remaining allowance. Set
 repair jobs persist the same setting. Thus a three-job chain can involve more than
 three assignments if execution fails; with the default, it allows at most nine
 budgeted assignments. In general there are at most
-`attempts * (1 + max_repairs)` jobs and at most
-`attempts * (1 + max_repairs) * max_assignments` budgeted assignments across
-them (where `attempts` is the v1 request field). Expired leases and transient
+`A * (1 + max_repairs)` jobs and at most
+`A * (1 + max_repairs) * max_assignments` budgeted assignments across
+them (where `A` is `attempts` or the sum of `initial_jobs[].count`). Expired leases and transient
 failures spend this allowance even if no model call completes. A permanent failure
 ends a job early. Pre-execution malformed/unsupported assignment rejections do
 not spend the allowance, so raw claim/assignment count has no finite bound if
@@ -253,8 +269,8 @@ Repairs are opt-in: `max_repairs` defaults to 0 and accepts 0–2. This range is
 API policy, not a database limit; the schema only requires nonnegative repair
 budgets and depths, so changing the API ceiling does not require another table
 migration. The submission field `attempts` counts initial search chains, not
-entries in the inspection response's `attempts[]` (completed candidates). All
-chains in a run target the same requested model and may use the same worker.
+entries in the inspection response's `attempts[]` (completed candidates). Chains
+may target different models and may use the same worker.
 To compare strategies, use
 `attempts: 3, max_repairs: 0` versus `attempts: 1, max_repairs: 2`. Record actual
 tokens and timings as well as requests because repair prompts are longer.

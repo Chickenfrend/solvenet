@@ -187,6 +187,8 @@ class RepairTests(unittest.TestCase):
         self.assertEqual([job['id'] for job in run['jobs']], ['j0', 'j1', 'j2'])
         self.assertEqual([job['parent_attempt_id'] for job in run['jobs']], [None, 't0', 't1'])
         self.assertEqual([job['repair_depth'] for job in run['jobs']], [0, 1, 2])
+        self.assertEqual(run['initial_jobs'], [
+            {'model': 'scripted', 'count': 1, 'max_output_tokens': 256}])
         self.assertEqual([attempt['id'] for attempt in run['attempts']], ['t0', 't1'])
         with migrated.connect() as db:
             self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 6)
