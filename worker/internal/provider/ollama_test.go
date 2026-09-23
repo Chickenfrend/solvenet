@@ -225,26 +225,107 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 func TestOllamaCancellation(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(started)
+		if r.URL.Path == "/api/tags" {
+			json.NewEncoder(w).Encode(map[string]any{"models": []any{map[string]string{"name": "test", "digest": strings.Repeat("a", 64)}}})
+			return
+		}
+		if r.URL.Path != "/api/chat" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			return
+		}
 		// Flush headers so Execute is reading the response when cancelled.
 		w.(http.Flusher).Flush()
+		close(started)
 		<-r.Context().Done()
 	}))
 	defer server.Close()
 	o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan error, 1)
-	go func() { _, err := o.Execute(ctx, daemon.Job{MaxOutputTokens: 10}); done <- err }()
+	type outcome struct {
+		result daemon.Execution
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := o.Execute(ctx, daemon.Job{MaxOutputTokens: 10, GenerationSettings: daemon.GenerationSettings{Temperature: floatPointer(0), Seed: int64Pointer(42)}})
+		done <- outcome{result, err}
+	}()
 	<-started
 	cancel()
 	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("err=%v", err)
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("err=%v", got.err)
+		}
+		if got.result.Generation == nil || got.result.Generation.ModelDigest != "sha256:"+strings.Repeat("a", 64) || got.result.Generation.ContextLength != DefaultOllamaContext || got.result.Generation.MaxOutputTokens != 10 || got.result.Generation.Temperature == nil || *got.result.Generation.Temperature != 0 || got.result.Generation.Seed == nil || *got.result.Generation.Seed != 42 {
+			t.Fatalf("lost generation metadata on chat cancellation: %+v", got.result.Generation)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("request ignored cancellation")
+	}
+}
+
+func TestOllamaStalledTagsDoesNotBlockChat(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		budget   time.Duration
+		status   int
+		body     string
+		wantText string
+	}{
+		{"normal-deadline", time.Second, 200, `{"done":true,"message":{"content":"{\"proof\":\"rfl\"}"}}`, "rfl"},
+		{"short-deadline", 400 * time.Millisecond, 200, `{"done":true,"message":{"content":"{\"proof\":\"rfl\"}"}}`, "rfl"},
+		{"chat-failure", time.Second, 503, `service unavailable`, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tagsCancelled := make(chan struct{})
+			chatCalled := make(chan struct{}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/tags":
+					<-r.Context().Done()
+					close(tagsCancelled)
+				case "/api/chat":
+					chatCalled <- struct{}{}
+					w.WriteHeader(test.status)
+					w.Write([]byte(test.body))
+				default:
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
+			ctx, cancel := context.WithTimeout(context.Background(), test.budget)
+			defer cancel()
+			result, err := o.Execute(ctx, daemon.Job{MaxOutputTokens: 10, GenerationSettings: daemon.GenerationSettings{Temperature: floatPointer(0), Seed: int64Pointer(42)}})
+			select {
+			case <-tagsCancelled:
+			default:
+				t.Fatal("stalled tags lookup was not cancelled")
+			}
+			select {
+			case <-chatCalled:
+			default:
+				t.Fatal("chat was not called")
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("digest lookup consumed generation deadline: %v", ctx.Err())
+			}
+			if test.status == 200 {
+				if err != nil || result.Text != test.wantText {
+					t.Fatalf("result=%+v err=%v", result, err)
+				}
+			} else if err == nil || daemon.FailureClassOf(err) != daemon.FailureTransient {
+				t.Fatalf("chat failure err=%v", err)
+			}
+			if result.Generation == nil || result.Generation.ModelDigest != "" || result.Generation.ContextLength != DefaultOllamaContext || result.Generation.MaxOutputTokens != 10 || result.Generation.Temperature == nil || *result.Generation.Temperature != 0 || result.Generation.Seed == nil || *result.Generation.Seed != 42 {
+				t.Fatalf("lost generation settings: %+v", result.Generation)
+			}
+			if test.status != 200 && result.Generation.RawResponse != test.body {
+				t.Fatalf("lost chat failure response: %+v", result.Generation)
+			}
+		})
 	}
 }
 

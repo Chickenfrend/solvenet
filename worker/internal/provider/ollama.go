@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"solvenet/worker/internal/daemon"
 )
 
 const maxOllamaResponse = 1024 * 1024
+const ollamaDigestTimeout = 200 * time.Millisecond
 
 const DefaultOllamaContext = 4096
 const MaxOllamaContext = 1024 * 1024
@@ -107,6 +109,9 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	execution.Generation.ModelDigest = digest
 	response, err := o.Client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return execution, ctx.Err()
+		}
 		return execution, daemon.Transient(fmt.Errorf("Ollama request failed (check local service)"))
 	}
 	defer response.Body.Close()
@@ -114,6 +119,9 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	execution.Generation = o.rawGeneration(strings.ToValidUTF8(string(data), "�"), job)
 	execution.Generation.ModelDigest = digest
 	if readErr != nil {
+		if ctx.Err() != nil {
+			return execution, ctx.Err()
+		}
 		return execution, daemon.Transient(fmt.Errorf("reading Ollama response: %w", readErr))
 	}
 	if len(data) > maxOllamaResponse {
@@ -194,7 +202,20 @@ func (o *Ollama) rawGeneration(raw string, job daemon.Job) *daemon.Generation {
 func (o *Ollama) modelDigest(ctx context.Context) string {
 	// Best effort: /api/tags reports the installed model's SHA-256 digest.
 	// No endpoint or lookup errors are sent to the coordinator.
-	req, err := http.NewRequestWithContext(ctx, "GET", o.URL+"/api/tags", nil)
+	// Leave most of a short generation deadline for the actual chat request.
+	timeout := ollamaDigestTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining/4 < timeout {
+			timeout = remaining / 4
+		}
+	}
+	if timeout <= 0 || ctx.Err() != nil {
+		return ""
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(lookupCtx, "GET", o.URL+"/api/tags", nil)
 	if err != nil {
 		return ""
 	}
