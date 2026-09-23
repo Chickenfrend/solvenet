@@ -141,6 +141,13 @@ the HTTP request. The worker does not automatically download models. Repair
 requests carry explicit previous-proof and diagnostic text rather than
 provider-specific conversation state.
 
+Prompt ownership is explicit: the coordinator sends trusted problem context in
+the structured `statement` and `imports` fields and reserves `messages` for
+strategy or repair feedback. The Ollama provider creates the model-facing problem
+message and is the sole owner of its JSON/proof output instructions. It appends
+coordinator messages in order without exact-string filtering. Initial jobs have
+no coordinator messages; repair feedback remains the final user message.
+
 Extraction only trims whitespace and optionally removes a single Lean Markdown
 fence **inside** the proof field. Full declarations, outer `by`, missing/invalid
 JSON, or an empty proof are execution failures. Tactic names and logic are never

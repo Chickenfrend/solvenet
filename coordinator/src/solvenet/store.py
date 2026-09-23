@@ -242,8 +242,10 @@ class Store:
             db.execute("INSERT INTO assignments VALUES (?, ?, ?, ?, ?, 'active', NULL)",
                        (assignment, job['id'], worker_id, token, expires))
             db.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job['id'],))
-            messages = [{"role": "system", "content": "Return only a Lean tactic proof body."},
-                        {"role": "user", "content": job['statement']}]
+            # The provider owns output formatting and constructs trusted problem
+            # context from statement/imports. Coordinator messages are only for
+            # strategy or repair feedback.
+            messages = []
             if job['parent_attempt_id']:
                 parent = db.execute("""SELECT t.candidate, v.diagnostics FROM attempts t
                   JOIN verifications v ON v.attempt_id=t.id WHERE t.id=?""", (job['parent_attempt_id'],)).fetchone()

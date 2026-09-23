@@ -68,7 +68,8 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if job.MaxOutputTokens >= o.ContextSize {
 		return execution, daemon.Permanent(fmt.Errorf("job.max_output_tokens (%d) must be less than Ollama context size (%d); reduce the job output budget or increase -ollama-context", job.MaxOutputTokens, o.ContextSize))
 	}
-	// Put trusted problem context before the coordinator's conversational context.
+	// The provider owns its output contract. Put trusted structured problem
+	// context before the coordinator's strategy or repair feedback.
 	// For repair jobs this keeps the candidate and Lean feedback as the final,
 	// most recent user message rather than obscuring it with a theorem reminder.
 	messages := []daemon.Message{
@@ -76,20 +77,7 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		{Role: "user", Content: "Lean imports: " + strings.Join(job.Imports, ", ") +
 			"\nTheorem (text after its name):\n" + job.Statement},
 	}
-	for _, message := range job.Messages {
-		if message.Role == "system" {
-			// The v1 coordinator's system instruction requests plain text, so do
-			// not send that contradictory formatting instruction to Ollama.
-			if message.Content == "Return only a Lean tactic proof body." {
-				continue
-			}
-		}
-		// The environment message above already includes the original statement.
-		if message.Role == "user" && strings.TrimSpace(message.Content) == strings.TrimSpace(job.Statement) {
-			continue
-		}
-		messages = append(messages, message)
-	}
+	messages = append(messages, job.Messages...)
 	body := map[string]any{
 		"model": o.Model, "messages": messages, "stream": false,
 		"format": map[string]any{"type": "object", "properties": map[string]any{

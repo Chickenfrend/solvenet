@@ -41,8 +41,17 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 		if request.Format.Type != "object" || len(request.Format.Required) != 1 || request.Format.Required[0] != "proof" || request.Format.Additional {
 			t.Error("missing schema")
 		}
-		if len(request.Messages) != 3 || !strings.Contains(request.Messages[1].Content, "Mathlib") || !strings.Contains(request.Messages[1].Content, "n + 0 = n") || request.Messages[2].Content != "Previous attempt: refl" {
+		if len(request.Messages) != 4 || request.Messages[0].Role != "system" || request.Messages[0].Content != proofInstructions ||
+			request.Messages[1].Role != "user" || !strings.Contains(request.Messages[1].Content, "Mathlib") || !strings.Contains(request.Messages[1].Content, "n + 0 = n") ||
+			request.Messages[2].Content != "Try simplification before rewriting." || request.Messages[3].Role != "user" || request.Messages[3].Content != "Previous attempt: refl" {
 			t.Errorf("lost context: %+v", request.Messages)
+		}
+		prompt := ""
+		for _, message := range request.Messages {
+			prompt += message.Content
+		}
+		if strings.Count(prompt, "(n : Nat) : n + 0 = n") != 1 {
+			t.Errorf("theorem was not included exactly once: %+v", request.Messages)
 		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"model": "qwen2.5-coder:7b-reported", "message": map[string]string{"content": "{\"proof\":\"```lean\\nrfl\\n```\"}"},
@@ -57,13 +66,42 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 	}
 	result, err := o.Execute(context.Background(), daemon.Job{
 		Statement: "(n : Nat) : n + 0 = n", Imports: []string{"Mathlib"}, MaxOutputTokens: 256,
-		Messages: []daemon.Message{{Role: "system", Content: "Return only a Lean tactic proof body."}, {Role: "user", Content: "Previous attempt: refl"}},
+		Messages: []daemon.Message{{Role: "user", Content: "Try simplification before rewriting."}, {Role: "user", Content: "Previous attempt: refl"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Text != "rfl" || *result.Usage["input_tokens"] != 52 || *result.Usage["output_tokens"] != 12 || result.Generation.Model != "qwen2.5-coder:7b-reported" || result.Generation.FinishReason != "stop" || result.Generation.ContextLength != 8192 || result.Generation.MaxOutputTokens != 256 || *result.Generation.EvalDurationNS != 300 || !strings.Contains(result.Generation.RawResponse, "```lean") {
 		t.Fatalf("lost output/metadata: %+v", result)
+	}
+}
+
+func TestOllamaDoesNotDeduplicateCoordinatorMessagesByContent(t *testing.T) {
+	statement := ": True"
+	var messages []daemon.Message
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []daemon.Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		messages = request.Messages
+		json.NewEncoder(w).Encode(map[string]any{
+			"done": true, "message": map[string]string{"content": `{"proof":"trivial"}`},
+		})
+	}))
+	defer server.Close()
+	o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
+	_, err := o.Execute(context.Background(), daemon.Job{
+		Statement: statement, Imports: []string{"Init"}, MaxOutputTokens: 10,
+		Messages: []daemon.Message{{Role: "user", Content: statement}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 || messages[2].Content != statement {
+		t.Fatalf("coordinator message was removed by content: %+v", messages)
 	}
 }
 

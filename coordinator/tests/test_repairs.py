@@ -43,6 +43,7 @@ class RepairTests(unittest.TestCase):
         first = self.claim()
         self.assertEqual(first['job']['repair_depth'], 0)
         self.assertIsNone(first['job']['parent_attempt_id'])
+        self.assertEqual(first['job']['messages'], [])
         attempt = self.submit(first)
         # Restart with a pending verification, then deliver it concurrently twice.
         self.store = Store(self.path, clock=lambda: self.now)
@@ -59,6 +60,8 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(repair['timeout_seconds'], 321)
         self.assertEqual(repair['statement'], first['job']['statement'])
         self.assertEqual(repair['imports'], ['Init'])
+        self.assertEqual(len(repair['messages']), 1)
+        self.assertEqual(repair['messages'][0]['role'], 'user')
         prompt = repair['messages'][-1]['content']
         self.assertIn('rw zero_add', prompt)
         self.assertIn("expected '['", prompt)
