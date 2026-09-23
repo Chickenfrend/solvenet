@@ -116,6 +116,9 @@ PRAGMA user_version = 9;
 """
 
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
+DEFAULT_INITIAL_ATTEMPTS = 3
+DEFAULT_MODEL = 'scripted'
+DEFAULT_MAX_OUTPUT_TOKENS = 2048
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
 MAX_REPAIRS = 2
@@ -238,9 +241,10 @@ class Store:
                 db.rollback()
                 raise
 
-    def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
-                max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
-                max_assignments=DEFAULT_MAX_ASSIGNMENTS, *, initial_jobs=None, generation_settings=None):
+    def submit(self, statement, imports, attempts=DEFAULT_INITIAL_ATTEMPTS,
+               model=DEFAULT_MODEL, max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+               max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
+               max_assignments=DEFAULT_MAX_ASSIGNMENTS, *, initial_jobs=None, generation_settings=None):
         """Create initial jobs in request order; each repair inherits its parent job."""
         initial_jobs = self._validate_run(attempts, model, max_output_tokens, max_repairs,
                                           generation_timeout_seconds, max_assignments, initial_jobs)
@@ -261,28 +265,38 @@ class Store:
                 raise ValueError(f'max_output_tokens must be an integer between 1 and {limits.MAX_OUTPUT_TOKENS}')
             initial_jobs = [{'model': model, 'count': attempts, 'max_output_tokens': max_output_tokens}]
         else:
-            if attempts != 3 or model != 'scripted' or max_output_tokens != 2048:
+            if (attempts != DEFAULT_INITIAL_ATTEMPTS or model != DEFAULT_MODEL or
+                    max_output_tokens != DEFAULT_MAX_OUTPUT_TOKENS):
                 raise ValueError('initial_jobs cannot be combined with attempts, model, or max_output_tokens')
-            if not isinstance(initial_jobs, list) or not 1 <= len(initial_jobs) <= MAX_INITIAL_JOBS:
-                raise ValueError(f'initial_jobs must be a nonempty list of up to {MAX_INITIAL_JOBS} groups')
-            total = 0
-            for index, group in enumerate(initial_jobs):
-                label = f'initial_jobs[{index}]'
-                if not isinstance(group, dict) or set(group) - {'model', 'count', 'max_output_tokens'}:
-                    raise ValueError(f'{label} must contain only model, count, and max_output_tokens')
-                selected_model = group.get('model')
-                if (not isinstance(selected_model, str) or not selected_model.strip() or
-                        len(selected_model.encode()) > limits.MAX_MODEL_BYTES):
-                    raise ValueError(f'{label}.model must be a nonempty string of at most {limits.MAX_MODEL_BYTES} bytes')
-                count = group.get('count')
-                if type(count) is not int or not 1 <= count <= MAX_INITIAL_JOBS:
-                    raise ValueError(f'{label}.count must be an integer between 1 and {MAX_INITIAL_JOBS}')
-                budget = group.get('max_output_tokens', 2048)
-                if type(budget) is not int or not 1 <= budget <= limits.MAX_OUTPUT_TOKENS:
-                    raise ValueError(f'{label}.max_output_tokens must be an integer between 1 and {limits.MAX_OUTPUT_TOKENS}')
-                total += count
-            if total > MAX_INITIAL_JOBS:
-                raise ValueError(f'initial_jobs total count must be at most {MAX_INITIAL_JOBS}')
+        self._validate_run_limits(max_repairs, generation_timeout_seconds, max_assignments)
+        return self._validate_initial_jobs(initial_jobs)
+
+    def _validate_initial_jobs(self, initial_jobs):
+        if not isinstance(initial_jobs, list) or not 1 <= len(initial_jobs) <= MAX_INITIAL_JOBS:
+            raise ValueError(f'initial_jobs must be a nonempty list of up to {MAX_INITIAL_JOBS} groups')
+        total = 0
+        normalized = []
+        for index, group in enumerate(initial_jobs):
+            label = f'initial_jobs[{index}]'
+            if not isinstance(group, dict) or set(group) - {'model', 'count', 'max_output_tokens'}:
+                raise ValueError(f'{label} must contain only model, count, and max_output_tokens')
+            selected_model = group.get('model')
+            if (not isinstance(selected_model, str) or not selected_model.strip() or
+                    len(selected_model.encode()) > limits.MAX_MODEL_BYTES):
+                raise ValueError(f'{label}.model must be a nonempty string of at most {limits.MAX_MODEL_BYTES} bytes')
+            count = group.get('count')
+            if type(count) is not int or not 1 <= count <= MAX_INITIAL_JOBS:
+                raise ValueError(f'{label}.count must be an integer between 1 and {MAX_INITIAL_JOBS}')
+            budget = group.get('max_output_tokens', DEFAULT_MAX_OUTPUT_TOKENS)
+            if type(budget) is not int or not 1 <= budget <= limits.MAX_OUTPUT_TOKENS:
+                raise ValueError(f'{label}.max_output_tokens must be an integer between 1 and {limits.MAX_OUTPUT_TOKENS}')
+            total += count
+            normalized.append({'model': selected_model, 'count': count, 'max_output_tokens': budget})
+        if total > MAX_INITIAL_JOBS:
+            raise ValueError(f'initial_jobs total count must be at most {MAX_INITIAL_JOBS}')
+        return normalized
+
+    def _validate_run_limits(self, max_repairs, generation_timeout_seconds, max_assignments):
         if type(max_repairs) is not int or not 0 <= max_repairs <= MAX_REPAIRS:
             raise ValueError(f'max_repairs must be an integer between 0 and {MAX_REPAIRS}')
         if (type(generation_timeout_seconds) is not int or
@@ -290,8 +304,6 @@ class Store:
             raise ValueError(f'generation_timeout_seconds must be an integer between 1 and {limits.MAX_GENERATION_TIMEOUT_SECONDS}')
         if type(max_assignments) is not int or not 1 <= max_assignments <= MAX_ASSIGNMENTS:
             raise ValueError(f'max_assignments must be an integer between 1 and {MAX_ASSIGNMENTS}')
-        return [{'model': group['model'], 'count': group['count'],
-                 'max_output_tokens': group.get('max_output_tokens', 2048)} for group in initial_jobs]
 
     def _insert_run(self, db, statement, imports, initial_jobs, max_repairs,
                     generation_timeout_seconds, max_assignments, experiment_id=None,
@@ -322,9 +334,9 @@ class Store:
 
     def create_experiment(self, idempotency_key, config, problems):
         """Persist one immutable experiment and all its initial runs atomically."""
-        groups = self._validate_run(3, 'scripted', 2048, config['max_repairs'],
-                                    config['generation_timeout_seconds'], config['max_assignments'],
-                                    config['initial_jobs'])
+        groups = self._validate_initial_jobs(config['initial_jobs'])
+        self._validate_run_limits(config['max_repairs'], config['generation_timeout_seconds'],
+                                  config['max_assignments'])
         settings = validate_settings(config.get('generation_settings', {}))
         validate_job_settings(groups, settings)
         config = dict(config, initial_jobs=groups)

@@ -19,6 +19,9 @@ from .sandbox import (
 )
 from .store import (
     DEFAULT_FAILURE_CLASS,
+    DEFAULT_INITIAL_ATTEMPTS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL,
     FAILURE_CLASSES,
     DEFAULT_MAX_ASSIGNMENTS,
     MAX_ASSIGNMENTS,
@@ -51,6 +54,20 @@ def integer(value, field, maximum):
     if type(value) is not int or not 1 <= value <= maximum:
         raise ValueError(f"{field} must be an integer between 1 and {maximum}")
     return value
+
+
+def initial_job_options(data, default_attempts=DEFAULT_INITIAL_ATTEMPTS, default_model=DEFAULT_MODEL):
+    """Parse either the legacy initial-job fields or explicit job groups."""
+    if 'initial_jobs' in data:
+        if any(field in data for field in ('attempts', 'model', 'max_output_tokens')):
+            raise ValueError('initial_jobs cannot be combined with attempts, model, or max_output_tokens')
+        if data['initial_jobs'] is None:
+            raise ValueError('initial_jobs must be a nonempty list of groups')
+        return DEFAULT_INITIAL_ATTEMPTS, DEFAULT_MODEL, DEFAULT_MAX_OUTPUT_TOKENS, data['initial_jobs']
+    return (integer(data.get('attempts', default_attempts), 'attempts', MAX_INITIAL_JOBS),
+            text(data.get('model', default_model), 'model', limits.MAX_MODEL_BYTES),
+            integer(data.get('max_output_tokens', DEFAULT_MAX_OUTPUT_TOKENS),
+                    'max_output_tokens', limits.MAX_OUTPUT_TOKENS), None)
 
 
 def validate_generation(data):
@@ -265,17 +282,11 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                             strategy == 'independent' and depth != 0) or (
                             strategy == 'repair' and depth == 0):
                         raise ValueError('max_repairs must match strategy (0 for independent, 1-2 for repair)')
-                    if 'initial_jobs' in data and any(
-                            field in data for field in ('model', 'attempts', 'max_output_tokens')):
-                        raise ValueError('initial_jobs cannot be combined with model, attempts, or max_output_tokens')
-                    if 'initial_jobs' in data:
-                        groups = data['initial_jobs']
-                    else:
-                        groups = [{'model': text(data.get('model'), 'model', limits.MAX_MODEL_BYTES),
-                                   'count': integer(data.get('attempts', 3 if strategy == 'independent' else 1),
-                                                    'attempts', MAX_INITIAL_JOBS),
-                                   'max_output_tokens': integer(data.get('max_output_tokens', 2048),
-                                                                'max_output_tokens', limits.MAX_OUTPUT_TOKENS)}]
+                    attempts, model, budget, groups = initial_job_options(
+                        data, default_attempts=DEFAULT_INITIAL_ATTEMPTS if strategy == 'independent' else 1,
+                        default_model=None)
+                    if groups is None:
+                        groups = [{'model': model, 'count': attempts, 'max_output_tokens': budget}]
                     config = {'set_id': fixture.set_id, 'version': fixture.version,
                               'sha256': fixture.sha256, 'environment': fixture.environment,
                               'strategy': strategy, 'initial_jobs': groups, 'max_repairs': depth,
@@ -297,21 +308,7 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         raise ValueError(f'imports must be a nonempty list of up to {limits.MAX_IMPORTS} modules')
                     for module in imports:
                         text(module, 'import', limits.MAX_IMPORT_BYTES)
-                    if 'initial_jobs' in data and any(
-                            key in data for key in ('attempts', 'model', 'max_output_tokens')):
-                        raise ValueError('initial_jobs cannot be combined with attempts, model, or max_output_tokens')
-                    initial_jobs = data.get('initial_jobs') if 'initial_jobs' in data else None
-                    if 'initial_jobs' in data and initial_jobs is None:
-                        raise ValueError('initial_jobs must be a nonempty list of groups')
-                    # Legacy defaults apply only to the legacy form. The store
-                    # validates each group and the aggregate initial-job bound.
-                    if initial_jobs is None:
-                        attempts = integer(data.get('attempts', 3), 'attempts', MAX_INITIAL_JOBS)
-                        model = text(data.get('model', 'scripted'), 'model', limits.MAX_MODEL_BYTES)
-                        budget = integer(data.get('max_output_tokens', 2048),
-                                         'max_output_tokens', limits.MAX_OUTPUT_TOKENS)
-                    else:
-                        attempts, model, budget = 3, 'scripted', 2048
+                    attempts, model, budget, initial_jobs = initial_job_options(data)
                     return self.respond(201, coordinator.store.submit(
                         statement, imports,
                         # v1 `attempts` counts initial search chains/jobs, not

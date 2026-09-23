@@ -89,6 +89,60 @@ class ExperimentsTest(unittest.TestCase):
         self.assertEqual(self.request('/v1/experiments', independent | {'model': 'other'})[0], 409)
         self.assertEqual(self.request('/v1/runs', {'statement': ': True'})[0], 201)
 
+    def test_initial_jobs_forms_and_invalid_groups_are_atomic(self):
+        base = self.config('independent')
+        base.pop('model')
+        groups = [{'model': 'one', 'count': 2},
+                  {'model': 'two', 'count': 1, 'max_output_tokens': 64}]
+        invalid_groups = (None, [], {}, 'one', [None], [{'model': 'one'}],
+                          [{'model': 'one', 'count': True}],
+                          [{'model': 'one', 'count': 0}],
+                          [{'model': 'one', 'count': 1, 'extra': 1}],
+                          [{'model': 'one', 'count': 51}, {'model': 'two', 'count': 50}])
+        for invalid in invalid_groups:
+            with self.subTest(invalid=invalid):
+                status, error = self.request('/v1/experiments', base | {'initial_jobs': invalid})
+                self.assertEqual(status, 400)
+                self.assertIn('initial_jobs', error['error'])
+                with self.store.connect() as db:
+                    for table in ('experiments', 'runs', 'jobs', 'problems'):
+                        self.assertEqual(db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0)
+
+        for field, value in (('model', 'scripted'), ('attempts', 3),
+                             ('max_output_tokens', 2048)):
+            with self.subTest(field=field):
+                status, error = self.request('/v1/experiments', base | {
+                    'initial_jobs': groups, field: value})
+                self.assertEqual(status, 400)
+                self.assertIn('initial_jobs cannot be combined', error['error'])
+
+        status, created = self.request('/v1/experiments', base | {'initial_jobs': groups})
+        self.assertEqual(status, 201)
+        normalized = [{'model': 'one', 'count': 2, 'max_output_tokens': 2048},
+                      {'model': 'two', 'count': 1, 'max_output_tokens': 64}]
+        self.assertEqual(created['config']['initial_jobs'], normalized)
+        run = self.store.run(created['runs'][0]['run_id'])
+        self.assertEqual(run['initial_jobs'], normalized)
+        self.assertEqual([job['model'] for job in run['jobs']], ['one', 'one', 'two'])
+        self.assertEqual(self.request('/v1/experiments', base | {'initial_jobs': groups}),
+                         (200, created))
+        self.assertEqual(self.request('/v1/experiments', base | {
+            'initial_jobs': normalized}), (200, created))
+        self.assertEqual(self.request('/v1/experiments', base | {
+            'initial_jobs': None})[0], 400)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM experiments').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM runs').fetchone()[0],
+                             len(self.fixture.problems))
+
+        legacy = self.config('repair', attempts=2, max_output_tokens=32)
+        legacy['idempotency_key'] = 'legacy'
+        status, created = self.request('/v1/experiments', legacy)
+        self.assertEqual(status, 201)
+        self.assertEqual(created['config']['initial_jobs'], [
+            {'model': 'scripted', 'count': 2, 'max_output_tokens': 32}])
+        self.assertEqual(self.request('/v1/experiments', legacy), (200, created))
+
     def test_challenge_persists_without_reference_proofs(self):
         challenge = load(EXPERIMENT_SETS[('challenge', 1)])
         config = self.config('independent')

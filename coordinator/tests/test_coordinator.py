@@ -113,6 +113,15 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(repair['job']['max_output_tokens'], 128)
         self.assertEqual(run['jobs'][4]['max_assignments'], 2)
 
+    def test_direct_submit_rejects_conflicting_initial_job_fields(self):
+        groups = [{'model': 'other', 'count': 1}]
+        for field, value in (('attempts', 2), ('model', 'other'),
+                             ('max_output_tokens', 64)):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'cannot be combined'):
+                self.store.submit(': True', ['Init'], initial_jobs=groups, **{field: value})
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runs').fetchone()[0], 1)
+
     def test_expiry_and_stale_result(self):
         a = self.store.claim('a', ['scripted'])
         self.now += 4
