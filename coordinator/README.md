@@ -51,7 +51,10 @@ both local and container verification. For Docker, `--container-timeout SECONDS`
 sets the outer deadline (default 30 seconds), which must leave at least one
 second beyond the Lean deadline for container overhead. The inner deadline and
 diagnostic limit are included in each container request rather than relying on
-image defaults.
+image defaults. A failed Docker launch includes a UTF-8-safe, bounded 8 KiB
+stderr excerpt in its `verifier_error` diagnostics. The known temporary host
+workspace path is redacted, and Docker stderr is omitted from successful,
+rejected, and timeout results.
 
 This is a local experiment runner, **not an isolation boundary against hostile
 Lean metaprograms**. Tactics can execute IO in the Lean process, including reading

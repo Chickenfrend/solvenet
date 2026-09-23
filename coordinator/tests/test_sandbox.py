@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,8 +10,11 @@ from solvenet.sandbox import (
     ContainerVerifier,
     ContainerVerifierConfig,
     DockerResourceLimits,
+    DOCKER_STDERR_TRUNCATION_MARKER,
     MAX_CONTAINER_RESULT_BYTES,
+    MAX_DOCKER_STDERR_BYTES,
     _encode_result,
+    _run_docker,
 )
 from solvenet.verifier import (
     DIAGNOSTICS_TRUNCATION_MARKER,
@@ -25,43 +29,43 @@ class ContainerTests(unittest.TestCase):
     def test_limits_and_result_transport(self):
         calls = []
 
-        def execute(command, **kwargs):
+        def execute(command, timeout):
             calls.append(command)
-            if command[1] == 'run':
-                for flag in ('--network=none', '--read-only', '--cap-drop=ALL',
-                             '--security-opt=no-new-privileges', '--memory=1g', '--cpus=1', '--pids-limit=64'):
-                    self.assertIn(flag, command)
-                mount = command[command.index('--mount') + 1]
-                directory = Path(mount.removeprefix('type=bind,src=').removesuffix(',dst=/work'))
-                request = json.loads((directory / 'request.json').read_text())
-                self.assertEqual(request['candidate'], 'rfl')
-                (directory / 'result.json').write_text(json.dumps({'status': 'verified', 'diagnostics': '', 'elapsed_ms': 1}))
-            return subprocess.CompletedProcess(command, 0)
+            for flag in ('--network=none', '--read-only', '--cap-drop=ALL',
+                         '--security-opt=no-new-privileges', '--memory=1g', '--cpus=1', '--pids-limit=64'):
+                self.assertIn(flag, command)
+            mount = command[command.index('--mount') + 1]
+            directory = Path(mount.removeprefix('type=bind,src=').removesuffix(',dst=/work'))
+            request = json.loads((directory / 'request.json').read_text())
+            self.assertEqual(request['candidate'], 'rfl')
+            (directory / 'result.json').write_text(json.dumps({'status': 'verified', 'diagnostics': '', 'elapsed_ms': 1}))
+            return subprocess.CompletedProcess(command, 0, stderr=b'ignored warning')
 
-        with patch('solvenet.sandbox.subprocess.run', side_effect=execute):
+        with patch('solvenet.sandbox._run_docker', side_effect=execute), \
+             patch('solvenet.sandbox.subprocess.run') as cleanup:
             result = ContainerVerifier().verify('(n : Nat) : n + 0 = n', 'rfl')
         self.assertTrue(result.verified)
+        self.assertEqual(result.diagnostics, '')
         self.assertEqual(result.elapsed_ms, 1)
-        self.assertEqual(calls[-1][:3], ['docker', 'rm', '-f'])
+        self.assertEqual(cleanup.call_args.args[0][:3], ['docker', 'rm', '-f'])
 
     def test_configuration_is_propagated_to_request_and_docker(self):
         observed = {}
 
-        def execute(command, **kwargs):
-            if command[1] == 'run':
-                observed['command'] = command
-                observed['timeout'] = kwargs['timeout']
-                mount = command[command.index('--mount') + 1]
-                directory = Path(
-                    mount.removeprefix('type=bind,src=').removesuffix(',dst=/work')
-                )
-                observed['request'] = json.loads(
-                    (directory / 'request.json').read_text()
-                )
-                (directory / 'result.json').write_text(json.dumps({
-                    'status': 'verified', 'diagnostics': '', 'elapsed_ms': 1,
-                }))
-            return subprocess.CompletedProcess(command, 0)
+        def execute(command, timeout):
+            observed['command'] = command
+            observed['timeout'] = timeout
+            mount = command[command.index('--mount') + 1]
+            directory = Path(
+                mount.removeprefix('type=bind,src=').removesuffix(',dst=/work')
+            )
+            observed['request'] = json.loads(
+                (directory / 'request.json').read_text()
+            )
+            (directory / 'result.json').write_text(json.dumps({
+                'status': 'verified', 'diagnostics': '', 'elapsed_ms': 1,
+            }))
+            return subprocess.CompletedProcess(command, 0, stderr=b'')
 
         verifier = ContainerVerifier(
             verifier_config=LeanVerifierConfig(
@@ -73,7 +77,8 @@ class ContainerTests(unittest.TestCase):
                 file_size_bytes=2048, tmpfs_size='64m',
             ),
         )
-        with patch('solvenet.sandbox.subprocess.run', side_effect=execute):
+        with patch('solvenet.sandbox._run_docker', side_effect=execute), \
+             patch('solvenet.sandbox.subprocess.run'):
             self.assertTrue(verifier.verify(': True', 'trivial').verified)
 
         self.assertEqual(observed['timeout'], 14)
@@ -93,14 +98,14 @@ class ContainerTests(unittest.TestCase):
             )
 
     def _transport(self, payload):
-        def execute(command, **kwargs):
-            if command[1] == 'run':
-                mount = command[command.index('--mount') + 1]
-                directory = Path(mount.removeprefix('type=bind,src=').removesuffix(',dst=/work'))
-                (directory / 'result.json').write_bytes(payload)
-            return subprocess.CompletedProcess(command, 0)
+        def execute(command, timeout):
+            mount = command[command.index('--mount') + 1]
+            directory = Path(mount.removeprefix('type=bind,src=').removesuffix(',dst=/work'))
+            (directory / 'result.json').write_bytes(payload)
+            return subprocess.CompletedProcess(command, 0, stderr=b'')
 
-        with patch('solvenet.sandbox.subprocess.run', side_effect=execute):
+        with patch('solvenet.sandbox._run_docker', side_effect=execute), \
+             patch('solvenet.sandbox.subprocess.run'):
             return ContainerVerifier().verify(': False', 'trivial')
 
     def test_control_characters_at_diagnostic_limit_survive_json_expansion(self):
@@ -138,23 +143,61 @@ class ContainerTests(unittest.TestCase):
                 self.assertIn('elapsed_ms', result.diagnostics)
 
     def test_timeout_removes_container(self):
-        calls = []
-
-        def execute(command, **kwargs):
-            calls.append(command)
-            if command[1] == 'run':
-                raise subprocess.TimeoutExpired(command, 30)
-            return subprocess.CompletedProcess(command, 0)
-
-        with patch('solvenet.sandbox.subprocess.run', side_effect=execute):
+        with patch(
+            'solvenet.sandbox._run_docker',
+            side_effect=subprocess.TimeoutExpired(['docker', 'run'], 30),
+        ), patch('solvenet.sandbox.subprocess.run') as cleanup:
             result = ContainerVerifier().verify(': True', 'trivial')
         self.assertEqual(result.status, VerificationStatus.TIMEOUT)
-        self.assertEqual(calls[1][:3], ['docker', 'rm', '-f'])
+        self.assertEqual(result.diagnostics, 'Container verification deadline exceeded')
+        self.assertGreaterEqual(cleanup.call_count, 1)
+        self.assertEqual(cleanup.call_args_list[0].args[0][:3], ['docker', 'rm', '-f'])
 
     def test_missing_docker_is_infrastructure_error(self):
-        with patch('solvenet.sandbox.subprocess.run', side_effect=FileNotFoundError('docker')):
+        with patch('solvenet.sandbox._run_docker', side_effect=FileNotFoundError('docker')), \
+             patch('solvenet.sandbox.subprocess.run'):
             result = ContainerVerifier().verify(': True', 'trivial')
         self.assertEqual(result.status, VerificationStatus.VERIFIER_ERROR)
+
+    def test_missing_image_includes_actionable_stderr(self):
+        stderr = b'Unable to find image solvenet-verifier:local locally'
+        completed = subprocess.CompletedProcess(['docker', 'run'], 125, stderr=stderr)
+        with patch('solvenet.sandbox._run_docker', return_value=completed), \
+             patch('solvenet.sandbox.subprocess.run'):
+            result = ContainerVerifier().verify(': True', 'trivial')
+        self.assertEqual(result.status, VerificationStatus.VERIFIER_ERROR)
+        self.assertIn('exited with code 125', result.diagnostics)
+        self.assertIn('Docker stderr: Unable to find image', result.diagnostics)
+
+    def test_runtime_failure_stderr_is_truncated_utf8_safely_and_redacted(self):
+        observed_workspace = None
+
+        def execute(command, timeout):
+            nonlocal observed_workspace
+            mount = command[command.index('--mount') + 1]
+            observed_workspace = mount.removeprefix('type=bind,src=').removesuffix(',dst=/work')
+            stderr = (
+                f'cannot mount {observed_workspace}: '.encode()
+                + '€'.encode() * MAX_DOCKER_STDERR_BYTES
+            )
+            return subprocess.CompletedProcess(command, 125, stderr=stderr)
+
+        with patch('solvenet.sandbox._run_docker', side_effect=execute), \
+             patch('solvenet.sandbox.subprocess.run'):
+            result = ContainerVerifier().verify(': True', 'trivial')
+        self.assertEqual(result.status, VerificationStatus.VERIFIER_ERROR)
+        self.assertNotIn(observed_workspace, result.diagnostics)
+        self.assertIn('[verification workspace]', result.diagnostics)
+        self.assertTrue(result.diagnostics.endswith(DOCKER_STDERR_TRUNCATION_MARKER))
+        result.diagnostics.encode('utf-8')
+
+    def test_docker_runner_retains_only_bounded_stderr(self):
+        completed = _run_docker(
+            [sys.executable, '-c', f'import sys; sys.stderr.write("x" * {MAX_DOCKER_STDERR_BYTES * 4})'],
+            5,
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(len(completed.stderr), MAX_DOCKER_STDERR_BYTES + 1)
 
     @unittest.skipUnless(os.environ.get('SOLVENET_DOCKER_TEST') == '1', 'Opt-in Docker smoke test')
     def test_real_container(self):

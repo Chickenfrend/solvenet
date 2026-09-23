@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import selectors
 import subprocess
 import tempfile
 import time
@@ -23,6 +24,8 @@ from .verifier import (
 
 DEFAULT_CONTAINER_TIMEOUT_SECONDS = 30.0
 MIN_CONTAINER_OVERHEAD_SECONDS = 1.0
+MAX_DOCKER_STDERR_BYTES = 8 * 1024
+DOCKER_STDERR_TRUNCATION_MARKER = '\n[Docker stderr truncated]'
 
 
 def _max_container_result_bytes(max_diagnostics_bytes):
@@ -34,6 +37,65 @@ def _max_container_result_bytes(max_diagnostics_bytes):
 
 
 MAX_CONTAINER_RESULT_BYTES = _max_container_result_bytes(MAX_DIAGNOSTICS_BYTES)
+
+
+def _run_docker(command, timeout):
+    """Run Docker while draining stderr and retaining only a bounded prefix."""
+    retained = bytearray()
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stderr, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for key, _ in selector.select(min(remaining, 0.1)):
+                    chunk = os.read(key.fileobj.fileno(), 8192)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    available = MAX_DOCKER_STDERR_BYTES + 1 - len(retained)
+                    if available > 0:
+                        retained.extend(chunk[:available])
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            returncode = process.wait(timeout=remaining)
+        return subprocess.CompletedProcess(command, returncode, stderr=bytes(retained))
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        process.wait()
+        raise
+    finally:
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            process.wait()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def _docker_error_diagnostics(message, stderr, workspace):
+    """Add a safe, UTF-8-valid Docker stderr excerpt to an infrastructure error."""
+    clipped = stderr[:MAX_DOCKER_STDERR_BYTES]
+    excerpt = clipped.decode('utf-8', errors='ignore').strip()
+    if workspace is not None:
+        excerpt = excerpt.replace(str(workspace), '[verification workspace]')
+    if len(stderr) > MAX_DOCKER_STDERR_BYTES:
+        excerpt += DOCKER_STDERR_TRUNCATION_MARKER
+    if excerpt:
+        return f'{message}\nDocker stderr: {excerpt}'
+    return message
 
 
 @dataclass(frozen=True)
@@ -153,9 +215,12 @@ class ContainerVerifier:
         status = VerificationStatus.VERIFIER_ERROR
         diagnostics = 'Container verifier did not complete'
         elapsed_ms = None
+        docker_stderr = b''
+        workspace = None
         try:
             with tempfile.TemporaryDirectory(prefix='solvenet-container-') as directory:
                 path = Path(directory)
+                workspace = path
                 (path / 'request.json').write_text(
                     json.dumps(
                         {
@@ -185,14 +250,21 @@ class ContainerVerifier:
                     '--mount', f'type=bind,src={path},dst=/work', self.image,
                 ]
                 try:
-                    completed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                               timeout=self.container_config.deadline_seconds, check=False)
-                except subprocess.TimeoutExpired:
+                    completed = _run_docker(
+                        command, self.container_config.deadline_seconds,
+                    )
+                    docker_stderr = completed.stderr
+                except (OSError, subprocess.TimeoutExpired):
                     # Stop the guest before deleting its bind-mounted workspace.
                     self._remove(name)
                     raise
                 if completed.returncode != 0:
-                    diagnostics = f'Container exited with code {completed.returncode}; check Docker and image {self.image}'
+                    diagnostics = _docker_error_diagnostics(
+                        f'Container exited with code {completed.returncode}; '
+                        f'check Docker and image {self.image}',
+                        docker_stderr,
+                        workspace,
+                    )
                 else:
                     with (path / 'result.json').open('rb') as output:
                         result_limit = _max_container_result_bytes(
@@ -212,7 +284,9 @@ class ContainerVerifier:
             diagnostics = 'Container verification deadline exceeded'
         except (OSError, ValueError, KeyError) as error:
             status = VerificationStatus.VERIFIER_ERROR
-            diagnostics = f'Container verifier error: {error}'
+            diagnostics = _docker_error_diagnostics(
+                f'Container verifier error: {error}', docker_stderr, workspace,
+            )
         finally:
             # Killing the Docker CLI alone does not stop the container.
             self._remove(name)
