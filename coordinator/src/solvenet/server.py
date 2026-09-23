@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import unquote_to_bytes, urlsplit
 
 from . import protocol_limits as limits
+from .problem_set import load as load_problem_set
 from .sandbox import (
     DEFAULT_CONTAINER_TIMEOUT_SECONDS,
     ContainerVerifier,
@@ -21,6 +22,7 @@ from .store import (
     DEFAULT_MAX_ASSIGNMENTS,
     MAX_ASSIGNMENTS,
     MAX_INITIAL_JOBS,
+    MAX_REPAIRS,
     REJECTION_KINDS,
     Conflict,
     Store,
@@ -195,6 +197,11 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     run = coordinator.store.run(parts[2])
                     return self.respond(200 if run else 404,
                                         run or {'error': 'Unknown run'})
+                if (len(parts) == 3 and parts[:2] == ['v1', 'experiments']
+                        and self.identifier(parts[2])):
+                    experiment = coordinator.store.experiment(parts[2])
+                    return self.respond(200 if experiment else 404,
+                                        experiment or {'error': 'Unknown experiment'})
                 self.respond(404, {'error': 'Unknown endpoint'})
             except ValueError as error:
                 self.respond(400, {'error': str(error)})
@@ -215,6 +222,47 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 data = self.read_json(limit)
                 if data is None:
                     return
+                if parts == ['v1', 'experiments']:
+                    allowed = {'idempotency_key', 'set_id', 'version', 'sha256', 'strategy',
+                               'model', 'initial_jobs', 'attempts', 'max_repairs',
+                               'max_output_tokens', 'generation_timeout_seconds', 'max_assignments'}
+                    unknown = set(data) - allowed
+                    if unknown:
+                        raise ValueError(f'Unknown experiment fields: {", ".join(sorted(unknown))}')
+                    key = text(data.get('idempotency_key'), 'idempotency_key', 256)
+                    fixture = load_problem_set()
+                    if (data.get('set_id'), data.get('version'), data.get('sha256')) != (
+                            fixture.set_id, fixture.version, fixture.sha256):
+                        raise ValueError('Unknown or changed checked-in problem set/version/hash')
+                    strategy = data.get('strategy')
+                    if strategy not in ('independent', 'repair'):
+                        raise ValueError('strategy must be independent or repair')
+                    depth = data.get('max_repairs', 0 if strategy == 'independent' else 2)
+                    if type(depth) is not int or not 0 <= depth <= MAX_REPAIRS or (
+                            strategy == 'independent' and depth != 0) or (
+                            strategy == 'repair' and depth == 0):
+                        raise ValueError('max_repairs must match strategy (0 for independent, 1-2 for repair)')
+                    if 'initial_jobs' in data and any(
+                            field in data for field in ('model', 'attempts', 'max_output_tokens')):
+                        raise ValueError('initial_jobs cannot be combined with model, attempts, or max_output_tokens')
+                    if 'initial_jobs' in data:
+                        groups = data['initial_jobs']
+                    else:
+                        groups = [{'model': text(data.get('model'), 'model', limits.MAX_MODEL_BYTES),
+                                   'count': integer(data.get('attempts', 3 if strategy == 'independent' else 1),
+                                                    'attempts', MAX_INITIAL_JOBS),
+                                   'max_output_tokens': integer(data.get('max_output_tokens', 2048),
+                                                                'max_output_tokens', limits.MAX_OUTPUT_TOKENS)}]
+                    config = {'set_id': fixture.set_id, 'version': fixture.version,
+                              'sha256': fixture.sha256, 'environment': fixture.environment,
+                              'strategy': strategy, 'initial_jobs': groups, 'max_repairs': depth,
+                              'generation_timeout_seconds': integer(
+                                  data.get('generation_timeout_seconds', 120),
+                                  'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
+                              'max_assignments': integer(data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
+                                                         'max_assignments', MAX_ASSIGNMENTS)}
+                    experiment, created = coordinator.store.create_experiment(key, config, fixture.problems)
+                    return self.respond(201 if created else 200, experiment)
                 if parts == ['v1', 'runs']:
                     statement = text(data.get('statement'), 'statement', limits.MAX_STATEMENT_BYTES)
                     imports = data.get('imports', ['Init'])

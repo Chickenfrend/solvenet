@@ -18,8 +18,8 @@ PYTHONPATH=coordinator/src python3 -m unittest discover \
 The structural loader rejects duplicate IDs, empty or multi-line statements,
 invalid import module names, and missing fields. Lean preflight and reference
 proof verification catch statements and imports that are syntactically valid
-strings but do not elaborate in the pinned project. Submission requires a running
-coordinator; `python3 -m solvenet.problem_set --help` lists options. Save its
-JSON manifest (`--output`) with the subsequent run results: the current API does
-not persist fixture/version metadata in the run record itself. The manifest
-includes a SHA-256 of the exact fixture JSON bytes for later comparison.
+strings but do not elaborate in the pinned project. For ad hoc submission,
+`python3 -m solvenet.problem_set --help` lists options and its `--output`
+manifest includes a SHA-256 of the exact fixture JSON bytes. For durable,
+idempotent full-set submissions, use the experiment API described in
+`coordinator/README.md`.

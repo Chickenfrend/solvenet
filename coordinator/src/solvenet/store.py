@@ -92,6 +92,17 @@ CREATE UNIQUE INDEX jobs_parent_attempt ON jobs(parent_attempt_id) WHERE parent_
 PRAGMA user_version = 6;
 """
 
+MIGRATION_7 = """
+CREATE TABLE experiments (
+ id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+ config TEXT NOT NULL, created_at REAL NOT NULL);
+ALTER TABLE runs ADD COLUMN experiment_id TEXT REFERENCES experiments(id);
+ALTER TABLE runs ADD COLUMN fixture_problem_id TEXT;
+CREATE UNIQUE INDEX runs_experiment_problem ON runs(experiment_id, fixture_problem_id)
+ WHERE experiment_id IS NOT NULL;
+PRAGMA user_version = 7;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
@@ -160,7 +171,10 @@ class Store:
                 finally:
                     db.execute("PRAGMA foreign_keys=ON")
                 version = 6
-            if version != 6:
+            if version == 6:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_7 + "COMMIT;")
+                version = 7
+            if version != 7:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -185,9 +199,17 @@ class Store:
                 raise
 
     def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
-               max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
-               max_assignments=DEFAULT_MAX_ASSIGNMENTS, *, initial_jobs=None):
+                max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
+                max_assignments=DEFAULT_MAX_ASSIGNMENTS, *, initial_jobs=None):
         """Create initial jobs in request order; each repair inherits its parent job."""
+        initial_jobs = self._validate_run(attempts, model, max_output_tokens, max_repairs,
+                                          generation_timeout_seconds, max_assignments, initial_jobs)
+        with self.transaction() as db:
+            return self._insert_run(db, statement, imports, initial_jobs, max_repairs,
+                                    generation_timeout_seconds, max_assignments)
+
+    def _validate_run(self, attempts, model, max_output_tokens, max_repairs,
+                      generation_timeout_seconds, max_assignments, initial_jobs):
         if initial_jobs is None:
             if type(attempts) is not int or not 1 <= attempts <= MAX_INITIAL_JOBS:
                 raise ValueError(f'attempts must be an integer between 1 and {MAX_INITIAL_JOBS}')
@@ -226,21 +248,65 @@ class Store:
             raise ValueError(f'generation_timeout_seconds must be an integer between 1 and {limits.MAX_GENERATION_TIMEOUT_SECONDS}')
         if type(max_assignments) is not int or not 1 <= max_assignments <= MAX_ASSIGNMENTS:
             raise ValueError(f'max_assignments must be an integer between 1 and {MAX_ASSIGNMENTS}')
+        return [{'model': group['model'], 'count': group['count'],
+                 'max_output_tokens': group.get('max_output_tokens', 2048)} for group in initial_jobs]
+
+    def _insert_run(self, db, statement, imports, initial_jobs, max_repairs,
+                    generation_timeout_seconds, max_assignments, experiment_id=None,
+                    fixture_problem_id=None):
         problem, run = identifier(), identifier()
-        with self.transaction() as db:
-            db.execute("INSERT INTO problems VALUES (?, ?, ?)", (problem, statement, json.dumps(imports)))
-            db.execute("""INSERT INTO runs
-              (id, problem_id, status, max_repairs, generation_timeout_seconds, max_assignments)
-              VALUES (?, ?, 'running', ?, ?, ?)""",
-                       (run, problem, max_repairs, generation_timeout_seconds, max_assignments))
-            for group in initial_jobs:
-                for _ in range(group['count']):
-                    db.execute("""INSERT INTO jobs
-                      (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds)
-                      VALUES (?, ?, 'queued', ?, ?, ?, ?)""",
-                               (identifier(), run, group['model'], group.get('max_output_tokens', 2048),
-                                max_assignments, generation_timeout_seconds))
+        db.execute("INSERT INTO problems VALUES (?, ?, ?)", (problem, statement, json.dumps(imports)))
+        db.execute("""INSERT INTO runs
+          (id, problem_id, status, max_repairs, generation_timeout_seconds, max_assignments,
+           experiment_id, fixture_problem_id)
+          VALUES (?, ?, 'running', ?, ?, ?, ?, ?)""",
+                   (run, problem, max_repairs, generation_timeout_seconds, max_assignments,
+                    experiment_id, fixture_problem_id))
+        for group in initial_jobs:
+            for _ in range(group['count']):
+                db.execute("""INSERT INTO jobs
+                  (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds)
+                  VALUES (?, ?, 'queued', ?, ?, ?, ?)""",
+                           (identifier(), run, group['model'], group['max_output_tokens'],
+                            max_assignments, generation_timeout_seconds))
         return {"problem_id": problem, "run_id": run}
+
+    def create_experiment(self, idempotency_key, config, problems):
+        """Persist one immutable experiment and all its initial runs atomically."""
+        groups = self._validate_run(3, 'scripted', 2048, config['max_repairs'],
+                                    config['generation_timeout_seconds'], config['max_assignments'],
+                                    config['initial_jobs'])
+        config = dict(config, initial_jobs=groups)
+        serialized = json.dumps(config, sort_keys=True, separators=(',', ':'))
+        with self.transaction() as db:
+            existing = db.execute("SELECT id, config FROM experiments WHERE idempotency_key=?",
+                                  (idempotency_key,)).fetchone()
+            if existing:
+                if existing['config'] != serialized:
+                    raise Conflict('Idempotency key already used for a different experiment')
+                return self._experiment(db, existing['id']), False
+            experiment_id = identifier()
+            db.execute("INSERT INTO experiments VALUES (?, ?, ?, ?)",
+                       (experiment_id, idempotency_key, serialized, self.clock()))
+            for problem in problems:
+                self._insert_run(db, problem.statement, problem.imports, groups,
+                                 config['max_repairs'], config['generation_timeout_seconds'],
+                                 config['max_assignments'], experiment_id, problem.id)
+            return self._experiment(db, experiment_id), True
+
+    def _experiment(self, db, experiment_id):
+        row = db.execute('SELECT * FROM experiments WHERE id=?', (experiment_id,)).fetchone()
+        if row is None:
+            return None
+        return {'id': row['id'], 'idempotency_key': row['idempotency_key'],
+                'created_at': row['created_at'], 'config': json.loads(row['config']),
+                'runs': [dict(run) for run in db.execute(
+                    'SELECT fixture_problem_id AS problem_id, id AS run_id, status FROM runs '
+                    'WHERE experiment_id=? ORDER BY rowid', (experiment_id,))]}
+
+    def experiment(self, experiment_id):
+        with self.connect() as db:
+            return self._experiment(db, experiment_id)
 
     def _refresh(self, db):
         db.execute("""UPDATE jobs SET status='cancelled' WHERE status='queued'

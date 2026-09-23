@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from solvenet.server import Coordinator, make_server
+from solvenet.problem_set import load as load_problem_set
 from solvenet import protocol_limits as limits
 from solvenet.store import MAX_REPAIRS, Conflict, Store, SCHEMA
 from solvenet.verifier import (
@@ -374,7 +375,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 6)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 7)
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)

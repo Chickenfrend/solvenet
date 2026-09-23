@@ -1,5 +1,44 @@
 # Lean verifier
 
+## Versioned experiments
+
+The coordinator loads the checked-in `problems/core-v1.json` itself. Start all
+runs for the set in one request (substitute the exact SHA-256 of the fixture):
+
+```sh
+sha256sum problems/core-v1.json
+curl -X POST http://127.0.0.1:8080/v1/experiments \
+  -H 'Content-Type: application/json' \
+  -d '{"idempotency_key":"core-repair-001","set_id":"core","version":1,"sha256":"<sha256>","strategy":"repair","model":"ollama/qwen2.5-coder:7b"}'
+```
+
+`strategy: "independent"` defaults to 3 initial chains and 0 repairs;
+`"repair"` defaults to 1 initial chain and up to 2 repairs. Each default
+allows up to three completed model generations per problem. Set `attempts`,
+`max_repairs` (0 for independent, 1–2 for repair), and `max_output_tokens`
+explicitly to adjust this policy. For heterogeneous initial chains, replace
+`model`/`attempts`/`max_output_tokens` with `initial_jobs`, e.g.
+`[{"model":"a","count":2,"max_output_tokens":512},{"model":"b","count":1,"max_output_tokens":512}]`.
+Repair jobs inherit their parent model and output limit. Optional
+`generation_timeout_seconds` and `max_assignments` are supported existing
+execution settings. Provider temperature/seed are not currently supported.
+Assignment retries (failures/expiries) can exceed the strategy's completed
+generation count and remain visible separately in each run's `assignments`.
+
+The response includes `id`, persisted `config` (set ID, version, SHA-256, pinned
+Lean environment, strategy, initial jobs and execution settings), and ordered
+`runs` with fixture problem ID, run ID and current status. Read it again with
+`GET /v1/experiments/{id}`; `GET /v1/runs/{run_id}` exposes `experiment_id`
+and `fixture_problem_id`. Reposting the same normalized configuration and
+`idempotency_key` returns HTTP 200 with the existing runs, including after a
+coordinator restart; reusing a key with different settings returns 409. A new
+experiment needs a new key. Creation and run/job insertion are a single SQLite
+transaction. The fixture hash must match the checked-in file, so an old version
+cannot silently run after fixture changes. Only statements and imports are copied
+into run records and worker claims; fixture reference proofs are never stored as
+prompts or sent to workers. Existing `POST /v1/runs` remains available for ad hoc
+runs and has no experiment linkage.
+
 Requires Python 3.11+ and Linux/POSIX process-group support. Install Lean using
 [elan](https://github.com/leanprover/elan); `lean/lean-toolchain` pins Lean 4.19.0.
 From the repository root, download the toolchain before running timed checks:
