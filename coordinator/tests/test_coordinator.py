@@ -1,3 +1,4 @@
+import http.client
 import json
 import shutil
 import sqlite3
@@ -361,6 +362,17 @@ class APITests(unittest.TestCase):
             raw = response.read()
             return response.status, json.loads(raw) if raw else None
 
+    def method_request(self, method, path, body=b''):
+        req = Request(self.url + path, data=body, method=method,
+                      headers={'Content-Type': 'application/json'})
+        try:
+            response = urlopen(req, timeout=10)
+        except HTTPError as error:
+            response = error
+        with response:
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else None, response.headers
+
     def test_http_lifecycle_and_validation(self):
         self.assertEqual(self.request('/v1/runs', {'statement': ': True', 'attempts': True})[0], 400)
         for invalid in (-1, MAX_REPAIRS + 1, True, '2', None, 1.5):
@@ -401,6 +413,80 @@ class APITests(unittest.TestCase):
         self.assertEqual(code, 201)
         outcome = self.request('/v1/runs/' + submitted['run_id'])[1]
         self.assertEqual(outcome['max_repairs'], MAX_REPAIRS)
+
+    def test_run_queries_and_percent_encoded_identifiers(self):
+        _, submitted = self.request('/v1/runs?client=test', {'statement': ': True'})
+        run_id = submitted['run_id']
+        code, queried = self.request(f'/v1/runs/{run_id}?include=all')
+        self.assertEqual(code, 200)
+        self.assertEqual(queried['id'], run_id)
+
+        encoded_id = f'%{ord(run_id[0]):02X}{run_id[1:]}'
+        code, encoded = self.request(f'/v1/runs/{encoded_id}')
+        self.assertEqual(code, 200)
+        self.assertEqual(encoded['id'], run_id)
+
+    def test_malformed_paths_return_json_errors(self):
+        paths = (
+            '/v1/runs/',
+            '/v1/runs/not-an-id',
+            '/v1/runs/' + 'a' * 32 + '/extra',
+            '/v1//runs/' + 'a' * 32,
+            '/v1/runs/%',
+            '/v1/runs/%2F',
+            '/v1/assignments//result',
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                status, error, headers = self.method_request('GET', path)
+                self.assertIn(status, (400, 404))
+                self.assertEqual(headers.get_content_type(), 'application/json')
+                self.assertEqual(set(error), {'error'})
+
+        status, error, headers = self.method_request(
+            'POST', '/v1/assignments/not-an-id/result', b'{}')
+        self.assertEqual(status, 404)
+        self.assertEqual(headers.get_content_type(), 'application/json')
+        self.assertEqual(error, {'error': 'Unknown endpoint'})
+        status, error, _ = self.method_request(
+            'POST', '/v1/assignments/' + 'a' * 32 + '/unknown', b'{}')
+        self.assertEqual(status, 404)
+        self.assertEqual(error, {'error': 'Unknown endpoint'})
+
+    def test_unsupported_methods_return_json_405(self):
+        for method in ('PUT', 'DELETE', 'PATCH'):
+            with self.subTest(method=method):
+                status, error, headers = self.method_request(
+                    method, '/v1/runs', json.dumps({'statement': ': True'}).encode())
+                self.assertEqual(status, 405)
+                self.assertEqual(error, {'error': 'Method not allowed'})
+                self.assertEqual(headers.get_content_type(), 'application/json')
+                self.assertEqual(headers['Allow'], 'GET, HEAD, POST')
+
+    def test_malformed_content_length_and_json_return_json(self):
+        status, error, headers = self.method_request('POST', '/v1/runs', b'{bad json')
+        self.assertEqual(status, 400)
+        self.assertEqual(error, {'error': 'Body must be valid UTF-8 JSON'})
+        self.assertEqual(headers.get_content_type(), 'application/json')
+
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=10)
+        self.addCleanup(connection.close)
+        connection.putrequest('POST', '/v1/runs')
+        connection.putheader('Content-Type', 'application/json')
+        connection.putheader('Content-Length', 'invalid')
+        connection.endheaders()
+        response = connection.getresponse()
+        raw = response.read()
+        self.assertEqual(response.status, 400)
+        self.assertEqual(response.headers.get_content_type(), 'application/json')
+        self.assertEqual(json.loads(raw), {'error': 'Content-Length must be an integer'})
+
+    def test_head_uses_get_status_and_sends_no_body(self):
+        status, body, headers = self.method_request('HEAD', '/missing')
+        self.assertEqual(status, 404)
+        self.assertIsNone(body)
+        self.assertEqual(headers.get_content_type(), 'application/json')
+        self.assertGreater(int(headers['Content-Length']), 0)
 
     def test_failed_generation_metadata_validation_and_retention(self):
         _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1})
