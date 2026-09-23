@@ -234,13 +234,14 @@ class Store:
     def claim(self, worker_id, models):
         with self.transaction() as db:
             self._expire(db)
-            job = None
-            for model in models:
-                job = db.execute("""SELECT j.*, p.statement, p.imports FROM jobs j
-                  JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
-                  WHERE j.status='queued' AND r.status='running' AND j.model=? ORDER BY j.rowid LIMIT 1""", (model,)).fetchone()
-                if job:
-                    break
+            if not models:
+                return None
+            placeholders = ','.join('?' for _ in models)
+            job = db.execute(f"""SELECT j.*, p.statement, p.imports FROM jobs j
+              JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
+              WHERE j.status='queued' AND r.status='running'
+              AND j.model IN ({placeholders})
+              ORDER BY j.rowid, j.id LIMIT 1""", tuple(models)).fetchone()
             if job is None:
                 return None
             assignment, token = identifier(), secrets.token_urlsafe(32)

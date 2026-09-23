@@ -54,6 +54,23 @@ class StoreTests(unittest.TestCase):
             claims = list(pool.map(lambda i: self.store.claim(str(i), ['scripted']), range(8)))
         self.assertEqual(sum(a is not None for a in claims), 1)
 
+    def test_claim_uses_global_job_age_not_worker_model_order(self):
+        for index, models in enumerate((['newer-model', 'older-model'],
+                                        ['older-model', 'newer-model'])):
+            with self.subTest(models=models):
+                path = Path(self.temp.name) / f'claim-order-{index}.db'
+                store = Store(path, clock=lambda: self.now)
+                older_run = store.submit(
+                    ': True', ['Init'], attempts=1, model='older-model')['run_id']
+                store.submit(': True', ['Init'], attempts=1, model='newer-model')
+
+                # Persisted insertion order remains authoritative after restart,
+                # regardless of the order in which the worker advertises models.
+                claim = Store(path, clock=lambda: self.now).claim('worker', models)
+                self.assertEqual(claim['job']['model'], 'older-model')
+                self.assertEqual(
+                    Store(path).run(older_run)['jobs'][0]['id'], claim['job']['id'])
+
     def test_expiry_and_stale_result(self):
         a = self.store.claim('a', ['scripted'])
         self.now += 4

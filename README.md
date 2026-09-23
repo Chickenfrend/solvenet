@@ -81,6 +81,10 @@ proof and eventual `exhausted` run (use the continuously polling worker).
 The database survives restarts. Unfinished verifications are picked up again in
 persisted candidate insertion order, with attempt ID as a final tie-breaker.
 Verification is currently single-threaded, so one candidate is checked at a time.
+Job claims use coordinator-owned global FIFO across all compatible queued jobs,
+with job ID as a final tie-breaker. A worker's advertised model-list order does
+not express preference or change scheduling, and the persisted order survives
+coordinator restarts.
 Unacknowledged assignments are reclaimed when their leases expire. Stop the
 coordinator and worker with Ctrl-C.
 
