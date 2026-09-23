@@ -597,6 +597,12 @@ class APITests(unittest.TestCase):
         self.assertEqual(outcome['jobs'][0]['generation_timeout_seconds'], 321)
         self.assertEqual(outcome['jobs'][0]['max_assignments'], 2)
 
+    def test_unexpected_store_type_error_is_internal_error(self):
+        with patch.object(self.store, 'submit', side_effect=TypeError('store bug')):
+            with patch('solvenet.server.LOG'):
+                self.assertEqual(self.request('/v1/runs', {'statement': ': True'}),
+                                 (500, {'error': 'Internal coordinator error'}))
+
     def test_initial_jobs_api_compatibility_and_bounds(self):
         base = {'statement': ': True'}
         groups = [{'model': 'a', 'count': 2, 'max_output_tokens': 64},

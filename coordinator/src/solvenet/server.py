@@ -105,6 +105,89 @@ def validate_generation(data):
             raise ValueError(f'Unknown generation field: {key}')
 
 
+def experiment_identity(data):
+    allowed = {'idempotency_key', 'set_id', 'version', 'sha256', 'strategy',
+               'model', 'initial_jobs', 'attempts', 'max_repairs',
+               'max_output_tokens', 'generation_timeout_seconds', 'max_assignments',
+               'generation_settings'}
+    unknown = set(data) - allowed
+    if unknown:
+        raise ValueError(f'Unknown experiment fields: {", ".join(sorted(unknown))}')
+    return text(data.get('idempotency_key'), 'idempotency_key', 256)
+
+
+def experiment_config(data, fixture):
+    strategy = data.get('strategy')
+    if strategy not in ('independent', 'repair'):
+        raise ValueError('strategy must be independent or repair')
+    depth = data.get('max_repairs', 0 if strategy == 'independent' else 2)
+    if type(depth) is not int or not 0 <= depth <= MAX_REPAIRS or (
+            strategy == 'independent' and depth != 0) or (
+            strategy == 'repair' and depth == 0):
+        raise ValueError('max_repairs must match strategy (0 for independent, 1-2 for repair)')
+    attempts, model, budget, groups = initial_job_options(
+        data, default_attempts=DEFAULT_INITIAL_ATTEMPTS if strategy == 'independent' else 1,
+        default_model=None)
+    if groups is None:
+        groups = [{'model': model, 'count': attempts, 'max_output_tokens': budget}]
+    config = {'set_id': fixture.set_id, 'version': fixture.version,
+              'sha256': fixture.sha256, 'environment': fixture.environment,
+              'strategy': strategy, 'initial_jobs': groups, 'max_repairs': depth,
+              'generation_timeout_seconds': integer(
+                  data.get('generation_timeout_seconds', 120),
+                  'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
+              'max_assignments': integer(data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
+                                          'max_assignments', MAX_ASSIGNMENTS)}
+    if 'generation_settings' in data:
+        config['generation_settings'] = data['generation_settings']
+    return config
+
+
+def run_options(data):
+    if 'generation_settings' in data and data['generation_settings'] is None:
+        raise ValueError('generation_settings must be an object')
+    statement = text(data.get('statement'), 'statement', limits.MAX_STATEMENT_BYTES)
+    imports = data.get('imports', ['Init'])
+    if not isinstance(imports, list) or not 1 <= len(imports) <= limits.MAX_IMPORTS:
+        raise ValueError(f'imports must be a nonempty list of up to {limits.MAX_IMPORTS} modules')
+    for module in imports:
+        text(module, 'import', limits.MAX_IMPORT_BYTES)
+    attempts, model, budget, initial_jobs = initial_job_options(data)
+    return dict(statement=statement, imports=imports,
+                # v1 `attempts` counts initial search chains/jobs, not
+                # completed candidates in run inspection's attempts[].
+                attempts=attempts, model=model, max_output_tokens=budget,
+                max_repairs=data.get('max_repairs', 0),
+                generation_timeout_seconds=integer(
+                    data.get('generation_timeout_seconds', 120),
+                    'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
+                max_assignments=integer(data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
+                                        'max_assignments', MAX_ASSIGNMENTS),
+                initial_jobs=initial_jobs, generation_settings=data.get('generation_settings'))
+
+
+def validate_result(data):
+    validate_generation(data)
+    if data.get('status') == 'completed':
+        if not isinstance(data.get('output'), dict):
+            raise ValueError('output must be an object')
+        text(data['output'].get('text'), 'output.text', limits.MAX_CANDIDATE_BYTES)
+    elif data.get('status') == 'failed':
+        text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
+        failure_class = data.get('failure_class', DEFAULT_FAILURE_CLASS)
+        if failure_class not in FAILURE_CLASSES:
+            raise ValueError('failure_class must be transient or permanent')
+        if ('failure_category' in data and
+                data['failure_category'] not in FAILURE_CATEGORIES):
+            raise ValueError('failure_category must be provider_failure, formatting_failure, or other_failure')
+    elif data.get('status') == 'rejected':
+        text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
+        if data.get('rejection_kind') not in REJECTION_KINDS:
+            raise ValueError('rejection_kind must be malformed_assignment or unsupported_protocol')
+    else:
+        raise ValueError('status must be completed, failed, or rejected')
+
+
 class Coordinator:
     def __init__(self, store, verifier):
         self.store = store
@@ -265,65 +348,14 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 if data is None:
                     return
                 if parts == ['v1', 'experiments']:
-                    allowed = {'idempotency_key', 'set_id', 'version', 'sha256', 'strategy',
-                                'model', 'initial_jobs', 'attempts', 'max_repairs',
-                                'max_output_tokens', 'generation_timeout_seconds', 'max_assignments',
-                                'generation_settings'}
-                    unknown = set(data) - allowed
-                    if unknown:
-                        raise ValueError(f'Unknown experiment fields: {", ".join(sorted(unknown))}')
-                    key = text(data.get('idempotency_key'), 'idempotency_key', 256)
+                    key = experiment_identity(data)
                     fixture = load_experiment_set(data.get('set_id'), data.get('version'),
                                                   data.get('sha256'))
-                    strategy = data.get('strategy')
-                    if strategy not in ('independent', 'repair'):
-                        raise ValueError('strategy must be independent or repair')
-                    depth = data.get('max_repairs', 0 if strategy == 'independent' else 2)
-                    if type(depth) is not int or not 0 <= depth <= MAX_REPAIRS or (
-                            strategy == 'independent' and depth != 0) or (
-                            strategy == 'repair' and depth == 0):
-                        raise ValueError('max_repairs must match strategy (0 for independent, 1-2 for repair)')
-                    attempts, model, budget, groups = initial_job_options(
-                        data, default_attempts=DEFAULT_INITIAL_ATTEMPTS if strategy == 'independent' else 1,
-                        default_model=None)
-                    if groups is None:
-                        groups = [{'model': model, 'count': attempts, 'max_output_tokens': budget}]
-                    config = {'set_id': fixture.set_id, 'version': fixture.version,
-                              'sha256': fixture.sha256, 'environment': fixture.environment,
-                              'strategy': strategy, 'initial_jobs': groups, 'max_repairs': depth,
-                              'generation_timeout_seconds': integer(
-                                  data.get('generation_timeout_seconds', 120),
-                                  'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
-                              'max_assignments': integer(data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
-                                                          'max_assignments', MAX_ASSIGNMENTS)}
-                    if 'generation_settings' in data:
-                        config['generation_settings'] = data['generation_settings']
+                    config = experiment_config(data, fixture)
                     experiment, created = coordinator.store.create_experiment(key, config, fixture.problems)
                     return self.respond(201 if created else 200, experiment)
                 if parts == ['v1', 'runs']:
-                    if 'generation_settings' in data and data['generation_settings'] is None:
-                        raise ValueError('generation_settings must be an object')
-                    statement = text(data.get('statement'), 'statement', limits.MAX_STATEMENT_BYTES)
-                    imports = data.get('imports', ['Init'])
-                    if not isinstance(imports, list) or not 1 <= len(imports) <= limits.MAX_IMPORTS:
-                        raise ValueError(f'imports must be a nonempty list of up to {limits.MAX_IMPORTS} modules')
-                    for module in imports:
-                        text(module, 'import', limits.MAX_IMPORT_BYTES)
-                    attempts, model, budget, initial_jobs = initial_job_options(data)
-                    return self.respond(201, coordinator.store.submit(
-                        statement, imports,
-                        # v1 `attempts` counts initial search chains/jobs, not
-                        # completed candidates in run inspection's attempts[].
-                        attempts, model, budget,
-                        max_repairs=data.get('max_repairs', 0),
-                        generation_timeout_seconds=integer(
-                            data.get('generation_timeout_seconds', 120),
-                            'generation_timeout_seconds', limits.MAX_GENERATION_TIMEOUT_SECONDS),
-                        max_assignments=integer(
-                            data.get('max_assignments', DEFAULT_MAX_ASSIGNMENTS),
-                            'max_assignments', MAX_ASSIGNMENTS),
-                        initial_jobs=initial_jobs,
-                        generation_settings=data.get('generation_settings')))
+                    return self.respond(201, coordinator.store.submit(**run_options(data)))
                 if parts == ['v1', 'claim']:
                     worker = text(data.get('worker_id'), 'worker_id', limits.MAX_IDENTIFIER_BYTES)
                     models = data.get('models')
@@ -346,31 +378,12 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     if parts[3] == 'heartbeat':
                         return self.respond(200, coordinator.store.heartbeat(parts[2], token))
                     if parts[3] == 'result':
-                        validate_generation(data)
-                        if data.get('status') == 'completed':
-                            if not isinstance(data.get('output'), dict):
-                                raise ValueError('output must be an object')
-                            text(data['output'].get('text'), 'output.text', limits.MAX_CANDIDATE_BYTES)
-                        elif data.get('status') == 'failed':
-                            text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
-                            failure_class = data.get('failure_class', DEFAULT_FAILURE_CLASS)
-                            if failure_class not in FAILURE_CLASSES:
-                                raise ValueError('failure_class must be transient or permanent')
-                            if ('failure_category' in data and
-                                    data['failure_category'] not in FAILURE_CATEGORIES):
-                                raise ValueError('failure_category must be provider_failure, formatting_failure, or other_failure')
-                        elif data.get('status') == 'rejected':
-                            text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
-                            if data.get('rejection_kind') not in REJECTION_KINDS:
-                                raise ValueError(
-                                    'rejection_kind must be malformed_assignment or unsupported_protocol')
-                        else:
-                            raise ValueError('status must be completed, failed, or rejected')
+                        validate_result(data)
                         return self.respond(200, coordinator.store.result(parts[2], data))
                 self.respond(404, {'error': 'Unknown endpoint'})
             except Conflict as error:
                 self.respond(409, {'error': str(error)})
-            except (ValueError, KeyError, TypeError) as error:
+            except ValueError as error:
                 self.respond(400, {'error': str(error)})
             except Exception:
                 LOG.exception('HTTP request failed')
