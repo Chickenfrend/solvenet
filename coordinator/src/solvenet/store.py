@@ -57,10 +57,40 @@ ALTER TABLE runs ADD COLUMN max_assignments INTEGER NOT NULL DEFAULT 3 CHECK (ma
 PRAGMA user_version = 5;
 """
 
+MIGRATION_6 = """
+CREATE TABLE runs_v6 (
+ id TEXT PRIMARY KEY, problem_id TEXT NOT NULL REFERENCES problems(id), status TEXT NOT NULL,
+ max_repairs INTEGER NOT NULL DEFAULT 0 CHECK (max_repairs >= 0),
+ generation_timeout_seconds INTEGER NOT NULL DEFAULT 120 CHECK (generation_timeout_seconds BETWEEN 1 AND 86400),
+ max_assignments INTEGER NOT NULL DEFAULT 3 CHECK (max_assignments BETWEEN 1 AND 100));
+INSERT INTO runs_v6 (rowid, id, problem_id, status, max_repairs,
+ generation_timeout_seconds, max_assignments)
+ SELECT rowid, id, problem_id, status, max_repairs,
+ generation_timeout_seconds, max_assignments FROM runs;
+CREATE TABLE jobs_v6 (
+ id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), status TEXT NOT NULL,
+ model TEXT NOT NULL, max_output_tokens INTEGER NOT NULL, max_assignments INTEGER NOT NULL,
+ parent_attempt_id TEXT REFERENCES attempts(id),
+ repair_depth INTEGER NOT NULL DEFAULT 0 CHECK (repair_depth >= 0),
+ generation_timeout_seconds INTEGER NOT NULL DEFAULT 120 CHECK (generation_timeout_seconds BETWEEN 1 AND 86400));
+INSERT INTO jobs_v6 (rowid, id, run_id, status, model, max_output_tokens,
+ max_assignments, parent_attempt_id, repair_depth, generation_timeout_seconds)
+ SELECT rowid, id, run_id, status, model, max_output_tokens,
+ max_assignments, parent_attempt_id, repair_depth, generation_timeout_seconds FROM jobs;
+DROP TABLE jobs;
+DROP TABLE runs;
+ALTER TABLE runs_v6 RENAME TO runs;
+ALTER TABLE jobs_v6 RENAME TO jobs;
+CREATE INDEX jobs_status ON jobs(status);
+CREATE UNIQUE INDEX jobs_parent_attempt ON jobs(parent_attempt_id) WHERE parent_attempt_id IS NOT NULL;
+PRAGMA user_version = 6;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 MAX_GENERATION_TIMEOUT_SECONDS = 24 * 60 * 60
 DEFAULT_MAX_ASSIGNMENTS = 3
 MAX_ASSIGNMENTS = 100
+MAX_REPAIRS = 2
 FAILURE_CLASSES = ('transient', 'permanent')
 DEFAULT_FAILURE_CLASS = 'transient'
 
@@ -105,7 +135,25 @@ class Store:
             if version == 4:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_5 + "COMMIT;")
                 version = 5
-            if version != 5:
+            if version == 5:
+                # SQLite cannot remove a CHECK constraint in place. Rebuild the
+                # two tables atomically while FK enforcement is temporarily off;
+                # names and references are unchanged when enforcement resumes.
+                db.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_6)
+                    violations = db.execute("PRAGMA foreign_key_check").fetchall()
+                    if violations:
+                        raise RuntimeError(f"Database migration produced foreign key violations: {violations}")
+                    db.commit()
+                except Exception:
+                    if db.in_transaction:
+                        db.rollback()
+                    raise
+                finally:
+                    db.execute("PRAGMA foreign_keys=ON")
+                version = 6
+            if version != 6:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -132,8 +180,8 @@ class Store:
     def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
                max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS,
                max_assignments=DEFAULT_MAX_ASSIGNMENTS):
-        if type(max_repairs) is not int or not 0 <= max_repairs <= 2:
-            raise ValueError('max_repairs must be an integer between 0 and 2')
+        if type(max_repairs) is not int or not 0 <= max_repairs <= MAX_REPAIRS:
+            raise ValueError(f'max_repairs must be an integer between 0 and {MAX_REPAIRS}')
         if (type(generation_timeout_seconds) is not int or
                 not 1 <= generation_timeout_seconds <= MAX_GENERATION_TIMEOUT_SECONDS):
             raise ValueError('generation_timeout_seconds must be an integer between 1 and 86400')

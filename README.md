@@ -91,9 +91,9 @@ curl -sS http://127.0.0.1:11434/api/version
 
 Restart the coordinator with the current code (Ctrl-C in its terminal, then the
 same start command). Existing SQLite databases migrate automatically to schema
-5, preserving previous results. Upgrade the coordinator before the worker
-so generation metadata is retained. The Lean verifier image does not need to be
-rebuilt for this adapter change.
+6, preserving previous results and repair links. Upgrade the coordinator before
+the worker so generation metadata is retained. The Lean verifier image does not
+need to be rebuilt for this adapter change.
 
 From the repository root, submit a model-specific run and save its ID in your
 shell so it can be used directly:
@@ -194,7 +194,10 @@ three model calls if execution fails; with the default, it allows at most nine
 dispatches. In general the bound is
 `attempts * (1 + max_repairs) * max_assignments`.
 
-Repairs are opt-in: `max_repairs` defaults to 0 and accepts 0–2. `attempts` means
+Repairs are opt-in: `max_repairs` defaults to 0 and accepts 0–2. This range is an
+API policy, not a database limit; the schema only requires nonnegative repair
+budgets and depths, so changing the API ceiling does not require another table
+migration. `attempts` means
 the number of initial independent chains. To compare strategies, use
 `attempts: 3, max_repairs: 0` versus `attempts: 1, max_repairs: 2`. Record actual
 tokens and timings as well as requests because repair prompts are longer.

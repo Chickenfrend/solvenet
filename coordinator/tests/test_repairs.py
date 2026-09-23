@@ -4,7 +4,15 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from solvenet.store import Store, SCHEMA, MIGRATION_2
+from solvenet.store import (
+    MAX_REPAIRS,
+    MIGRATION_2,
+    MIGRATION_3,
+    MIGRATION_4,
+    MIGRATION_5,
+    SCHEMA,
+    Store,
+)
 from solvenet.verifier import VerificationResult, VerificationStatus
 
 
@@ -73,6 +81,11 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(len(run['jobs']), 3)
         self.assertEqual([a['repair_depth'] for a in run['attempts']], [0, 1, 2])
         self.assertIsNone(self.claim())
+
+    def test_application_repair_bound(self):
+        self.assertIsNotNone(self.store.submit(': True', ['Init'], max_repairs=MAX_REPAIRS))
+        with self.assertRaisesRegex(ValueError, f'between 0 and {MAX_REPAIRS}'):
+            self.store.submit(': True', ['Init'], max_repairs=MAX_REPAIRS + 1)
 
     def test_success_stops_chain(self):
         self.store.verified(self.submit(self.claim()), outcome())
@@ -146,3 +159,70 @@ class RepairTests(unittest.TestCase):
         migrated.verified(migrated.pending()['id'], outcome())
         self.assertEqual(migrated.run('r')['status'], 'exhausted')
         self.assertEqual(len(Store(path).run('r')['jobs']), 1)
+
+    def test_version_5_migration_preserves_repair_chain_and_constraints(self):
+        path = Path(self.temp.name) / 'v5.db'
+        with sqlite3.connect(path) as db:
+            db.executescript(SCHEMA + MIGRATION_2 + MIGRATION_3 + MIGRATION_4 + MIGRATION_5)
+            db.execute("INSERT INTO problems VALUES ('p', ': True', '[\"Init\"]')")
+            db.execute("INSERT INTO runs VALUES ('r', 'p', 'running', 2, 321, 4)")
+            db.execute("INSERT INTO jobs VALUES ('j0', 'r', 'done', 'scripted', 256, 4, NULL, 0, 321)")
+            db.execute("INSERT INTO assignments VALUES ('a0', 'j0', 'w', 'token0', 2000, 'completed', NULL)")
+            db.execute("INSERT INTO attempts VALUES ('t0', 'a0', 'bad0', 'scripted', '{}', '{}')")
+            db.execute("INSERT INTO verifications VALUES ('t0', 'rejected', 'first error', 10)")
+            db.execute("INSERT INTO jobs VALUES ('j1', 'r', 'done', 'scripted', 256, 4, 't0', 1, 321)")
+            db.execute("INSERT INTO assignments VALUES ('a1', 'j1', 'w', 'token1', 2001, 'completed', NULL)")
+            db.execute("INSERT INTO attempts VALUES ('t1', 'a1', 'bad1', 'scripted', '{}', '{}')")
+            db.execute("INSERT INTO verifications VALUES ('t1', 'rejected', 'second error', 11)")
+            db.execute("INSERT INTO jobs VALUES ('j2', 'r', 'queued', 'scripted', 256, 4, 't1', 2, 321)")
+
+        migrated = Store(path)
+        run = migrated.run('r')
+        self.assertEqual(run['max_repairs'], 2)
+        self.assertEqual(run['generation_timeout_seconds'], 321)
+        self.assertEqual(run['max_assignments'], 4)
+        self.assertEqual([job['id'] for job in run['jobs']], ['j0', 'j1', 'j2'])
+        self.assertEqual([job['parent_attempt_id'] for job in run['jobs']], [None, 't0', 't1'])
+        self.assertEqual([job['repair_depth'] for job in run['jobs']], [0, 1, 2])
+        self.assertEqual([attempt['id'] for attempt in run['attempts']], ['t0', 't1'])
+        with migrated.connect() as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 6)
+            self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
+            indexes = {row['name'] for row in db.execute("PRAGMA index_list('jobs')")}
+            self.assertIn('jobs_status', indexes)
+            self.assertIn('jobs_parent_attempt', indexes)
+            self.assertEqual(
+                {row['table'] for row in db.execute("PRAGMA foreign_key_list('runs')")},
+                {'problems'},
+            )
+            self.assertEqual(
+                {row['table'] for row in db.execute("PRAGMA foreign_key_list('jobs')")},
+                {'runs', 'attempts'},
+            )
+            self.assertEqual(
+                {row['table'] for row in db.execute("PRAGMA foreign_key_list('assignments')")},
+                {'jobs'},
+            )
+            runs_sql = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'").fetchone()[0]
+            jobs_sql = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()[0]
+            self.assertIn('max_repairs >= 0', runs_sql)
+            self.assertIn('repair_depth >= 0', jobs_sql)
+            self.assertNotIn('max_repairs BETWEEN 0 AND 2', runs_sql)
+            self.assertNotIn('repair_depth BETWEEN 0 AND 2', jobs_sql)
+
+        # Values above the current API policy are structurally valid, while
+        # negative values and duplicate repair parents remain impossible.
+        with migrated.transaction() as db:
+            db.execute("UPDATE runs SET max_repairs=? WHERE id='r'", (MAX_REPAIRS + 1,))
+            db.execute("UPDATE jobs SET repair_depth=? WHERE id='j2'", (MAX_REPAIRS + 1,))
+        with self.assertRaises(sqlite3.IntegrityError):
+            with migrated.transaction() as db:
+                db.execute("UPDATE runs SET max_repairs=-1 WHERE id='r'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            with migrated.transaction() as db:
+                db.execute("UPDATE jobs SET repair_depth=-1 WHERE id='j2'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            with migrated.transaction() as db:
+                db.execute("INSERT INTO jobs VALUES ('duplicate', 'r', 'queued', 'scripted', 256, 4, 't1', 3, 321)")

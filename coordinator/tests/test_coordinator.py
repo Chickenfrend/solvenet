@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from solvenet.server import Coordinator, make_server
-from solvenet.store import Conflict, Store, SCHEMA
+from solvenet.store import MAX_REPAIRS, Conflict, Store, SCHEMA
 from solvenet.verifier import LeanVerifier, VerificationResult, VerificationStatus
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -162,7 +162,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 5)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 6)
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
@@ -244,7 +244,7 @@ class APITests(unittest.TestCase):
 
     def test_http_lifecycle_and_validation(self):
         self.assertEqual(self.request('/v1/runs', {'statement': ': True', 'attempts': True})[0], 400)
-        for invalid in (-1, 3, True, '2', None, 1.5):
+        for invalid in (-1, MAX_REPAIRS + 1, True, '2', None, 1.5):
             self.assertEqual(self.request('/v1/runs', {'statement': ': True', 'max_repairs': invalid})[0], 400)
         for invalid in (0, 86401, True, '120', None, 1.5):
             code, error = self.request('/v1/runs', {
@@ -275,6 +275,13 @@ class APITests(unittest.TestCase):
         self.assertEqual(outcome['max_assignments'], 2)
         self.assertEqual(outcome['jobs'][0]['generation_timeout_seconds'], 321)
         self.assertEqual(outcome['jobs'][0]['max_assignments'], 2)
+
+    def test_max_repairs_api_upper_bound_is_accepted(self):
+        code, submitted = self.request(
+            '/v1/runs', {'statement': ': True', 'max_repairs': MAX_REPAIRS})
+        self.assertEqual(code, 201)
+        outcome = self.request('/v1/runs/' + submitted['run_id'])[1]
+        self.assertEqual(outcome['max_repairs'], MAX_REPAIRS)
 
     def test_failed_generation_metadata_validation_and_retention(self):
         _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1})
