@@ -332,7 +332,8 @@ class Store:
             row = db.execute("""SELECT t.id, t.candidate, p.statement, p.imports FROM attempts t
               JOIN assignments a ON a.id=t.assignment_id JOIN jobs j ON j.id=a.job_id
               JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
-              LEFT JOIN verifications v ON v.attempt_id=t.id WHERE v.attempt_id IS NULL LIMIT 1""").fetchone()
+              LEFT JOIN verifications v ON v.attempt_id=t.id WHERE v.attempt_id IS NULL
+              ORDER BY t.rowid, t.id LIMIT 1""").fetchone()
             return dict(row) if row else None
 
     def verified(self, attempt, result):

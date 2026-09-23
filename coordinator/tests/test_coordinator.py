@@ -172,6 +172,40 @@ class StoreTests(unittest.TestCase):
         self.store.verified(self.store.pending()['id'], VerificationResult(VerificationStatus.VERIFIER_ERROR, 'broken environment', 0))
         self.assertEqual(self.store.run(self.run)['status'], 'error')
 
+    def test_pending_verifications_follow_insertion_order_across_restarts(self):
+        self.store.claim('unrelated', ['scripted'])
+        first_run = self.store.submit(
+            ': True', ['Init'], attempts=2, model='verification-order-a')['run_id']
+        second_run = self.store.submit(
+            ': True', ['Init'], attempts=2, model='verification-order-b')['run_id']
+        claims = {
+            'a1': self.store.claim('worker', ['verification-order-a']),
+            'a2': self.store.claim('worker', ['verification-order-a']),
+            'b1': self.store.claim('worker', ['verification-order-b']),
+            'b2': self.store.claim('worker', ['verification-order-b']),
+        }
+
+        # Candidate completion, rather than run or job creation, defines queue order.
+        expected = ['b2', 'a1', 'b1', 'a2']
+        for name in expected:
+            claim = claims[name]
+            self.store.result(claim['assignment_id'], self.payload(claim, name))
+
+        selected = []
+        for name in expected:
+            restarted = Store(self.path, clock=lambda: self.now)
+            pending = restarted.pending()
+            selected.append(pending['candidate'])
+            restarted.verified(
+                pending['id'],
+                VerificationResult(VerificationStatus.TIMEOUT, 'test timeout', 1),
+            )
+
+        self.assertEqual(selected, expected)
+        self.assertIsNone(Store(self.path).pending())
+        self.assertEqual(len(self.store.run(first_run)['attempts']), 2)
+        self.assertEqual(len(self.store.run(second_run)['attempts']), 2)
+
     def test_verified_proof_has_precedence_in_both_delivery_orders(self):
         for first, second in (
                 (VerificationStatus.VERIFIER_ERROR, VerificationStatus.VERIFIED),

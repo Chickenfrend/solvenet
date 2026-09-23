@@ -78,8 +78,10 @@ After verification the run should be `solved`, with one `verified` attempt and
 two cancelled queued jobs. Submit `: False` with the same worker to see a rejected
 proof and eventual `exhausted` run (use the continuously polling worker).
 
-The database survives restarts. Unfinished verifications are picked up again;
-unacknowledged assignments are reclaimed when their leases expire. Stop the
+The database survives restarts. Unfinished verifications are picked up again in
+persisted candidate insertion order, with attempt ID as a final tie-breaker.
+Verification is currently single-threaded, so one candidate is checked at a time.
+Unacknowledged assignments are reclaimed when their leases expire. Stop the
 coordinator and worker with Ctrl-C.
 
 ### Use your local Ollama model
