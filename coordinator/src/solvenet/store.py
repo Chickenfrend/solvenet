@@ -142,6 +142,9 @@ def validate_settings(settings):
 def validate_job_settings(groups, settings):
     if settings and any(group['model'] == 'scripted' for group in groups):
         raise ValueError('scripted model does not support generation_settings')
+    if ('seed' in settings and
+            settings['seed'] + sum(group['count'] for group in groups) - 1 > 2**63 - 1):
+        raise ValueError('generation_settings.seed plus initial chain index must be at most 9223372036854775807')
 
 
 def repair_feedback(candidate, diagnostics):
@@ -302,13 +305,19 @@ class Store:
            VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)""",
                    (run, problem, max_repairs, generation_timeout_seconds, max_assignments,
                     experiment_id, fixture_problem_id, self.clock(), settings_json))
+        chain_index = 0
         for group in initial_jobs:
             for _ in range(group['count']):
+                job_settings = dict(generation_settings or {})
+                if 'seed' in job_settings:
+                    job_settings['seed'] += chain_index
                 db.execute("""INSERT INTO jobs
-                   (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds, generation_settings)
-                   VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)""",
-                           (identifier(), run, group['model'], group['max_output_tokens'],
-                            max_assignments, generation_timeout_seconds, settings_json))
+                    (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds, generation_settings)
+                    VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)""",
+                            (identifier(), run, group['model'], group['max_output_tokens'],
+                             max_assignments, generation_timeout_seconds,
+                             json.dumps(job_settings, sort_keys=True)))
+                chain_index += 1
         return {"problem_id": problem, "run_id": run}
 
     def create_experiment(self, idempotency_key, config, problems):
@@ -560,11 +569,13 @@ class Store:
                 else:
                     result['initial_jobs'].append(group)
             result['attempts'] = [dict(r) for r in db.execute("""SELECT t.*, j.id AS job_id,
-              j.parent_attempt_id, j.repair_depth, v.status AS verification_status,
+               j.parent_attempt_id, j.repair_depth, j.generation_settings,
+               v.status AS verification_status,
               v.diagnostics, v.elapsed_ms FROM attempts t JOIN assignments a ON a.id=t.assignment_id
               JOIN jobs j ON j.id=a.job_id LEFT JOIN verifications v ON v.attempt_id=t.id
               WHERE j.run_id=? ORDER BY t.rowid""", (run_id,))]
             result['assignments'] = [dict(r) for r in db.execute("""SELECT a.id, a.job_id, a.worker_id,
+                j.generation_settings,
                a.expires, a.status, json_extract(a.result, '$.error') AS error,
                 CASE WHEN json_extract(a.result, '$.status')='failed'
                   THEN coalesce(json_extract(a.result, '$.failure_class'), 'transient')
@@ -576,7 +587,9 @@ class Store:
             for attempt in result['attempts']:
                 attempt['usage'] = json.loads(attempt['usage'])
                 attempt['generation'] = json.loads(attempt['generation'])
+                attempt['generation_settings'] = json.loads(attempt['generation_settings'])
             for assignment in result['assignments']:
                 assignment['generation'] = json.loads(assignment['generation'] or '{}')
                 assignment['usage'] = json.loads(assignment['usage'] or '{}')
+                assignment['generation_settings'] = json.loads(assignment['generation_settings'])
             return result

@@ -114,6 +114,30 @@ class ExperimentsTest(unittest.TestCase):
         self.assertEqual(self.request('/v1/experiments', config | {'sha256': '0' * 64})[0], 400)
         self.assertEqual(self.request('/v1/runs', {'statement': ': True'})[0], 201)
 
+    def test_seeded_experiment_idempotency_and_restart(self):
+        config = self.config('independent', generation_settings={'seed': 22})
+        config['model'] = 'ollama/test'
+        status, experiment = self.request('/v1/experiments', config)
+        self.assertEqual(status, 201)
+        run_id = experiment['runs'][0]['run_id']
+        self.assertEqual([j['generation_settings']['seed'] for j in self.store.run(run_id)['jobs']],
+                         [22, 23, 24])
+        paired = config | {'idempotency_key': 'paired-repair', 'strategy': 'repair'}
+        status, repair = self.request('/v1/experiments', paired)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.store.run(repair['runs'][0]['run_id'])['jobs'][0]['generation_settings']['seed'], 22)
+        self.store = Store(self.path)
+        self.assertEqual(self.request('/v1/experiments', config), (200, experiment))
+        self.assertEqual([j['generation_settings']['seed'] for j in self.store.run(run_id)['jobs']],
+                         [22, 23, 24])
+        self.assertEqual(self.request('/v1/experiments', config | {
+            'generation_settings': {'seed': 23}})[0], 409)
+        overflow = config | {'idempotency_key': 'overflow',
+                             'generation_settings': {'seed': 2**63 - 2}}
+        self.assertEqual(self.request('/v1/experiments', overflow)[0], 400)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM experiments').fetchone()[0], 2)
+
     def test_generation_settings_on_experiment_and_ad_hoc_runs(self):
         settings = {'temperature': 0, 'seed': 42}
         config = self.config(generation_settings=settings)

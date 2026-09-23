@@ -1,5 +1,15 @@
 # Challenge-v1: paired independent vs repair, Goedel-Prover V2 8B
 
+**Interpretation correction:** The historical 15/36 independent vs 18/36 repair
+comparison below is confounded and is **not a valid comparison of independent
+search against repair**. At the time, all three initial jobs in each independent
+run received the same seed, prompt and model, so seeded generations were duplicated
+instead of sampling three distinct initial chains. In 35 multi-candidate cases,
+the outputs were duplicates. The repair arm's first initial generation used the
+same base seed, but its later jobs received repair feedback. The linked snapshots
+are preserved as records of what ran; the numerical results must not be read as
+evidence that repair outperformed three independent generations.
+
 On 2026-09-23, six full-set experiments ran sequentially against the local Ollama model `goedel-prover-v2-8b:q4_k_m` (`sha256:98d095df8e1d58c088000c8a97fe5d4bc28b97fad4ef77d7a794be30544299d1`). All used the exact `problems/challenge-v1.json` bytes at SHA-256 `cd199d3ccd299533a38b14ead2d768b7edf47565f7c6b2d14f63822030d85337`, Lean `leanprover/lean4:v4.19.0`, temperature 0.6, Ollama context 4096 and `max_output_tokens` 256. The independent policy was the default 3 initial jobs / 0 repairs; repair was 1 initial job / up to 2 repairs. Seeds were explicitly set to 11, 22 and 33 in both arms. Both strategies used the same worker binary, SHA-256 `547fdee56149bdb7efdd8748bb22e3a66083044de2a8dac8ba7aea3477019186` (built from commit `1efedef`), and one continuously polling worker. The coordinator used the existing `solvenet.db` and local verifier through the pre-existing `/tmp/opencode/solvenet-lean-bin/lake` wrapper, which executes pinned Lake via `bwrap --unshare-net` with the verification workspace writable. `/ready` returned HTTP 200 before submission. No other experiment was submitted until all 12 runs in the preceding one were terminal, all candidates had a verification status, and there were zero active assignments.
 
 | Seed | Strategy | Local experiment ID | Solved / 12 | Completed attempts | Format failures | Input tokens (known/unknown) | Output tokens (known/unknown) | Provider time (s; known/unknown) | Lean time (s; known/unknown) | Mean time to first proof (s; known/unknown solved runs) | Initial / depth-1 / depth-2 verified attempts |

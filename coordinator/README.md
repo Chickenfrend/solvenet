@@ -29,7 +29,17 @@ explicitly to adjust this policy. For heterogeneous initial chains, replace
 `[{"model":"a","count":2,"max_output_tokens":512},{"model":"b","count":1,"max_output_tokens":512}]`.
 Repair jobs inherit their parent model and output limit. Optional
 `generation_timeout_seconds` and `max_assignments` are supported existing
-execution settings. Provider temperature/seed are not currently supported.
+execution settings. Optional `generation_settings` accepts `temperature` (0–2)
+and `seed` (0–9223372036854775807) for provider-backed models. For ad hoc runs
+and experiments alike, a supplied seed is the base: initial chains receive
+base + their zero-based position across all initial groups. The full range must
+fit the seed bound. Repairs inherit the parent's effective seed and assignment
+retries reuse their job's seed. For a paired independent/repair experiment with
+the same base, the first initial chain has the same seed in both arms. Without
+a seed the provider chooses its default. Run/experiment settings retain the base;
+each job and claim shows its effective `generation_settings`, also visible on
+completed attempts and assignments in `GET /v1/runs/{id}`. Existing stored jobs
+retain their original settings.
 Assignment retries (failures/expiries) can exceed the strategy's completed
 generation count and remain visible separately in each run's `assignments`.
 
