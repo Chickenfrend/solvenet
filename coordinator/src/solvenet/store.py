@@ -46,6 +46,15 @@ CREATE UNIQUE INDEX jobs_parent_attempt ON jobs(parent_attempt_id) WHERE parent_
 PRAGMA user_version = 3;
 """
 
+MIGRATION_4 = """
+ALTER TABLE runs ADD COLUMN generation_timeout_seconds INTEGER NOT NULL DEFAULT 120 CHECK (generation_timeout_seconds BETWEEN 1 AND 86400);
+ALTER TABLE jobs ADD COLUMN generation_timeout_seconds INTEGER NOT NULL DEFAULT 120 CHECK (generation_timeout_seconds BETWEEN 1 AND 86400);
+PRAGMA user_version = 4;
+"""
+
+DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
+MAX_GENERATION_TIMEOUT_SECONDS = 24 * 60 * 60
+
 
 def repair_feedback(candidate, diagnostics):
     # Keep diagnostic prompts bounded; the complete report remains in the DB.
@@ -80,7 +89,11 @@ class Store:
                 version = 2
             if version == 2:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_3 + "COMMIT;")
-            elif version != 3:
+                version = 3
+            if version == 3:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_4 + "COMMIT;")
+                version = 4
+            if version != 4:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -104,17 +117,25 @@ class Store:
                 db.rollback()
                 raise
 
-    def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048, max_repairs=0):
+    def submit(self, statement, imports, attempts=3, model="scripted", max_output_tokens=2048,
+               max_repairs=0, generation_timeout_seconds=DEFAULT_GENERATION_TIMEOUT_SECONDS):
         if type(max_repairs) is not int or not 0 <= max_repairs <= 2:
             raise ValueError('max_repairs must be an integer between 0 and 2')
+        if (type(generation_timeout_seconds) is not int or
+                not 1 <= generation_timeout_seconds <= MAX_GENERATION_TIMEOUT_SECONDS):
+            raise ValueError('generation_timeout_seconds must be an integer between 1 and 86400')
         problem, run = identifier(), identifier()
         with self.transaction() as db:
             db.execute("INSERT INTO problems VALUES (?, ?, ?)", (problem, statement, json.dumps(imports)))
-            db.execute("INSERT INTO runs (id, problem_id, status, max_repairs) VALUES (?, ?, 'running', ?)",
-                       (run, problem, max_repairs))
+            db.execute("""INSERT INTO runs
+              (id, problem_id, status, max_repairs, generation_timeout_seconds)
+              VALUES (?, ?, 'running', ?, ?)""",
+                       (run, problem, max_repairs, generation_timeout_seconds))
             for _ in range(attempts):
-                db.execute("INSERT INTO jobs (id, run_id, status, model, max_output_tokens, max_assignments) VALUES (?, ?, 'queued', ?, ?, 3)",
-                           (identifier(), run, model, max_output_tokens))
+                db.execute("""INSERT INTO jobs
+                  (id, run_id, status, model, max_output_tokens, max_assignments, generation_timeout_seconds)
+                  VALUES (?, ?, 'queued', ?, ?, 3, ?)""",
+                           (identifier(), run, model, max_output_tokens, generation_timeout_seconds))
         return {"problem_id": problem, "run_id": run}
 
     def _refresh(self, db):
@@ -172,7 +193,8 @@ class Store:
                     "job": {"id": job['id'], "kind": "model.generate", "model": job['model'],
                              "statement": job['statement'], "imports": json.loads(job['imports']),
                              "parent_attempt_id": job['parent_attempt_id'], "repair_depth": job['repair_depth'],
-                            "max_output_tokens": job['max_output_tokens'], "timeout_seconds": 120,
+                             "max_output_tokens": job['max_output_tokens'],
+                             "timeout_seconds": job['generation_timeout_seconds'],
                              "messages": messages}}
 
     def _assignment(self, db, assignment, token):
@@ -235,10 +257,12 @@ class Store:
                 run = db.execute("SELECT * FROM runs WHERE id=?", (job['run_id'],)).fetchone()
                 if run['status'] == 'running' and job['repair_depth'] < run['max_repairs']:
                     db.execute("""INSERT INTO jobs
-                      (id, run_id, status, model, max_output_tokens, max_assignments, parent_attempt_id, repair_depth)
-                      VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)""",
+                      (id, run_id, status, model, max_output_tokens, max_assignments,
+                       parent_attempt_id, repair_depth, generation_timeout_seconds)
+                      VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)""",
                                (identifier(), job['run_id'], job['model'], job['max_output_tokens'],
-                                job['max_assignments'], attempt, job['repair_depth'] + 1))
+                                 job['max_assignments'], attempt, job['repair_depth'] + 1,
+                                 job['generation_timeout_seconds']))
             self._refresh(db)
 
     def run(self, run_id):

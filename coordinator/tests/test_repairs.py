@@ -20,7 +20,8 @@ class RepairTests(unittest.TestCase):
         self.now = 1000
         self.store = Store(self.path, clock=lambda: self.now)
         self.run = self.store.submit('(n : Nat) : n + 0 = n', ['Init'], attempts=1,
-                                     model='ollama/test', max_output_tokens=256, max_repairs=2)['run_id']
+                                     model='ollama/test', max_output_tokens=256, max_repairs=2,
+                                     generation_timeout_seconds=321)['run_id']
 
     def claim(self):
         return self.store.claim('test-worker', ['ollama/test'])
@@ -46,6 +47,7 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(repair['repair_depth'], 1)
         self.assertEqual(repair['model'], first['job']['model'])
         self.assertEqual(repair['max_output_tokens'], 256)
+        self.assertEqual(repair['timeout_seconds'], 321)
         self.assertEqual(repair['statement'], first['job']['statement'])
         self.assertEqual(repair['imports'], ['Init'])
         prompt = repair['messages'][-1]['content']

@@ -7,7 +7,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .store import Conflict, Store
+from .store import MAX_GENERATION_TIMEOUT_SECONDS, Conflict, Store
 from .verifier import LeanVerifier, VerificationResult, VerificationStatus
 
 LOG = logging.getLogger(__name__)
@@ -126,7 +126,10 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         integer(data.get('attempts', 3), 'attempts', 100),
                         text(data.get('model', 'scripted'), 'model', 256),
                         integer(data.get('max_output_tokens', 2048), 'max_output_tokens', 32768),
-                        max_repairs=data.get('max_repairs', 0)))
+                        max_repairs=data.get('max_repairs', 0),
+                        generation_timeout_seconds=integer(
+                            data.get('generation_timeout_seconds', 120),
+                            'generation_timeout_seconds', MAX_GENERATION_TIMEOUT_SECONDS)))
                 if self.path == '/v1/claim':
                     worker = text(data.get('worker_id'), 'worker_id', 256)
                     models = data.get('models')

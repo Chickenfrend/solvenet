@@ -92,7 +92,7 @@ shell so it can be used directly:
 ```sh
 RUN_ID=$(curl -fsS http://127.0.0.1:8080/v1/runs \
   -H 'Content-Type: application/json' \
-  -d '{"statement":"(n : Nat) : n + 0 = n","attempts":1,"model":"ollama/qwen2.5-coder:7b","max_output_tokens":256}' \
+  -d '{"statement":"(n : Nat) : n + 0 = n","attempts":1,"model":"ollama/qwen2.5-coder:7b","max_output_tokens":256,"generation_timeout_seconds":120}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
 
 (cd worker && go run ./cmd/solvenet-worker \
@@ -112,11 +112,15 @@ process bounded retries. A model that emits an invalid tactic gives a completed,
 rejected attempt, not an executor error.
 
 The adapter uses `/api/chat` with a JSON schema requiring `{"proof":"..."}`,
-the job's output-token limit, and a 4096-token context. Generation has the worker's
-120-second job deadline; a cold model load counts toward that deadline. Heartbeats
-continue during generation. Cancellation closes the HTTP request. The worker does
-not automatically download models. Repair requests carry explicit previous-proof
-and diagnostic text rather than provider-specific conversation state.
+the job's output-token limit, and a 4096-token context. Set
+`generation_timeout_seconds` on run submission to choose a 1–86400 second
+generation deadline (default 120); a cold model load counts toward that deadline.
+The coordinator persists the policy on each job, including repairs, and run
+inspection reports it. The worker uses the requested valid timeout without a
+separate silent cap. Heartbeats continue during generation. Cancellation closes
+the HTTP request. The worker does not automatically download models. Repair
+requests carry explicit previous-proof and diagnostic text rather than
+provider-specific conversation state.
 
 Extraction only trims whitespace and optionally removes a single Lean Markdown
 fence **inside** the proof field. Full declarations, outer `by`, missing/invalid

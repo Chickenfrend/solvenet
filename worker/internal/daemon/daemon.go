@@ -84,6 +84,8 @@ type Worker struct {
 	Executor Executor
 }
 
+const maxGenerationTimeoutSeconds = 24 * 60 * 60
+
 func (w *Worker) post(ctx context.Context, path string, body any, target any) (int, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -130,11 +132,10 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	if a.Version != 1 || a.ID == "" || a.Token == "" || a.HeartbeatSeconds <= 0 || a.Job.Kind != "model.generate" || a.Job.Model != w.Model {
 		return true, fmt.Errorf("unsupported or malformed assignment")
 	}
-	seconds := a.Job.TimeoutSeconds
-	if seconds <= 0 || seconds > 120 {
-		seconds = 120
+	if a.Job.TimeoutSeconds <= 0 || a.Job.TimeoutSeconds > maxGenerationTimeoutSeconds {
+		return true, fmt.Errorf("job.timeout_seconds must be between 1 and %d", maxGenerationTimeoutSeconds)
 	}
-	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Job.TimeoutSeconds)*time.Second)
 	defer cancel()
 	// Keep renewing the lease through result submission, not only generation.
 	heartCtx, stopHeart := context.WithCancel(ctx)

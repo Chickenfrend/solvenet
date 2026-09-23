@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,12 @@ import (
 	"solvenet/worker/internal/daemon"
 	"solvenet/worker/internal/provider"
 )
+
+type executorFunc func(context.Context, daemon.Job) (daemon.Execution, error)
+
+func (f executorFunc) Execute(ctx context.Context, job daemon.Job) (daemon.Execution, error) {
+	return f(ctx, job)
+}
 
 func TestHeartbeatAndIdempotentRetry(t *testing.T) {
 	var mu sync.Mutex
@@ -66,5 +73,56 @@ func TestNoWork(t *testing.T) {
 	worked, err := w.Once(context.Background())
 	if worked || err != nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+}
+
+func TestWorkerUsesCoordinatorTimeoutAboveOldCap(t *testing.T) {
+	var remaining time.Duration
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/claim":
+			json.NewEncoder(w).Encode(daemon.Assignment{Version: 1, ID: "a", Token: "token", HeartbeatSeconds: 3600, Job: daemon.Job{Kind: "model.generate", Model: "scripted", TimeoutSeconds: 321}})
+		case "/v1/assignments/a/result":
+			w.Write([]byte(`{"accepted":true}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	executor := executorFunc(func(ctx context.Context, _ daemon.Job) (daemon.Execution, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("executor context has no deadline")
+		}
+		remaining = time.Until(deadline)
+		return daemon.Execution{Text: "rfl"}, nil
+	})
+	w := daemon.Worker{URL: server.URL, ID: "test", Model: "scripted", Client: server.Client(), Executor: executor}
+	worked, err := w.Once(context.Background())
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if remaining < 320*time.Second || remaining > 321*time.Second {
+		t.Fatalf("effective timeout %v, want approximately 321s", remaining)
+	}
+}
+
+func TestWorkerRejectsInvalidTimeout(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(daemon.Assignment{Version: 1, ID: "a", Token: "token", HeartbeatSeconds: 1, Job: daemon.Job{Kind: "model.generate", Model: "scripted", TimeoutSeconds: 0}})
+	}))
+	defer server.Close()
+	executor := executorFunc(func(context.Context, daemon.Job) (daemon.Execution, error) {
+		called = true
+		return daemon.Execution{}, nil
+	})
+	w := daemon.Worker{URL: server.URL, ID: "test", Model: "scripted", Client: server.Client(), Executor: executor}
+	worked, err := w.Once(context.Background())
+	if !worked || err == nil || !strings.Contains(err.Error(), "job.timeout_seconds") {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if called {
+		t.Fatal("executor called for invalid timeout")
 	}
 }
