@@ -599,6 +599,9 @@ class SiteTests(unittest.TestCase):
         with urlopen(path) as response:
             verified = response.read().decode()
         self.assertIn('Outcome: Initial proof verified', verified)
+        self.assertNotIn('Live model output', verified)
+        self.assertEqual(verified.count('Refresh run details'), 1)
+        self.assertNotIn('Run finished. Refresh for the latest details.', verified)
         self.assertNotIn('Repaired proof verified', verified)
         self.assertEqual(verified.count('by trivial &lt;proof&gt;'), 1)
         self.assertIn('Input tokens</dt><dd>Unknown', verified)

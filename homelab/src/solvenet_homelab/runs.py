@@ -26,20 +26,21 @@ def usage(value):
         for field, key in zip(fields, keys)) + '</dl>'
 
 
-def summary(run):
+def summary(run, full=False):
     active = run['status'] == 'running'
     jobs = run['jobs'] if type(run['jobs']) is int else len(run['jobs'])
     leases = run['assignments'] if type(run['assignments']) is int else len(run['assignments'])
     attempts = run['attempts'] if type(run['attempts']) is int else len(run['attempts'])
     poll = (' hx-get="/runs/' + text(run['id']) + '/status" hx-trigger="every 5s" '
             'hx-swap="outerHTML"') if active else ''
+    hint = ('<p>Work is active. Status updates automatically when available; '
+            'refresh the page to see new proofs and diagnostics.</p>' if active else
+            '<p>Run finished. Refresh for the latest details.</p>' if not full else '')
     return (f'<section id="run-status" aria-live="polite"{poll}>'
-            f'<h2>Run status: {text(run["status"])}</h2>'
-            f'<p>{jobs} jobs · {leases} leased assignments · '
-            f'{attempts} completed candidate attempts</p>'
-            + ('<p>Work is active. Status updates automatically when available; '
-               'refresh the page to see new proofs and diagnostics.</p>' if active else
-               '<p>Run finished. Refresh for the latest details.</p>') + '</section>')
+             f'<h2>Run status: {text(run["status"])}</h2>'
+             f'<p>{jobs} jobs · {leases} leased assignments · '
+             f'{attempts} completed candidate attempts</p>'
+             + hint + '</section>')
 
 
 def technical(title, record):
@@ -144,7 +145,8 @@ def detail(run, problem_title=None, progress_html='', model_names=None):
 
 
 def _page(run, models, progress_html, fixture, events):
-    return (f'<p class="lede">Selected model: {models}</p>' + summary(run) + progress_html
+    live = progress_html if run['status'] == 'running' else ''
+    return (f'<p class="lede">Selected model: {models}</p>' + summary(run, full=True) + live
             + '<section class="run-outcome">' + outcome(run) + '</section>' + fixture
             + f'<p><a href="/runs/{text(run["id"])}">Refresh run details</a></p>'
             + '<h2>Activity</h2><ol class="run-activity">'
