@@ -26,6 +26,10 @@ provider and execution location) are scoped to that origin and can be updated
 with another `add-model` invocation. Configure actual worker/model connections
 and any provider credentials at the worker, not here. Use `Local network` for
 Ollama served by a LAN endpoint even though its provider remains Ollama.
+For the optional hosted OpenAI worker, use an `openai/gpt-4o-mini` model ID,
+provider `OpenAI`, and location `Cloud API`; see the
+[hosted-worker setup](../docs/homelab-docker.md#optional-openai-hosted-worker).
+Credentials are configured only on the worker.
 Configured models alone are **not** evidence of worker availability. Recent
 worker claims show idle presence; live leases plus worker contact show a job
 as working. Expired worker contact shows Offline, and models never seen by the

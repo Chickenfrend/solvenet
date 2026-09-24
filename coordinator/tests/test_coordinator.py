@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -826,8 +827,7 @@ class APITests(unittest.TestCase):
         thread = threading.Thread(target=ollama.serve_forever)
         thread.start()
         try:
-            if shutil.which('lake'):
-                self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
+            self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
             for index, expected in enumerate(('solved', 'exhausted', 'exhausted')):
                 _, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n', 'attempts': 1,
                                                  'model': 'ollama/test:7b', 'max_output_tokens': 64})
@@ -856,6 +856,53 @@ class APITests(unittest.TestCase):
             ollama.shutdown()
             thread.join()
             ollama.server_close()
+
+    @unittest.skipUnless(shutil.which('go') and shutil.which('lake'), 'Go and Lake required')
+    def test_go_openai_worker_verifies_via_job_protocol(self):
+        class OpenAIHandler(BaseHTTPRequestHandler):
+            def do_POST(handler):
+                self.assertEqual(handler.path, '/v1/chat/completions')
+                self.assertEqual(handler.headers['Authorization'], 'Bearer fake-worker-key')
+                request = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
+                self.assertEqual(request['model'], 'gpt-4o-mini')
+                self.assertEqual(request['max_tokens'], 64)
+                self.assertEqual(request['response_format']['type'], 'json_object')
+                body = json.dumps({'model': 'gpt-4o-mini-reported', 'choices': [
+                    {'finish_reason': 'stop', 'message': {'content': '{"proof":"rfl"}'}}],
+                    'usage': {'prompt_tokens': 55, 'completion_tokens': 8}}).encode()
+                handler.send_response(200)
+                handler.send_header('Content-Length', str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), OpenAIHandler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
+            _, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n',
+                                              'attempts': 1, 'model': 'openai/gpt-4o-mini',
+                                              'max_output_tokens': 64})
+            subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url,
+                            '-provider', 'openai', '-model', 'gpt-4o-mini', '-openai-url',
+                            f'http://127.0.0.1:{server.server_port}/v1', '-once'],
+                           cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True,
+                           env={**os.environ, 'OPENAI_API_KEY': 'fake-worker-key', 'OPENAI_API_KEY_FILE': ''})
+            self.coordinator.tick()
+            outcome = self.request('/v1/runs/' + run['run_id'])[1]
+            self.assertEqual(outcome['status'], 'solved', outcome)
+            attempt = outcome['attempts'][0]
+            self.assertEqual(attempt['candidate'], 'rfl')
+            self.assertEqual(attempt['verification_status'], 'verified')
+            self.assertEqual(attempt['model'], 'openai/gpt-4o-mini')
+            self.assertEqual(attempt['usage']['input_tokens'], 55)
+            self.assertEqual(attempt['usage']['output_tokens'], 8)
+            self.assertEqual(attempt['generation']['model'], 'gpt-4o-mini-reported')
+            self.assertNotIn('fake-worker-key', json.dumps(outcome))
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
 
     @unittest.skipUnless(shutil.which('go') and shutil.which('lake'), 'Go and Lake required')
     def test_go_ollama_repairs_with_real_lean_feedback(self):

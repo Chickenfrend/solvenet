@@ -95,6 +95,34 @@ services:
     mem_limit: 512m
     restart: unless-stopped
 
+  hosted-worker:
+    profiles: [hosted]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command:
+      - -coordinator=http://coordinator:8080
+      - -provider=openai
+      - -model=${OPENAI_MODEL:-gpt-4o-mini}
+      - -id=homelab-openai
+    environment:
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+    secrets:
+      - openai_api_key
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - backend
+      - frontend
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    # A rejected credential stops the process; do not loop on the same key.
+    restart: "no"
+
   # Build-only service: docker compose build verifier loads the image into the host daemon.
   verifier:
     profiles: [build-only]
@@ -107,6 +135,10 @@ services:
 volumes:
   site-data:
   coordinator-data:
+
+secrets:
+  openai_api_key:
+    file: ${OPENAI_KEY_FILE:-./secrets/openai_api_key}
 
 networks:
   frontend:

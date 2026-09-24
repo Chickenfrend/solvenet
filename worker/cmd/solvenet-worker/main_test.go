@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,5 +42,35 @@ func TestOllamaContextFlagValidation(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "ollama-context") {
 			t.Fatalf("value=%s err=%v", value, err)
 		}
+	}
+}
+
+func TestOpenAIWorkerCredentialAndModel(t *testing.T) {
+	cfg, err := parseConfig([]string{"-provider", "openai", "-model", "gpt-4o-mini"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY_FILE", "")
+	if _, _, err := makeExecutor(cfg); err == nil || !strings.Contains(err.Error(), "credential unavailable") {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "api-key")
+	if err := os.WriteFile(path, []byte("secret-test-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY_FILE", path)
+	exec, model, err := makeExecutor(cfg)
+	if err != nil || model != "openai/gpt-4o-mini" || exec.(*provider.OpenAI).Key != "secret-test-key" {
+		t.Fatalf("model=%s err=%v", model, err)
+	}
+	t.Setenv("OPENAI_API_KEY", "other-key")
+	if _, _, err := makeExecutor(cfg); err == nil || strings.Contains(err.Error(), "other-key") {
+		t.Fatalf("err=%v", err)
+	}
+	t.Setenv("OPENAI_API_KEY_FILE", filepath.Join(t.TempDir(), "missing"))
+	t.Setenv("OPENAI_API_KEY", "")
+	if _, _, err := makeExecutor(cfg); err == nil || strings.Contains(err.Error(), "missing") {
+		t.Fatalf("err=%v", err)
 	}
 }

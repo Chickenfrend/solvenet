@@ -62,6 +62,46 @@ to trusted devices. The backend network is internal and the coordinator has no
 host port. Never route the site to the public internet without adding access
 control first.
 
+### Optional OpenAI hosted worker
+
+The `hosted` Compose profile starts a second worker for OpenAI Chat Completions.
+It has outbound HTTPS via the frontend network, no Docker socket and no
+published port. Create a key file outside the repository, readable by container
+UID 65532 (Compose mounts it read-only), and set `OPENAI_KEY_FILE` to its
+absolute path in `.env`. Restrict access to that file on the host. Set
+`OPENAI_MODEL=gpt-4o-mini` (the only model supported by this first adapter), then run:
+
+```sh
+docker compose --profile hosted up -d site worker hosted-worker
+docker compose exec site python -m solvenet_homelab.server --db /data/homelab.db add-model 'openai/gpt-4o-mini' 'Hosted GPT' OpenAI 'Cloud API'
+```
+
+Match the card ID to `openai/$OPENAI_MODEL` exactly. It appears beside Ollama
+cards; a LAN Ollama endpoint remains `Local network` regardless of its HTTP
+transport. Cards are selectable only after a worker checks in. Stop hosted
+usage with `docker compose stop hosted-worker`. The coordinator and site receive
+the model ID and ordinary job/result fields, never the key or account details.
+Keep the key out of `.env`, CLI arguments, site settings and logs. For a local
+worker outside Compose, set `OPENAI_API_KEY` or `OPENAI_API_KEY_FILE` (not both)
+and run `solvenet-worker -provider openai -model gpt-4o-mini` with the usual
+coordinator URL. A missing key prevents worker startup; a revoked key produces
+a permanent worker provider failure (`OpenAI HTTP 401`) without forwarding the
+provider error body. On HTTP 401/403 it stops advertising the model until the
+key is corrected and the worker is restarted; the card becomes Offline after
+its last worker signal ages out. Compose deliberately does not restart the
+hosted worker automatically; restart it explicitly after fixing the key (or
+after an unexpected process exit) with `docker compose --profile hosted up -d hosted-worker`.
+
+The worker sends theorem/imports and strategy/repair messages with JSON proof
+instructions, maps `max_output_tokens` to Chat Completions `max_tokens`, and
+passes optional temperature/seed. It reports provider input/output tokens when
+returned (otherwise Unknown), model, finish reason, requested settings and
+bounded raw model text. Rate limits, timeouts and server failures are transient;
+authentication and invalid requests are permanent. Incomplete generations,
+refusals and malformed proof responses fail rather than submitting partial
+proofs. Job deadlines cancel HTTP requests; Lean verification remains the
+coordinator's source of truth.
+
 ### Ollama connectivity
 
 Ollama is not started by Compose. Download the model first (`ollama pull

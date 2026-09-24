@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ type config struct {
 	model          string
 	ollamaURL      string
 	ollamaContext  int
+	openaiURL      string
 	proof          string
 	delay          time.Duration
 	once           bool
@@ -35,8 +37,9 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	flags.SetOutput(output)
 	flags.StringVar(&cfg.coordinatorURL, "coordinator", "http://127.0.0.1:8080", "coordinator URL")
 	flags.StringVar(&cfg.id, "id", "local-scripted-worker", "stable worker identifier")
-	flags.StringVar(&cfg.providerName, "provider", "scripted", "executor: scripted or ollama")
-	flags.StringVar(&cfg.model, "model", "", "installed Ollama model, e.g. qwen2.5-coder:7b")
+	flags.StringVar(&cfg.providerName, "provider", "scripted", "executor: scripted, ollama or openai")
+	flags.StringVar(&cfg.model, "model", "", "provider model name (without provider prefix)")
+	flags.StringVar(&cfg.openaiURL, "openai-url", "https://api.openai.com/v1", "OpenAI Chat Completions API base URL")
 	flags.StringVar(&cfg.ollamaURL, "ollama-url", "http://127.0.0.1:11434", "local Ollama server URL")
 	flags.IntVar(&cfg.ollamaContext, "ollama-context", provider.DefaultOllamaContext, fmt.Sprintf("Ollama context size in tokens (1-%d)", provider.MaxOllamaContext))
 	flags.StringVar(&cfg.proof, "proof", "rfl", "scripted proof body")
@@ -60,7 +63,7 @@ func makeExecutor(cfg config) (daemon.Executor, string, error) {
 	switch cfg.providerName {
 	case "scripted":
 		if cfg.model != "" {
-			return nil, "", fmt.Errorf("-model requires -provider ollama")
+			return nil, "", fmt.Errorf("-model requires -provider ollama or openai")
 		}
 	case "ollama":
 		ollama, err := provider.NewOllama(cfg.ollamaURL, cfg.model, cfg.ollamaContext)
@@ -68,8 +71,25 @@ func makeExecutor(cfg config) (daemon.Executor, string, error) {
 			return nil, "", err
 		}
 		executor, requestedModel = ollama, "ollama/"+cfg.model
+	case "openai":
+		key := os.Getenv("OPENAI_API_KEY")
+		if path := os.Getenv("OPENAI_API_KEY_FILE"); path != "" {
+			if key != "" {
+				return nil, "", fmt.Errorf("set only one of OPENAI_API_KEY and OPENAI_API_KEY_FILE")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, "", fmt.Errorf("OpenAI credential file unavailable")
+			}
+			key = strings.TrimSpace(string(data))
+		}
+		openai, err := provider.NewOpenAI(cfg.openaiURL, cfg.model, key)
+		if err != nil {
+			return nil, "", err
+		}
+		executor, requestedModel = openai, "openai/"+cfg.model
 	default:
-		return nil, "", fmt.Errorf("-provider must be scripted or ollama")
+		return nil, "", fmt.Errorf("-provider must be scripted, ollama or openai")
 	}
 	return executor, requestedModel, nil
 }
@@ -88,11 +108,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if cfg.providerName == "ollama" && cfg.id == "local-scripted-worker" {
-		cfg.id = "local-ollama-worker"
+	if cfg.id == "local-scripted-worker" && cfg.providerName != "scripted" {
+		cfg.id = "local-" + cfg.providerName + "-worker"
 	}
 	w := daemon.Worker{URL: cfg.coordinatorURL, ID: cfg.id, Model: requestedModel, Client: &http.Client{Timeout: 10 * time.Second}, Executor: executor,
-		SupportsGenerationSettings: cfg.providerName == "ollama"}
+		SupportsGenerationSettings: cfg.providerName == "ollama" || cfg.providerName == "openai"}
 	log.Printf("worker %s offering %s", cfg.id, requestedModel)
 	for ctx.Err() == nil {
 		worked, err := w.Once(ctx)
@@ -101,6 +121,10 @@ func main() {
 		}
 		if worked && err == nil {
 			log.Print("submitted result")
+		}
+		if openai, ok := executor.(*provider.OpenAI); ok && openai.AuthFailed() {
+			log.Print("OpenAI credential rejected; stopping worker until credentials are corrected")
+			return
 		}
 		if !worked && err == nil && cfg.once {
 			log.Print("no compatible jobs available")

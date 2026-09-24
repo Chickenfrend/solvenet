@@ -7,3 +7,4 @@ __pycache__/
 lean/.lake/
 worker/solvenet-worker
 .env
+/secrets/
