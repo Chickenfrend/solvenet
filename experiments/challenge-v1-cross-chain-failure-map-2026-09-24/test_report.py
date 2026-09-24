@@ -65,6 +65,20 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result['charged_cost']['collaborative']['request_failure'], 1)
         self.assertFalse(result['cost_comparable'])
 
+    def test_unrounded_cost_gate_and_all_unsolved_fixtures_are_reported(self):
+        blocks = [{'problem_id': f'p{n % 12}', 'base_seed': [121, 132, 143, 154, 165][n // 12],
+                   'prefix': [attempt(input_tokens=0), attempt(input_tokens=0)],
+                   'baseline': attempt(input_tokens=0), 'collaborative': attempt(input_tokens=0)}
+                  for n in range(60)]
+        blocks[0]['baseline']['usage']['input_tokens'] = 17000
+        blocks[0]['collaborative']['usage']['input_tokens'] = 20001
+        result = summarize({'complete': True, 'blocks': blocks, 'config': {}})
+        self.assertEqual(result['relative_cost_difference_percent']['all']['input_tokens'], 15.0)
+        self.assertFalse(result['cost_comparable'])
+        self.assertEqual(len(result['per_fixture_paired_outcomes']), 12)
+        self.assertEqual(result['per_fixture_paired_outcomes']['p0']['neither'], 5)
+        self.assertEqual(len(result['distinct_solved_per_seed']), 5)
+
 
 if __name__ == '__main__':
     unittest.main()

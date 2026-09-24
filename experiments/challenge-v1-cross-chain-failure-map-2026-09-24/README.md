@@ -61,3 +61,76 @@ private response/candidate/diagnostic archive:
 ```sh
 python3 experiments/challenge-v1-cross-chain-failure-map-2026-09-24/report.py experiments/challenge-v1-cross-chain-failure-map-2026-09-24/local-run.private.json > /tmp/opencode/crosschain-redacted-report.json
 ```
+
+## Archived result (2026-09-24)
+
+The run completed all **60 paired blocks** (12 fixtures × five base seeds), with
+no abort. The full **redacted aggregate** is in [`RESULTS.json`](RESULTS.json),
+including per-fixture paired outcomes and the per-block cumulative solved/cost
+series. The original private archive remains local and untracked: SHA-256
+`61cf98915ed26608b42e559360252041c95c55fdaa4a986c037cd94e8090ee42`.
+No candidate proofs, raw provider responses, or Lean diagnostics are published.
+
+| Base seed | Baseline solved / 12 | Map solved / 12 | Baseline-only | Map-only |
+| --- | ---: | ---: | ---: | ---: |
+| 121 | 6 | 7 | 0 | 1 |
+| 132 | 7 | 6 | 1 | 0 |
+| 143 | 5 | 5 | 0 | 0 |
+| 154 | 6 | 6 | 0 | 0 |
+| 165 | 6 | 6 | 0 | 0 |
+| **Total paired blocks** | **30 / 60** | **30 / 60** | **1** | **1** |
+
+The shared first two chains solved 28 blocks for both arms. The remaining 32
+required a third request in each arm: one block was solved by both third
+chains, one only by the baseline, one only by the map, and 29 by neither.
+Overall paired outcomes were 29 both, 29 neither, and one exclusive to each
+arm. These 60 observations repeat the same 12 theorems, so they are not 60
+independent fixtures.
+
+| Charged cost (shared prefix counted in each arm) | Baseline | Map |
+| --- | ---: | ---: |
+| Provider requests | 152 | 152 |
+| Input tokens | 19,727 | 19,844 |
+| Output tokens | 8,004 | 8,606 |
+| Provider duration (ns) | 170,598,845,564 | 181,319,782,837 |
+| Extracted proofs / Lean checks | 141 / 141 | 139 / 139 |
+| Lean elapsed (ms) | 168,775 | 166,370 |
+| Format failures | 11 | 13 |
+
+The physical common prefix cost 120 requests, 112 Lean checks, 14,360 input
+tokens, 5,910 output tokens and 134,948 Lean ms. Each incremental third arm
+cost 32 requests: baseline 5,367 input / 2,094 output tokens, 29 Lean checks
+and 33,827 Lean ms; map 5,484 input / 2,696 output tokens, 27 Lean checks and
+31,422 Lean ms. Neither arm had provider failures, Lean timeouts, verifier
+errors, or unknown input/output usage. Absolute relative differences (divided
+by the larger total) for input/output/Lean time were **0.59% / 7.00% / 1.42%**
+over all charged work and **2.13% / 22.33% / 7.11%** on incremental third
+work. The predeclared comparison is **not cost-comparable**: third-request
+output tokens exceed the 15% limit, and the arms differ by two Lean checks
+(limit one). Solved counts and resource differences are descriptive, not
+evidence of an efficiency advantage.
+
+The predeclared condition for a next bounded cross-chain-findings field in a
+local job protocol was not met (net map-only advantage zero, rather than at
+least four; advantage in one seed, rather than three; only one theorem helped,
+rather than two). **Retain independent jobs and refine/replicate this coarse
+failure-map hypothesis before adding protocol state.** This result does not
+justify a first-class agent abstraction or remote allocation. It concerns one
+local model, five seeds and 12 repeated fixtures; seeded outputs may correlate,
+the tactic labels are coarse, and the map adds prompt tokens. It does not rule
+out other forms of collaboration.
+
+Integrity: the fixture, pinned provider, runner (`main.go`, `main_test.go`) and
+verifier bridge SHA-256 hashes in the run configuration match the hashes frozen
+above; the run records Lean 4.19.0 and the expected model digest. **After the
+run**, two report-only defects were fixed: the ≤15% cost gate now uses
+unrounded percentages (rounding is only for display), and the per-fixture
+table now includes fixtures never solved by either arm. The configuration in
+`RESULTS.json` retains the *execution-time* reporter/test hashes from the
+frozen table; the corrected `report.py` SHA-256 is
+`b80dc4b1c68ebc275f075659ce60918c60bf947f20c75fd2977555608ef71752`
+and corrected `test_report.py` SHA-256 is
+`3feedd6e5899ea1d6782597a3165f8dd5a6dbaa986199837976895b376aec713`.
+The frozen plan, runner, and private run archive were not changed. The
+corrected report tests pass, and regeneration from the private archive matches
+`RESULTS.json` byte-for-byte.

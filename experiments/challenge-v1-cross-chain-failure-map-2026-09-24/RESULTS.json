@@ -1,0 +1,1620 @@
+{
+  "charged_cost": {
+    "baseline": {
+      "extracted": 141,
+      "format": 11,
+      "input_tokens": 19727,
+      "lean_checks": 141,
+      "lean_ms": 168775,
+      "output_tokens": 8004,
+      "provider_duration_ns": 170598845564,
+      "request_failure": 0,
+      "requests": 152,
+      "third_success": 2,
+      "timeout": 0,
+      "unknown_duration": 0,
+      "unknown_input": 0,
+      "unknown_output": 0,
+      "verifier_error": 0
+    },
+    "collaborative": {
+      "extracted": 139,
+      "format": 13,
+      "input_tokens": 19844,
+      "lean_checks": 139,
+      "lean_ms": 166370,
+      "output_tokens": 8606,
+      "provider_duration_ns": 181319782837,
+      "request_failure": 0,
+      "requests": 152,
+      "third_success": 2,
+      "timeout": 0,
+      "unknown_duration": 0,
+      "unknown_input": 0,
+      "unknown_output": 0,
+      "verifier_error": 0
+    }
+  },
+  "configuration": {
+    "fixture_sha256": "cd199d3ccd299533a38b14ead2d768b7edf47565f7c6b2d14f63822030d85337",
+    "model": "ollama/goedel-prover-v2-8b:q4_k_m",
+    "model_digest": "sha256:98d095df8e1d58c088000c8a97fe5d4bc28b97fad4ef77d7a794be30544299d1",
+    "num_ctx": 4096,
+    "num_predict": 256,
+    "request_timeout_seconds": 120,
+    "seeds": [
+      121,
+      132,
+      143,
+      154,
+      165
+    ],
+    "source_sha256": {
+      "experiments/challenge-v1-cross-chain-failure-map-2026-09-24/report.py": "8ba7a3afdeda710c10dcd188d336c5a8051172a50322ab5220cd752e860957ff",
+      "experiments/challenge-v1-cross-chain-failure-map-2026-09-24/test_report.py": "d8c1240238884caf010ae5d937eba84338bf3c414c6f25c54ecac7d9e85289d9",
+      "experiments/challenge-v1-cross-chain-failure-map-2026-09-24/verifier_bridge.py": "55193942360106da720b8d7a93d5843d1b09d0a8aa7e56bdd70cb72f22df0ac6",
+      "problems/challenge-v1.json": "cd199d3ccd299533a38b14ead2d768b7edf47565f7c6b2d14f63822030d85337",
+      "worker/experiments/crosschain/main.go": "d8dbf88a7a4318755d838097b9292141e420ba49e5fe0f3a36456405934312ad",
+      "worker/experiments/crosschain/main_test.go": "3f787a4467b0385ef0e46cc8a073baabd2d57d443a09328244cee65dd68e4722",
+      "worker/internal/provider/ollama.go": "8893049b0c2dccb797178c828fc12e40dc1bde9e0c8ab8ddad401184e7fcdcb5"
+    },
+    "temperature": 0.6,
+    "verifier": {
+      "config": {
+        "container_deadline_seconds": 30,
+        "image": "solvenet-verifier:homelab",
+        "lean_timeout_seconds": 10,
+        "resources": {
+          "cpus": 1,
+          "file_size_bytes": 1048576,
+          "memory": "1g",
+          "memory_swap": "1g",
+          "pids": 64,
+          "tmpfs_size": "128m"
+        }
+      },
+      "files": {
+        "Dockerfile.verifier": "e7828e559e1a5cda95fdecc2751cb0453816505318fa715fed7974e8b8298985",
+        "coordinator/src/solvenet/sandbox.py": "421fa2012ebafaf818498ccbd713eb1e3803c265f0edcad447a1c3d082da5df7",
+        "coordinator/src/solvenet/verifier.py": "5b213f37d553fb0358ce3a7dcd6fc6fc9e53741760b08bbe1e8b42d6b36398ea",
+        "lean/lakefile.toml": "2085bdd0860b770fa3adcc936da5687be57ed1139620e7aecd98abed82bcb57a",
+        "lean/lean-toolchain": "55e97be96000b5e9e290c9e74482e5e317861499a5540353ce845471bded8cea"
+      },
+      "image": "sha256:cd338ef5692b79d2d656821bbfdd14cb15ba81814e4cfd90b58fc231c7986063",
+      "ready": true,
+      "version": "Lean (version 4.19.0, x86_64-unknown-linux-gnu, commit 6caaee842e94, Release)"
+    }
+  },
+  "cost_comparable": false,
+  "cumulative": [
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 413,
+          "lean_ms": 3670,
+          "output_tokens": 82,
+          "requests": 3
+        },
+        "collaborative": {
+          "input_tokens": 417,
+          "lean_ms": 3660,
+          "output_tokens": 82,
+          "requests": 3
+        }
+      },
+      "problem_id": "and-or-distribute",
+      "seed": 121,
+      "solved": {
+        "baseline": 0,
+        "collaborative": 0
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 799,
+          "lean_ms": 7347,
+          "output_tokens": 199,
+          "requests": 6
+        },
+        "collaborative": {
+          "input_tokens": 807,
+          "lean_ms": 7259,
+          "output_tokens": 199,
+          "requests": 6
+        }
+      },
+      "problem_id": "contrapositive-iff",
+      "seed": 121,
+      "solved": {
+        "baseline": 0,
+        "collaborative": 0
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 1239,
+          "lean_ms": 10913,
+          "output_tokens": 263,
+          "requests": 9
+        },
+        "collaborative": {
+          "input_tokens": 1251,
+          "lean_ms": 9656,
+          "output_tokens": 503,
+          "requests": 9
+        }
+      },
+      "problem_id": "exists-and-distribute",
+      "seed": 121,
+      "solved": {
+        "baseline": 0,
+        "collaborative": 0
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 1515,
+          "lean_ms": 13404,
+          "output_tokens": 349,
+          "requests": 11
+        },
+        "collaborative": {
+          "input_tokens": 1527,
+          "lean_ms": 12147,
+          "output_tokens": 589,
+          "requests": 11
+        }
+      },
+      "problem_id": "forall-imp-compose",
+      "seed": 121,
+      "solved": {
+        "baseline": 1,
+        "collaborative": 1
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 1739,
+          "lean_ms": 15783,
+          "output_tokens": 413,
+          "requests": 13
+        },
+        "collaborative": {
+          "input_tokens": 1751,
+          "lean_ms": 14526,
+          "output_tokens": 653,
+          "requests": 13
+        }
+      },
+      "problem_id": "nat-add-succ-swap",
+      "seed": 121,
+      "solved": {
+        "baseline": 2,
+        "collaborative": 2
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 1969,
+          "lean_ms": 18049,
+          "output_tokens": 495,
+          "requests": 15
+        },
+        "collaborative": {
+          "input_tokens": 1981,
+          "lean_ms": 16792,
+          "output_tokens": 735,
+          "requests": 15
+        }
+      },
+      "problem_id": "nat-mul-add-distribute",
+      "seed": 121,
+      "solved": {
+        "baseline": 3,
+        "collaborative": 3
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 2191,
+          "lean_ms": 20386,
+          "output_tokens": 527,
+          "requests": 17
+        },
+        "collaborative": {
+          "input_tokens": 2203,
+          "lean_ms": 19129,
+          "output_tokens": 767,
+          "requests": 17
+        }
+      },
+      "problem_id": "nat-add-cancel",
+      "seed": 121,
+      "solved": {
+        "baseline": 4,
+        "collaborative": 4
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 2435,
+          "lean_ms": 22693,
+          "output_tokens": 568,
+          "requests": 19
+        },
+        "collaborative": {
+          "input_tokens": 2447,
+          "lean_ms": 21436,
+          "output_tokens": 808,
+          "requests": 19
+        }
+      },
+      "problem_id": "list-append-assoc",
+      "seed": 121,
+      "solved": {
+        "baseline": 5,
+        "collaborative": 5
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 2693,
+          "lean_ms": 24948,
+          "output_tokens": 629,
+          "requests": 21
+        },
+        "collaborative": {
+          "input_tokens": 2705,
+          "lean_ms": 23691,
+          "output_tokens": 869,
+          "requests": 21
+        }
+      },
+      "problem_id": "list-map-append",
+      "seed": 121,
+      "solved": {
+        "baseline": 6,
+        "collaborative": 6
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 3097,
+          "lean_ms": 27235,
+          "output_tokens": 995,
+          "requests": 24
+        },
+        "collaborative": {
+          "input_tokens": 3111,
+          "lean_ms": 24854,
+          "output_tokens": 1415,
+          "requests": 24
+        }
+      },
+      "problem_id": "list-reverse-append",
+      "seed": 121,
+      "solved": {
+        "baseline": 6,
+        "collaborative": 6
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 3480,
+          "lean_ms": 30857,
+          "output_tokens": 1077,
+          "requests": 27
+        },
+        "collaborative": {
+          "input_tokens": 3498,
+          "lean_ms": 27299,
+          "output_tokens": 1710,
+          "requests": 27
+        }
+      },
+      "problem_id": "list-length-reverse",
+      "seed": 121,
+      "solved": {
+        "baseline": 6,
+        "collaborative": 6
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 3881,
+          "lean_ms": 34541,
+          "output_tokens": 1234,
+          "requests": 30
+        },
+        "collaborative": {
+          "input_tokens": 3903,
+          "lean_ms": 30941,
+          "output_tokens": 1861,
+          "requests": 30
+        }
+      },
+      "problem_id": "bool-xor-assoc",
+      "seed": 121,
+      "solved": {
+        "baseline": 6,
+        "collaborative": 7
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 4294,
+          "lean_ms": 37957,
+          "output_tokens": 1349,
+          "requests": 33
+        },
+        "collaborative": {
+          "input_tokens": 4320,
+          "lean_ms": 34333,
+          "output_tokens": 2026,
+          "requests": 33
+        }
+      },
+      "problem_id": "and-or-distribute",
+      "seed": 132,
+      "solved": {
+        "baseline": 6,
+        "collaborative": 7
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 4680,
+          "lean_ms": 41318,
+          "output_tokens": 1473,
+          "requests": 36
+        },
+        "collaborative": {
+          "input_tokens": 4710,
+          "lean_ms": 37664,
+          "output_tokens": 2154,
+          "requests": 36
+        }
+      },
+      "problem_id": "contrapositive-iff",
+      "seed": 132,
+      "solved": {
+        "baseline": 7,
+        "collaborative": 7
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 5120,
+          "lean_ms": 43652,
+          "output_tokens": 1761,
+          "requests": 39
+        },
+        "collaborative": {
+          "input_tokens": 5154,
+          "lean_ms": 39998,
+          "output_tokens": 2442,
+          "requests": 39
+        }
+      },
+      "problem_id": "exists-and-distribute",
+      "seed": 132,
+      "solved": {
+        "baseline": 7,
+        "collaborative": 7
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 5396,
+          "lean_ms": 46115,
+          "output_tokens": 1852,
+          "requests": 41
+        },
+        "collaborative": {
+          "input_tokens": 5430,
+          "lean_ms": 42461,
+          "output_tokens": 2533,
+          "requests": 41
+        }
+      },
+      "problem_id": "forall-imp-compose",
+      "seed": 132,
+      "solved": {
+        "baseline": 8,
+        "collaborative": 8
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 5782,
+          "lean_ms": 49686,
+          "output_tokens": 1956,
+          "requests": 44
+        },
+        "collaborative": {
+          "input_tokens": 5820,
+          "lean_ms": 46007,
+          "output_tokens": 2648,
+          "requests": 44
+        }
+      },
+      "problem_id": "nat-add-succ-swap",
+      "seed": 132,
+      "solved": {
+        "baseline": 8,
+        "collaborative": 8
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 6177,
+          "lean_ms": 51973,
+          "output_tokens": 2316,
+          "requests": 47
+        },
+        "collaborative": {
+          "input_tokens": 6217,
+          "lean_ms": 48385,
+          "output_tokens": 3008,
+          "requests": 47
+        }
+      },
+      "problem_id": "nat-mul-add-distribute",
+      "seed": 132,
+      "solved": {
+        "baseline": 8,
+        "collaborative": 8
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 6399,
+          "lean_ms": 54789,
+          "output_tokens": 2350,
+          "requests": 49
+        },
+        "collaborative": {
+          "input_tokens": 6439,
+          "lean_ms": 51201,
+          "output_tokens": 3042,
+          "requests": 49
+        }
+      },
+      "problem_id": "nat-add-cancel",
+      "seed": 132,
+      "solved": {
+        "baseline": 9,
+        "collaborative": 9
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 6643,
+          "lean_ms": 57097,
+          "output_tokens": 2394,
+          "requests": 51
+        },
+        "collaborative": {
+          "input_tokens": 6683,
+          "lean_ms": 53509,
+          "output_tokens": 3086,
+          "requests": 51
+        }
+      },
+      "problem_id": "list-append-assoc",
+      "seed": 132,
+      "solved": {
+        "baseline": 10,
+        "collaborative": 10
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 6901,
+          "lean_ms": 59361,
+          "output_tokens": 2458,
+          "requests": 53
+        },
+        "collaborative": {
+          "input_tokens": 6941,
+          "lean_ms": 55773,
+          "output_tokens": 3150,
+          "requests": 53
+        }
+      },
+      "problem_id": "list-map-append",
+      "seed": 132,
+      "solved": {
+        "baseline": 11,
+        "collaborative": 11
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 7137,
+          "lean_ms": 61740,
+          "output_tokens": 2526,
+          "requests": 55
+        },
+        "collaborative": {
+          "input_tokens": 7177,
+          "lean_ms": 58152,
+          "output_tokens": 3218,
+          "requests": 55
+        }
+      },
+      "problem_id": "list-reverse-append",
+      "seed": 132,
+      "solved": {
+        "baseline": 12,
+        "collaborative": 12
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 7359,
+          "lean_ms": 62996,
+          "output_tokens": 2801,
+          "requests": 57
+        },
+        "collaborative": {
+          "input_tokens": 7399,
+          "lean_ms": 59408,
+          "output_tokens": 3493,
+          "requests": 57
+        }
+      },
+      "problem_id": "list-length-reverse",
+      "seed": 132,
+      "solved": {
+        "baseline": 13,
+        "collaborative": 13
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 7760,
+          "lean_ms": 66832,
+          "output_tokens": 2975,
+          "requests": 60
+        },
+        "collaborative": {
+          "input_tokens": 7804,
+          "lean_ms": 63123,
+          "output_tokens": 3667,
+          "requests": 60
+        }
+      },
+      "problem_id": "bool-xor-assoc",
+      "seed": 132,
+      "solved": {
+        "baseline": 13,
+        "collaborative": 13
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 8173,
+          "lean_ms": 70333,
+          "output_tokens": 3082,
+          "requests": 63
+        },
+        "collaborative": {
+          "input_tokens": 8221,
+          "lean_ms": 66646,
+          "output_tokens": 3868,
+          "requests": 63
+        }
+      },
+      "problem_id": "and-or-distribute",
+      "seed": 143,
+      "solved": {
+        "baseline": 13,
+        "collaborative": 13
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 8559,
+          "lean_ms": 73870,
+          "output_tokens": 3195,
+          "requests": 66
+        },
+        "collaborative": {
+          "input_tokens": 8611,
+          "lean_ms": 70229,
+          "output_tokens": 3978,
+          "requests": 66
+        }
+      },
+      "problem_id": "contrapositive-iff",
+      "seed": 143,
+      "solved": {
+        "baseline": 13,
+        "collaborative": 13
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 8999,
+          "lean_ms": 77278,
+          "output_tokens": 3392,
+          "requests": 69
+        },
+        "collaborative": {
+          "input_tokens": 9055,
+          "lean_ms": 73627,
+          "output_tokens": 4044,
+          "requests": 69
+        }
+      },
+      "problem_id": "exists-and-distribute",
+      "seed": 143,
+      "solved": {
+        "baseline": 13,
+        "collaborative": 13
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 9275,
+          "lean_ms": 79779,
+          "output_tokens": 3459,
+          "requests": 71
+        },
+        "collaborative": {
+          "input_tokens": 9331,
+          "lean_ms": 76128,
+          "output_tokens": 4111,
+          "requests": 71
+        }
+      },
+      "problem_id": "forall-imp-compose",
+      "seed": 143,
+      "solved": {
+        "baseline": 14,
+        "collaborative": 14
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 9661,
+          "lean_ms": 83617,
+          "output_tokens": 3588,
+          "requests": 74
+        },
+        "collaborative": {
+          "input_tokens": 9721,
+          "lean_ms": 80055,
+          "output_tokens": 4225,
+          "requests": 74
+        }
+      },
+      "problem_id": "nat-add-succ-swap",
+      "seed": 143,
+      "solved": {
+        "baseline": 14,
+        "collaborative": 14
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 10056,
+          "lean_ms": 87157,
+          "output_tokens": 3717,
+          "requests": 77
+        },
+        "collaborative": {
+          "input_tokens": 10120,
+          "lean_ms": 83600,
+          "output_tokens": 4354,
+          "requests": 77
+        }
+      },
+      "problem_id": "nat-mul-add-distribute",
+      "seed": 143,
+      "solved": {
+        "baseline": 14,
+        "collaborative": 14
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 10278,
+          "lean_ms": 89545,
+          "output_tokens": 3751,
+          "requests": 79
+        },
+        "collaborative": {
+          "input_tokens": 10342,
+          "lean_ms": 85988,
+          "output_tokens": 4388,
+          "requests": 79
+        }
+      },
+      "problem_id": "nat-add-cancel",
+      "seed": 143,
+      "solved": {
+        "baseline": 15,
+        "collaborative": 15
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 10522,
+          "lean_ms": 90719,
+          "output_tokens": 4034,
+          "requests": 81
+        },
+        "collaborative": {
+          "input_tokens": 10586,
+          "lean_ms": 87162,
+          "output_tokens": 4671,
+          "requests": 81
+        }
+      },
+      "problem_id": "list-append-assoc",
+      "seed": 143,
+      "solved": {
+        "baseline": 16,
+        "collaborative": 16
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 10780,
+          "lean_ms": 93140,
+          "output_tokens": 4112,
+          "requests": 83
+        },
+        "collaborative": {
+          "input_tokens": 10844,
+          "lean_ms": 89583,
+          "output_tokens": 4749,
+          "requests": 83
+        }
+      },
+      "problem_id": "list-map-append",
+      "seed": 143,
+      "solved": {
+        "baseline": 17,
+        "collaborative": 17
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 11184,
+          "lean_ms": 95510,
+          "output_tokens": 4437,
+          "requests": 86
+        },
+        "collaborative": {
+          "input_tokens": 11252,
+          "lean_ms": 91953,
+          "output_tokens": 5074,
+          "requests": 86
+        }
+      },
+      "problem_id": "list-reverse-append",
+      "seed": 143,
+      "solved": {
+        "baseline": 17,
+        "collaborative": 17
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 11567,
+          "lean_ms": 99090,
+          "output_tokens": 4567,
+          "requests": 89
+        },
+        "collaborative": {
+          "input_tokens": 11639,
+          "lean_ms": 95442,
+          "output_tokens": 5182,
+          "requests": 89
+        }
+      },
+      "problem_id": "list-length-reverse",
+      "seed": 143,
+      "solved": {
+        "baseline": 17,
+        "collaborative": 17
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 11801,
+          "lean_ms": 101400,
+          "output_tokens": 4685,
+          "requests": 91
+        },
+        "collaborative": {
+          "input_tokens": 11873,
+          "lean_ms": 97752,
+          "output_tokens": 5300,
+          "requests": 91
+        }
+      },
+      "problem_id": "bool-xor-assoc",
+      "seed": 143,
+      "solved": {
+        "baseline": 18,
+        "collaborative": 18
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 12214,
+          "lean_ms": 104877,
+          "output_tokens": 4838,
+          "requests": 94
+        },
+        "collaborative": {
+          "input_tokens": 12290,
+          "lean_ms": 101253,
+          "output_tokens": 5543,
+          "requests": 94
+        }
+      },
+      "problem_id": "and-or-distribute",
+      "seed": 154,
+      "solved": {
+        "baseline": 18,
+        "collaborative": 18
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 12600,
+          "lean_ms": 108584,
+          "output_tokens": 4961,
+          "requests": 97
+        },
+        "collaborative": {
+          "input_tokens": 12680,
+          "lean_ms": 104881,
+          "output_tokens": 5658,
+          "requests": 97
+        }
+      },
+      "problem_id": "contrapositive-iff",
+      "seed": 154,
+      "solved": {
+        "baseline": 19,
+        "collaborative": 19
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 13040,
+          "lean_ms": 112259,
+          "output_tokens": 5077,
+          "requests": 100
+        },
+        "collaborative": {
+          "input_tokens": 13124,
+          "lean_ms": 108592,
+          "output_tokens": 5894,
+          "requests": 100
+        }
+      },
+      "problem_id": "exists-and-distribute",
+      "seed": 154,
+      "solved": {
+        "baseline": 19,
+        "collaborative": 19
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 13316,
+          "lean_ms": 114659,
+          "output_tokens": 5160,
+          "requests": 102
+        },
+        "collaborative": {
+          "input_tokens": 13400,
+          "lean_ms": 110992,
+          "output_tokens": 5977,
+          "requests": 102
+        }
+      },
+      "problem_id": "forall-imp-compose",
+      "seed": 154,
+      "solved": {
+        "baseline": 20,
+        "collaborative": 20
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 13702,
+          "lean_ms": 117108,
+          "output_tokens": 5493,
+          "requests": 105
+        },
+        "collaborative": {
+          "input_tokens": 13789,
+          "lean_ms": 114651,
+          "output_tokens": 6086,
+          "requests": 105
+        }
+      },
+      "problem_id": "nat-add-succ-swap",
+      "seed": 154,
+      "solved": {
+        "baseline": 20,
+        "collaborative": 20
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 14097,
+          "lean_ms": 120870,
+          "output_tokens": 5572,
+          "requests": 108
+        },
+        "collaborative": {
+          "input_tokens": 14188,
+          "lean_ms": 118319,
+          "output_tokens": 6165,
+          "requests": 108
+        }
+      },
+      "problem_id": "nat-mul-add-distribute",
+      "seed": 154,
+      "solved": {
+        "baseline": 20,
+        "collaborative": 20
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 14319,
+          "lean_ms": 123462,
+          "output_tokens": 5603,
+          "requests": 110
+        },
+        "collaborative": {
+          "input_tokens": 14410,
+          "lean_ms": 120911,
+          "output_tokens": 6196,
+          "requests": 110
+        }
+      },
+      "problem_id": "nat-add-cancel",
+      "seed": 154,
+      "solved": {
+        "baseline": 21,
+        "collaborative": 21
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 14563,
+          "lean_ms": 125882,
+          "output_tokens": 5661,
+          "requests": 112
+        },
+        "collaborative": {
+          "input_tokens": 14654,
+          "lean_ms": 123331,
+          "output_tokens": 6254,
+          "requests": 112
+        }
+      },
+      "problem_id": "list-append-assoc",
+      "seed": 154,
+      "solved": {
+        "baseline": 22,
+        "collaborative": 22
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 14821,
+          "lean_ms": 128305,
+          "output_tokens": 5711,
+          "requests": 114
+        },
+        "collaborative": {
+          "input_tokens": 14912,
+          "lean_ms": 125754,
+          "output_tokens": 6304,
+          "requests": 114
+        }
+      },
+      "problem_id": "list-map-append",
+      "seed": 154,
+      "solved": {
+        "baseline": 23,
+        "collaborative": 23
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 15225,
+          "lean_ms": 131883,
+          "output_tokens": 5801,
+          "requests": 117
+        },
+        "collaborative": {
+          "input_tokens": 15320,
+          "lean_ms": 129442,
+          "output_tokens": 6420,
+          "requests": 117
+        }
+      },
+      "problem_id": "list-reverse-append",
+      "seed": 154,
+      "solved": {
+        "baseline": 23,
+        "collaborative": 23
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 15447,
+          "lean_ms": 134162,
+          "output_tokens": 5896,
+          "requests": 119
+        },
+        "collaborative": {
+          "input_tokens": 15542,
+          "lean_ms": 131721,
+          "output_tokens": 6515,
+          "requests": 119
+        }
+      },
+      "problem_id": "list-length-reverse",
+      "seed": 154,
+      "solved": {
+        "baseline": 24,
+        "collaborative": 24
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 15848,
+          "lean_ms": 137676,
+          "output_tokens": 6109,
+          "requests": 122
+        },
+        "collaborative": {
+          "input_tokens": 15947,
+          "lean_ms": 135232,
+          "output_tokens": 6680,
+          "requests": 122
+        }
+      },
+      "problem_id": "bool-xor-assoc",
+      "seed": 154,
+      "solved": {
+        "baseline": 24,
+        "collaborative": 24
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 16261,
+          "lean_ms": 141187,
+          "output_tokens": 6174,
+          "requests": 125
+        },
+        "collaborative": {
+          "input_tokens": 16364,
+          "lean_ms": 138841,
+          "output_tokens": 6745,
+          "requests": 125
+        }
+      },
+      "problem_id": "and-or-distribute",
+      "seed": 165,
+      "solved": {
+        "baseline": 24,
+        "collaborative": 24
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 16647,
+          "lean_ms": 144602,
+          "output_tokens": 6286,
+          "requests": 128
+        },
+        "collaborative": {
+          "input_tokens": 16754,
+          "lean_ms": 142386,
+          "output_tokens": 6857,
+          "requests": 128
+        }
+      },
+      "problem_id": "contrapositive-iff",
+      "seed": 165,
+      "solved": {
+        "baseline": 24,
+        "collaborative": 24
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 17087,
+          "lean_ms": 145803,
+          "output_tokens": 6863,
+          "requests": 131
+        },
+        "collaborative": {
+          "input_tokens": 17194,
+          "lean_ms": 143509,
+          "output_tokens": 7434,
+          "requests": 131
+        }
+      },
+      "problem_id": "exists-and-distribute",
+      "seed": 165,
+      "solved": {
+        "baseline": 24,
+        "collaborative": 24
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 17363,
+          "lean_ms": 148202,
+          "output_tokens": 6929,
+          "requests": 133
+        },
+        "collaborative": {
+          "input_tokens": 17470,
+          "lean_ms": 145908,
+          "output_tokens": 7500,
+          "requests": 133
+        }
+      },
+      "problem_id": "forall-imp-compose",
+      "seed": 165,
+      "solved": {
+        "baseline": 25,
+        "collaborative": 25
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 17749,
+          "lean_ms": 150681,
+          "output_tokens": 7291,
+          "requests": 136
+        },
+        "collaborative": {
+          "input_tokens": 17858,
+          "lean_ms": 148353,
+          "output_tokens": 7862,
+          "requests": 136
+        }
+      },
+      "problem_id": "nat-add-succ-swap",
+      "seed": 165,
+      "solved": {
+        "baseline": 25,
+        "collaborative": 25
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 18144,
+          "lean_ms": 154304,
+          "output_tokens": 7395,
+          "requests": 139
+        },
+        "collaborative": {
+          "input_tokens": 18257,
+          "lean_ms": 151877,
+          "output_tokens": 7997,
+          "requests": 139
+        }
+      },
+      "problem_id": "nat-mul-add-distribute",
+      "seed": 165,
+      "solved": {
+        "baseline": 25,
+        "collaborative": 25
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 18366,
+          "lean_ms": 156873,
+          "output_tokens": 7429,
+          "requests": 141
+        },
+        "collaborative": {
+          "input_tokens": 18479,
+          "lean_ms": 154446,
+          "output_tokens": 8031,
+          "requests": 141
+        }
+      },
+      "problem_id": "nat-add-cancel",
+      "seed": 165,
+      "solved": {
+        "baseline": 26,
+        "collaborative": 26
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 18610,
+          "lean_ms": 158098,
+          "output_tokens": 7702,
+          "requests": 143
+        },
+        "collaborative": {
+          "input_tokens": 18723,
+          "lean_ms": 155671,
+          "output_tokens": 8304,
+          "requests": 143
+        }
+      },
+      "problem_id": "list-append-assoc",
+      "seed": 165,
+      "solved": {
+        "baseline": 27,
+        "collaborative": 27
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 18868,
+          "lean_ms": 160499,
+          "output_tokens": 7751,
+          "requests": 145
+        },
+        "collaborative": {
+          "input_tokens": 18981,
+          "lean_ms": 158072,
+          "output_tokens": 8353,
+          "requests": 145
+        }
+      },
+      "problem_id": "list-map-append",
+      "seed": 165,
+      "solved": {
+        "baseline": 28,
+        "collaborative": 28
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 19104,
+          "lean_ms": 162938,
+          "output_tokens": 7806,
+          "requests": 147
+        },
+        "collaborative": {
+          "input_tokens": 19217,
+          "lean_ms": 160511,
+          "output_tokens": 8408,
+          "requests": 147
+        }
+      },
+      "problem_id": "list-reverse-append",
+      "seed": 165,
+      "solved": {
+        "baseline": 29,
+        "collaborative": 29
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 19326,
+          "lean_ms": 165432,
+          "output_tokens": 7841,
+          "requests": 149
+        },
+        "collaborative": {
+          "input_tokens": 19439,
+          "lean_ms": 163005,
+          "output_tokens": 8443,
+          "requests": 149
+        }
+      },
+      "problem_id": "list-length-reverse",
+      "seed": 165,
+      "solved": {
+        "baseline": 30,
+        "collaborative": 30
+      }
+    },
+    {
+      "cost": {
+        "baseline": {
+          "input_tokens": 19727,
+          "lean_ms": 168775,
+          "output_tokens": 8004,
+          "requests": 152
+        },
+        "collaborative": {
+          "input_tokens": 19844,
+          "lean_ms": 166370,
+          "output_tokens": 8606,
+          "requests": 152
+        }
+      },
+      "problem_id": "bool-xor-assoc",
+      "seed": 165,
+      "solved": {
+        "baseline": 30,
+        "collaborative": 30
+      }
+    }
+  ],
+  "distinct_solved_per_seed": {
+    "121": {
+      "baseline": 6,
+      "baseline_only": 0,
+      "collaborative": 7,
+      "collaborative_only": 1
+    },
+    "132": {
+      "baseline": 7,
+      "baseline_only": 1,
+      "collaborative": 6,
+      "collaborative_only": 0
+    },
+    "143": {
+      "baseline": 5,
+      "baseline_only": 0,
+      "collaborative": 5,
+      "collaborative_only": 0
+    },
+    "154": {
+      "baseline": 6,
+      "baseline_only": 0,
+      "collaborative": 6,
+      "collaborative_only": 0
+    },
+    "165": {
+      "baseline": 6,
+      "baseline_only": 0,
+      "collaborative": 6,
+      "collaborative_only": 0
+    }
+  },
+  "incremental_third_cost": {
+    "baseline": {
+      "extracted": 29,
+      "format": 3,
+      "input_tokens": 5367,
+      "lean_checks": 29,
+      "lean_ms": 33827,
+      "output_tokens": 2094,
+      "provider_duration_ns": 43977644606,
+      "request_failure": 0,
+      "requests": 32,
+      "third_success": 2,
+      "timeout": 0,
+      "unknown_duration": 0,
+      "unknown_input": 0,
+      "unknown_output": 0,
+      "verifier_error": 0
+    },
+    "collaborative": {
+      "extracted": 27,
+      "format": 5,
+      "input_tokens": 5484,
+      "lean_checks": 27,
+      "lean_ms": 31422,
+      "output_tokens": 2696,
+      "provider_duration_ns": 54698581879,
+      "request_failure": 0,
+      "requests": 32,
+      "third_success": 2,
+      "timeout": 0,
+      "unknown_duration": 0,
+      "unknown_input": 0,
+      "unknown_output": 0,
+      "verifier_error": 0
+    }
+  },
+  "next_local_protocol_experiment_supported": false,
+  "paired_outcomes": {
+    "baseline_only": 1,
+    "both": 29,
+    "collaborative_only": 1,
+    "neither": 29
+  },
+  "per_fixture_paired_outcomes": {
+    "and-or-distribute": {
+      "baseline": 0,
+      "baseline_only": 0,
+      "both": 0,
+      "collaborative": 0,
+      "collaborative_only": 0,
+      "neither": 5
+    },
+    "bool-xor-assoc": {
+      "baseline": 1,
+      "baseline_only": 0,
+      "both": 1,
+      "collaborative": 2,
+      "collaborative_only": 1,
+      "neither": 3
+    },
+    "contrapositive-iff": {
+      "baseline": 2,
+      "baseline_only": 1,
+      "both": 1,
+      "collaborative": 1,
+      "collaborative_only": 0,
+      "neither": 3
+    },
+    "exists-and-distribute": {
+      "baseline": 0,
+      "baseline_only": 0,
+      "both": 0,
+      "collaborative": 0,
+      "collaborative_only": 0,
+      "neither": 5
+    },
+    "forall-imp-compose": {
+      "baseline": 5,
+      "baseline_only": 0,
+      "both": 5,
+      "collaborative": 5,
+      "collaborative_only": 0,
+      "neither": 0
+    },
+    "list-append-assoc": {
+      "baseline": 5,
+      "baseline_only": 0,
+      "both": 5,
+      "collaborative": 5,
+      "collaborative_only": 0,
+      "neither": 0
+    },
+    "list-length-reverse": {
+      "baseline": 3,
+      "baseline_only": 0,
+      "both": 3,
+      "collaborative": 3,
+      "collaborative_only": 0,
+      "neither": 2
+    },
+    "list-map-append": {
+      "baseline": 5,
+      "baseline_only": 0,
+      "both": 5,
+      "collaborative": 5,
+      "collaborative_only": 0,
+      "neither": 0
+    },
+    "list-reverse-append": {
+      "baseline": 2,
+      "baseline_only": 0,
+      "both": 2,
+      "collaborative": 2,
+      "collaborative_only": 0,
+      "neither": 3
+    },
+    "nat-add-cancel": {
+      "baseline": 5,
+      "baseline_only": 0,
+      "both": 5,
+      "collaborative": 5,
+      "collaborative_only": 0,
+      "neither": 0
+    },
+    "nat-add-succ-swap": {
+      "baseline": 1,
+      "baseline_only": 0,
+      "both": 1,
+      "collaborative": 1,
+      "collaborative_only": 0,
+      "neither": 4
+    },
+    "nat-mul-add-distribute": {
+      "baseline": 1,
+      "baseline_only": 0,
+      "both": 1,
+      "collaborative": 1,
+      "collaborative_only": 0,
+      "neither": 4
+    }
+  },
+  "physical_shared_prefix_cost": {
+    "extracted": 112,
+    "format": 8,
+    "input_tokens": 14360,
+    "lean_checks": 112,
+    "lean_ms": 134948,
+    "output_tokens": 5910,
+    "provider_duration_ns": 126621200958,
+    "request_failure": 0,
+    "requests": 120,
+    "third_success": 0,
+    "timeout": 0,
+    "unknown_duration": 0,
+    "unknown_input": 0,
+    "unknown_output": 0,
+    "verifier_error": 0
+  },
+  "relative_cost_difference_percent": {
+    "all": {
+      "input_tokens": 0.59,
+      "lean_ms": 1.42,
+      "output_tokens": 7.0
+    },
+    "incremental_third": {
+      "input_tokens": 2.13,
+      "lean_ms": 7.11,
+      "output_tokens": 22.33
+    }
+  },
+  "status": "complete",
+  "third_required_outcomes": {
+    "baseline_only": 1,
+    "both": 1,
+    "collaborative_only": 1,
+    "neither": 29
+  }
+}

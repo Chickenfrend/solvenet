@@ -43,7 +43,7 @@ def add(cost, a, third=False):
 
 
 def relative(a, b, key):
-    return None if max(a[key], b[key]) == 0 else round(100 * abs(a[key] - b[key]) / max(a[key], b[key]), 2)
+    return None if max(a[key], b[key]) == 0 else 100 * abs(a[key] - b[key]) / max(a[key], b[key])
 
 
 def summarize(data):
@@ -55,12 +55,16 @@ def summarize(data):
     incremental = {a: empty() for a in arms}
     prefix = empty()
     seeds = defaultdict(lambda: {'baseline': set(), 'collaborative': set(), 'baseline_only': 0, 'collaborative_only': 0})
-    fixtures = defaultdict(lambda: {'baseline': 0, 'collaborative': 0, 'baseline_only': 0, 'collaborative_only': 0})
+    fixtures = defaultdict(lambda: {'baseline': 0, 'collaborative': 0,
+                                    'baseline_only': 0, 'collaborative_only': 0,
+                                    'both': 0, 'neither': 0})
     pairs = {'baseline_only': 0, 'collaborative_only': 0, 'both': 0, 'neither': 0}
     third_pairs = dict.fromkeys(pairs, 0)
     cumulative = []
     solved = {'baseline': 0, 'collaborative': 0}
     for b in data['blocks']:
+        seed = seeds[b['base_seed']]
+        fixture = fixtures[b['problem_id']]
         for a in b['prefix']:
             add(prefix, a)
             for arm in arms:
@@ -79,24 +83,26 @@ def summarize(data):
             results[arm] = prefix_solved or verified(third)
             if results[arm]:
                 solved[arm] += 1
-                seeds[b['base_seed']][arm].add(b['problem_id'])
-                fixtures[b['problem_id']][arm] += 1
+                seed[arm].add(b['problem_id'])
+                fixture[arm] += 1
         key = ('both' if all(results.values()) else 'neither' if not any(results.values()) else
                'baseline_only' if results['baseline'] else 'collaborative_only')
         pairs[key] += 1
+        fixture[key] += 1
         if not prefix_solved:
             third_pairs[key] += 1
         if key.endswith('_only'):
-            seeds[b['base_seed']][key] += 1
-            fixtures[b['problem_id']][key] += 1
+            seed[key] += 1
         cumulative.append({'seed': b['base_seed'], 'problem_id': b['problem_id'],
                            'solved': solved.copy(),
                            'cost': {arm: {k: arms[arm][k] for k in ('requests', 'input_tokens', 'output_tokens', 'lean_ms')}
                                     for arm in arms}})
     keys = ('input_tokens', 'output_tokens', 'lean_ms')
-    differences = {scope: {k: relative(cost['baseline'], cost['collaborative'], k) for k in keys}
-                   for scope, cost in [('all', arms), ('incremental_third', incremental)]}
-    comparable = (all(v is not None and v <= 15 for d in differences.values() for v in d.values())
+    raw_differences = {scope: {k: relative(cost['baseline'], cost['collaborative'], k) for k in keys}
+                       for scope, cost in [('all', arms), ('incremental_third', incremental)]}
+    differences = {scope: {k: round(value, 2) if value is not None else None
+                           for k, value in values.items()} for scope, values in raw_differences.items()}
+    comparable = (all(v is not None and v <= 15 for d in raw_differences.values() for v in d.values())
                   and all(not arms[a]['unknown_input'] and not arms[a]['unknown_output']
                           and not arms[a]['request_failure'] for a in arms)
                   and abs(arms['baseline']['lean_checks'] - arms['collaborative']['lean_checks']) <= 1)
