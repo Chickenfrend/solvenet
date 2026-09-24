@@ -1,9 +1,9 @@
-# Private homelab service (H2)
+# Private homelab service (H2–H3)
 
 The homelab site is a separate Python process and keeps only local operator
-settings in its own SQLite database. It reads fixture sets and recent runs via
-the coordinator's H1 HTTP browse API. The overview is deliberately read-only;
-run actions and detailed models/problems pages follow in H3–H5.
+settings in its own SQLite database. The Models landing page reads fixture sets,
+recent runs and model activity via the coordinator HTTP API. Run actions and
+problem/detail pages follow in H4–H5.
 
 From the repository root, with Python 3.11+:
 
@@ -22,8 +22,14 @@ defaults to the loopback coordinator at port 8080. `set-coordinator` can select
 one HTTP(S) origin at a time. Model entries (display name, coordinator model ID,
 provider and execution location) are scoped to that origin and can be updated
 with another `add-model` invocation. Configure actual worker/model connections
-and any provider credentials at the worker, not here. Configured models are
-**not** evidence of worker availability. Coordinator history stays on the
+and any provider credentials at the worker, not here. Use `Local network` for
+Ollama served by a LAN endpoint even though its provider remains Ollama.
+Configured models alone are **not** evidence of worker availability. Recent
+worker claims show idle presence; live leases plus worker contact show a job
+as working. Expired worker contact shows Offline, and models never seen by the
+coordinator show Unknown. A missing/incompatible activity API also shows
+Unknown rather than inventing activity. Refresh the page to update the status.
+Coordinator history stays on the
 coordinator; switching origins immediately changes API-backed data and never
 copies it into the site database.
 

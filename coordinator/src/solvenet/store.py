@@ -115,6 +115,14 @@ ALTER TABLE jobs ADD COLUMN generation_settings TEXT NOT NULL DEFAULT '{}';
 PRAGMA user_version = 9;
 """
 
+MIGRATION_10 = """
+CREATE TABLE worker_presence (
+ worker_id TEXT NOT NULL, model TEXT NOT NULL, seen_at REAL NOT NULL,
+ PRIMARY KEY (worker_id, model));
+CREATE INDEX worker_presence_model ON worker_presence(model);
+PRAGMA user_version = 10;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 MAX_REPAIR_DIAGNOSTICS_BYTES = 8 * 1024
 DEFAULT_INITIAL_ATTEMPTS = 3
@@ -227,7 +235,10 @@ class Store:
             if version == 8:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_9 + "COMMIT;")
                 version = 9
-            if version != 9:
+            if version == 9:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_10 + "COMMIT;")
+                version = 10
+            if version != 10:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -465,6 +476,11 @@ class Store:
     def claim(self, worker_id, models, *, supports_generation_settings=False):
         with self.transaction() as db:
             self._expire(db)
+            now = self.clock()
+            for model in set(models):
+                db.execute("""INSERT INTO worker_presence VALUES (?, ?, ?)
+                    ON CONFLICT(worker_id, model) DO UPDATE SET seen_at=excluded.seen_at""",
+                           (worker_id, model, now))
             if not models:
                 return None
             placeholders = ','.join('?' for _ in models)
@@ -512,7 +528,37 @@ class Store:
                 raise Conflict("Assignment is no longer active")
             expires = self.clock() + self.lease_seconds
             db.execute("UPDATE assignments SET expires=? WHERE id=?", (expires, assignment))
+            db.execute("""UPDATE worker_presence SET seen_at=? WHERE worker_id=? AND model=(
+                SELECT model FROM jobs WHERE id=?)""", (self.clock(), row['worker_id'], row['job_id']))
             return {"lease_expires_at": expires}
+
+    def model_activity(self, models):
+        """Only report work backed by an unexpired lease and recent worker contact."""
+        now = self.clock()
+        cutoff = now - max(self.lease_seconds, 5)
+        with self.connect() as db:
+            items = []
+            for model in models:
+                workers = db.execute("SELECT worker_id, seen_at FROM worker_presence WHERE model=?", (model,)).fetchall()
+                live = [w for w in workers if w['seen_at'] > cutoff]
+                active = None
+                for worker in live:
+                    active = db.execute("""SELECT j.id AS job_id, j.run_id FROM assignments a
+                        JOIN jobs j ON j.id=a.job_id WHERE a.worker_id=? AND j.model=?
+                        AND a.status='active' AND a.expires>? ORDER BY a.rowid DESC LIMIT 1""",
+                        (worker['worker_id'], model, now)).fetchone()
+                    if active:
+                        break
+                if active:
+                    items.append({'model': model, 'status': 'working', 'job_id': active['job_id'],
+                                  'run_id': active['run_id']})
+                elif live:
+                    items.append({'model': model, 'status': 'idle'})
+                elif workers:
+                    items.append({'model': model, 'status': 'offline'})
+                else:
+                    items.append({'model': model, 'status': 'unknown'})
+            return {'items': items}
 
     def result(self, assignment, payload):
         payload = dict(payload)

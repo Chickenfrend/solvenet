@@ -1,6 +1,7 @@
 """Operator-managed local metadata, independent of coordinator storage."""
 
 import sqlite3
+from contextlib import closing, contextmanager
 from urllib.parse import urlsplit
 
 
@@ -48,8 +49,10 @@ class Settings:
             ''')
             db.execute('INSERT OR IGNORE INTO settings VALUES (1, ?)', (DEFAULT_COORDINATOR,))
 
+    @contextmanager
     def connect(self):
-        return sqlite3.connect(self.path, timeout=5)
+        with closing(sqlite3.connect(self.path, timeout=5)) as db, db:
+            yield db
 
     def selected(self):
         with self.connect() as db:

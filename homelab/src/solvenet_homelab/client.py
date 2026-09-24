@@ -3,6 +3,7 @@
 import json
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -58,3 +59,21 @@ class Client:
                        for row in runs)):
             raise CoordinatorInvalid('Coordinator returned an invalid response')
         return catalog, runs
+
+    def model_activity(self, model_ids):
+        activity = {}
+        for start in range(0, len(model_ids), 10):
+            batch = model_ids[start:start + 10]
+            rows = self.get('/v1/model-activity?' + urlencode([('model', model) for model in batch]),
+                            ('items',))['items']
+            if (not isinstance(rows, list) or len(rows) != len(batch)
+                    or any(not isinstance(row, dict) or row.get('model') not in batch
+                           or row.get('status') not in ('working', 'idle', 'offline', 'unknown')
+                           or (row.get('status') == 'working' and
+                               (not isinstance(row.get('job_id'), str) or not row['job_id']
+                                or not isinstance(row.get('run_id'), str) or not row['run_id']))
+                           for row in rows)
+                    or {row['model'] for row in rows} != set(batch)):
+                raise CoordinatorInvalid('Coordinator returned an invalid response')
+            activity.update((row['model'], row) for row in rows)
+        return activity

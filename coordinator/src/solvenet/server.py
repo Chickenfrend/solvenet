@@ -334,6 +334,18 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 if parts == ['v1', 'fixture-sets']:
                     return self.respond(200, {'items': [public_set(load(path)) for _, path in
                                                        sorted(EXPERIMENT_SETS.items())]})
+                if parts == ['v1', 'model-activity']:
+                    try:
+                        pairs = parse_qsl(urlsplit(self.path).query, keep_blank_values=True,
+                                          strict_parsing=True, max_num_fields=32, errors='strict')
+                    except (ValueError, UnicodeDecodeError) as error:
+                        raise ValueError('Invalid model activity query') from error
+                    if not pairs or any(key != 'model' for key, _ in pairs):
+                        raise ValueError('Specify model identifiers')
+                    models = [text(value, 'model', limits.MAX_MODEL_BYTES) for _, value in pairs]
+                    if len(set(models)) != len(models):
+                        raise ValueError('Repeated model identifier')
+                    return self.respond(200, coordinator.store.model_activity(models))
                 if (len(parts) >= 5 and parts[:2] == ['v1', 'fixture-sets']
                         and parts[3] == 'versions'):
                     try:

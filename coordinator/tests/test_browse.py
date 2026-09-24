@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import urlopen
+from urllib.request import Request
 
 from solvenet.problem_set import EXPERIMENT_SETS, load
 from solvenet.server import Coordinator, make_server
@@ -124,6 +125,43 @@ class BrowseTests(unittest.TestCase):
         self.assertEqual(self.get('/v1/fixture-sets/core/versions/1?offset=-1')[0], 400)
         self.assertEqual(self.get('/v1/runs/' + 'a' * 32)[0], 404)
         self.assertEqual(self.get('/v1/experiments/' + 'a' * 32)[0], 404)
+
+    def test_model_activity_uses_recent_contact_and_live_lease(self):
+        now = [1000.0]
+        self.store.clock = lambda: now[0]
+        first = self.store.submit(': True', ['Init'], model='ollama/a', attempts=1)['run_id']
+        second = self.store.submit(': True', ['Init'], model='ollama/b', attempts=1)['run_id']
+        def activity():
+            return self.get('/v1/model-activity?model=ollama%2Fa&model=ollama%2Fb&model=missing')[1]['items']
+        self.assertEqual([row['status'] for row in activity()], ['unknown', 'unknown', 'unknown'])
+        def claim(worker, model):
+            payload = json.dumps({'worker_id': worker, 'models': [model]}).encode()
+            with urlopen(Request(self.url + '/v1/claim', payload,
+                                 {'Content-Type': 'application/json'}), timeout=10) as response:
+                return json.load(response) if response.status == 200 else None
+        a = claim('worker-a', 'ollama/a')
+        b = claim('worker-b', 'ollama/b')
+        rows = activity()
+        self.assertEqual([row['status'] for row in rows], ['working', 'working', 'unknown'])
+        self.assertEqual([(row['job_id'], row['run_id']) for row in rows[:2]],
+                         [(a['job']['id'], first), (b['job']['id'], second)])
+        self.assertNotIn('worker_id', json.dumps(rows))
+        now[0] += 20
+        payload = json.dumps({'lease_token': a['lease_token']}).encode()
+        with urlopen(Request(self.url + '/v1/assignments/' + a['assignment_id'] + '/heartbeat', payload,
+                             {'Content-Type': 'application/json'}), timeout=10):
+            pass
+        now[0] += 11
+        self.assertEqual([row['status'] for row in activity()], ['working', 'offline', 'unknown'])
+        now[0] += 20
+        self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'unknown'])
+        # A claim with no available job is positive worker contact, but no assignment.
+        self.assertIsNone(claim('worker-c', 'missing'))
+        self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'idle'])
+        now[0] += 86401
+        self.assertIsNone(claim('worker-c', 'missing'))
+        self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'idle'])
+        self.assertEqual(self.get('/v1/model-activity?model=ollama%2Fa&model=ollama%2Fa')[0], 400)
 
 
 if __name__ == '__main__':

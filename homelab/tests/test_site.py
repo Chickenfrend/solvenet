@@ -3,9 +3,11 @@ import tempfile
 import threading
 import time
 import unittest
+import json
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
 
 from solvenet_homelab.server import make_server
@@ -19,6 +21,10 @@ class Stub(BaseHTTPRequestHandler):
             body = self.server.catalog
         elif self.path == '/v1/runs?limit=10':
             body = self.server.runs
+        elif urlsplit(self.path).path == '/v1/model-activity':
+            models = parse_qs(urlsplit(self.path).query).get('model', [])
+            body = json.dumps({'items': [self.server.activity.get(model, {'model': model, 'status': 'unknown'})
+                                         for model in models]}).encode()
         else:
             self.send_error(404)
             return
@@ -52,6 +58,7 @@ class SiteTests(unittest.TestCase):
              content_type='application/json'):
         server = ThreadingHTTPServer(('127.0.0.1', 0), Stub)
         server.catalog, server.runs, server.content_type = catalog, runs, content_type
+        server.activity = {}
         server.paths = []
         self.start(server)
         return server, f'http://127.0.0.1:{server.server_port}'
@@ -72,7 +79,7 @@ class SiteTests(unittest.TestCase):
         self.assertIn('core v1', html)
         self.assertIn('run-a', html)
         self.assertIn('&lt;Private&gt;', html)
-        self.assertEqual(first.paths, ['/v1/fixture-sets', '/v1/runs?limit=10'])
+        self.assertEqual(first.paths, ['/v1/fixture-sets', '/v1/runs?limit=10', '/v1/model-activity?model=local'])
         self.settings.select(second_url)
         self.settings.add_model('remote', 'Remote', 'Ollama', 'Local network')
         html = self.page()
@@ -81,7 +88,7 @@ class SiteTests(unittest.TestCase):
         self.assertIn('Remote', html)
         self.assertNotIn('run-a', html)
         self.assertNotIn('Private', html)
-        self.assertEqual(second.paths, ['/v1/fixture-sets', '/v1/runs?limit=10'])
+        self.assertEqual(second.paths, ['/v1/fixture-sets', '/v1/runs?limit=10', '/v1/model-activity?model=remote'])
         self.settings.select(first_url)
         self.assertIn('&lt;Private&gt;', self.page())
         with sqlite3.connect(self.db) as db:
@@ -160,7 +167,36 @@ class SiteTests(unittest.TestCase):
         self.assertIn(escape('<script>'), html)
         self.assertNotIn('<script>', html)
         self.assertNotIn('secret', html)
-        self.assertEqual(server.paths, ['/v1/fixture-sets', '/v1/runs?limit=10'])
+        self.assertEqual(server.paths, ['/v1/fixture-sets', '/v1/runs?limit=10', '/v1/model-activity?model=m'])
+
+    def test_cards_activity_escaping_and_mobile_layout(self):
+        stub, url = self.stub()
+        self.settings.select(url)
+        self.settings.add_model('ollama/a', '<script>alert(1)</script>', 'Ollama', 'On this device')
+        self.settings.add_model('ollama/b', 'LAN', 'Ollama', 'Local network')
+        self.settings.add_model('cloud/c', 'Cloud', 'API', 'Cloud API')
+        stub.activity = {
+            'ollama/a': {'model': 'ollama/a', 'status': 'working', 'job_id': '<job>', 'run_id': 'run-1'},
+            'ollama/b': {'model': 'ollama/b', 'status': 'offline'},
+        }
+        html = self.page()
+        self.assertIn('Working on job &lt;job&gt; (run run-1)', html)
+        self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', html)
+        self.assertNotIn('<script>alert(1)</script>', html)
+        self.assertIn('Offline — worker signal is stale', html)
+        self.assertIn('Unknown — configured; no worker signal', html)
+        self.assertLess(html.index('On this device'), html.index('Local network'))
+        self.assertIn('name="viewport" content="width=device-width, initial-scale=1"', html)
+        self.assertIn('grid-template-columns: minmax(0, 1fr)', html)
+        self.assertIn('@media (min-width: 42rem)', html)
+        self.assertIn('min-width: 0', html)
+        self.assertIn('overflow-wrap: anywhere', html)
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle'}
+        self.assertIn('Idle — worker recently checked in', self.page())
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'working', 'job_id': '<job>'}
+        html = self.page()
+        self.assertIn('Unknown — configured; no worker signal', html)
+        self.assertNotIn('Working on job', html)
 
     def test_refuse_coordinator_database(self):
         other = self.db.parent / 'other.db'
