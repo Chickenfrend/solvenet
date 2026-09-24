@@ -3,8 +3,9 @@
 The frozen design is in `PLAN.md`. This runner calls the pinned Go Ollama provider
 directly (`worker/experiments/crosschain`), so its system prompt, streaming JSON
 schema, and proof extraction come from the provider rather than a reimplementation.
-The Python bridge invokes the coordinator's `ContainerVerifier` with its default
-restricted Docker configuration and 10-second Lean timeout. The fixture is decoded
+The Python bridge invokes the coordinator's `ContainerVerifier` with the current
+`solvenet-verifier:homelab` image, restricted Docker configuration and 10-second
+Lean timeout. The fixture is decoded
 into an explicit public-field-only Go struct; `reference_proof` is not loaded.
 
 From the repository root, implementation checks (fake Ollama, fake verifier; no
@@ -30,9 +31,9 @@ test results (the runner stores and rechecks them during execution):
 | `worker/internal/provider/ollama.go` | `8893049b0c2dccb797178c828fc12e40dc1bde9e0c8ab8ddad401184e7fcdcb5` |
 | `worker/experiments/crosschain/main.go` | `d8dbf88a7a4318755d838097b9292141e420ba49e5fe0f3a36456405934312ad` |
 | `worker/experiments/crosschain/main_test.go` | `3f787a4467b0385ef0e46cc8a073baabd2d57d443a09328244cee65dd68e4722` |
-| `verifier_bridge.py` | `ec01b4605c4770346ced476e5648a60e1028a70ca060db4ccec4da9c9395b23c` |
+| `verifier_bridge.py` | `55193942360106da720b8d7a93d5843d1b09d0a8aa7e56bdd70cb72f22df0ac6` |
 | `report.py` | `8ba7a3afdeda710c10dcd188d336c5a8051172a50322ab5220cd752e860957ff` |
-| `test_report.py` | `42755c7584b25e716884c066e89e63d43a4e2236baed392c1d038f62d70c320a` |
+| `test_report.py` | `d8c1240238884caf010ae5d937eba84338bf3c414c6f25c54ecac7d9e85289d9` |
 
 Live execution command **after** freezing/publishing these checks, starting a
 ready local Ollama service with the expected model and a ready local verifier

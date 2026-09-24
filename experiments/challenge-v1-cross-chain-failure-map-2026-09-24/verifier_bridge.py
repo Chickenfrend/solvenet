@@ -14,7 +14,7 @@ from solvenet.sandbox import ContainerVerifier  # noqa: E402
 
 def main():
     request = json.load(sys.stdin)
-    verifier = ContainerVerifier()
+    verifier = ContainerVerifier(image="solvenet-verifier:homelab")
     if request["action"] == "verify":
         result = verifier.verify(request["statement"], request["candidate"], imports=request["imports"])
         print(json.dumps(asdict(result)))

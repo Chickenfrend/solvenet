@@ -1,6 +1,10 @@
+import io
+import json
 import unittest
+from unittest.mock import patch
 
 from report import summarize
+import verifier_bridge
 
 
 def attempt(status='rejected', input_tokens=10, output_tokens=5):
@@ -9,6 +13,23 @@ def attempt(status='rejected', input_tokens=10, output_tokens=5):
 
 
 class ReportTests(unittest.TestCase):
+    def test_bridge_selects_current_verifier_image(self):
+        class FakeVerifier:
+            def __init__(self, image):
+                self.image = image
+
+            def readiness(self):
+                self_test.assertEqual(self.image, 'solvenet-verifier:homelab')
+                return type('Readiness', (), {'ready': False, 'diagnostics': 'test-only'})()
+
+        self_test = self
+        output = io.StringIO()
+        with patch.object(verifier_bridge, 'ContainerVerifier', FakeVerifier), \
+                patch.object(verifier_bridge.sys, 'stdin', io.StringIO('{"action":"readiness"}')), \
+                patch.object(verifier_bridge.sys, 'stdout', output):
+            verifier_bridge.main()
+        self.assertEqual(json.loads(output.getvalue()), {'ready': False, 'error': 'test-only'})
+
     def test_shared_cost_and_threshold(self):
         blocks = [{'problem_id': f'p{n % 12}', 'base_seed': [121, 132, 143, 154, 165][n // 12],
                    'prefix': [attempt(), attempt()], 'baseline': attempt(), 'collaborative': attempt()}
