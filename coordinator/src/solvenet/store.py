@@ -123,6 +123,13 @@ CREATE INDEX worker_presence_model ON worker_presence(model);
 PRAGMA user_version = 10;
 """
 
+MIGRATION_11 = """
+ALTER TABLE runs ADD COLUMN fixture_set_id TEXT;
+ALTER TABLE runs ADD COLUMN fixture_version INTEGER;
+ALTER TABLE runs ADD COLUMN fixture_sha256 TEXT;
+PRAGMA user_version = 11;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 MAX_REPAIR_DIAGNOSTICS_BYTES = 8 * 1024
 DEFAULT_INITIAL_ATTEMPTS = 3
@@ -238,7 +245,10 @@ class Store:
             if version == 9:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_10 + "COMMIT;")
                 version = 10
-            if version != 10:
+            if version == 10:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_11 + "COMMIT;")
+                version = 11
+            if version != 11:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -273,7 +283,24 @@ class Store:
         validate_job_settings(initial_jobs, settings)
         with self.transaction() as db:
             return self._insert_run(db, statement, imports, initial_jobs, max_repairs,
-                                    generation_timeout_seconds, max_assignments, generation_settings=settings)
+                                     generation_timeout_seconds, max_assignments, generation_settings=settings)
+
+    def submit_fixture(self, fixture, problem, **options):
+        """Create a single run for a checked-in problem with durable fixture identity."""
+        options = dict(options, statement=problem.statement, imports=list(problem.imports))
+        groups = self._validate_run(options['attempts'], options['model'], options['max_output_tokens'],
+                                    options['max_repairs'], options['generation_timeout_seconds'],
+                                    options['max_assignments'], None)
+        settings = validate_settings(options.get('generation_settings') or {})
+        validate_job_settings(groups, settings)
+        with self.transaction() as db:
+            result = self._insert_run(db, problem.statement, problem.imports, groups,
+                                      options['max_repairs'], options['generation_timeout_seconds'],
+                                      options['max_assignments'], fixture_problem_id=problem.id,
+                                      generation_settings=settings)
+            db.execute('''UPDATE runs SET fixture_set_id=?, fixture_version=?, fixture_sha256=?
+                          WHERE id=?''', (fixture.set_id, fixture.version, fixture.sha256, result['run_id']))
+            return result
 
     def _validate_run(self, attempts, model, max_output_tokens, max_repairs,
                       generation_timeout_seconds, max_assignments, initial_jobs):
@@ -418,8 +445,8 @@ class Store:
             db.execute('BEGIN')
             rows = db.execute('''SELECT r.rowid AS cursor, r.id, r.problem_id,
                 r.fixture_problem_id, r.experiment_id, r.status, r.created_at,
-                json_extract(e.config, '$.set_id') AS fixture_set_id,
-                json_extract(e.config, '$.version') AS fixture_version
+                coalesce(r.fixture_set_id, json_extract(e.config, '$.set_id')) AS fixture_set_id,
+                coalesce(r.fixture_version, json_extract(e.config, '$.version')) AS fixture_version
                 FROM runs r LEFT JOIN experiments e ON e.id=r.experiment_id
                 WHERE (? IS NULL OR r.rowid < ?)
                 ORDER BY r.rowid DESC LIMIT ?''', (before, before, limit + 1)).fetchall()

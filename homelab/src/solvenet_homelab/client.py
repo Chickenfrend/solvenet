@@ -1,9 +1,9 @@
-"""Narrow, bounded read-only coordinator HTTP client."""
+"""Narrow, bounded coordinator HTTP client."""
 
 import json
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from urllib.request import Request, urlopen
 
 
@@ -77,3 +77,67 @@ class Client:
                 raise CoordinatorInvalid('Coordinator returned an invalid response')
             activity.update((row['model'], row) for row in rows)
         return activity
+
+    def fixture_set(self, set_id, version):
+        path = f'/v1/fixture-sets/{quote(set_id, safe="")}/versions/{version}'
+        problems = []
+        offset = 0
+        while True:
+            result = self.get(path + f'?limit=100&offset={offset}',
+                              ('problems', 'sha256', 'environment', 'next_offset'))
+            page = result['problems']
+            next_offset = result['next_offset']
+            if (not isinstance(page, list) or len(page) > 100
+                    or any(not isinstance(p, dict) or not isinstance(p.get('id'), str)
+                           or not isinstance(p.get('title'), str) for p in page)
+                    or (next_offset is not None and (type(next_offset) is not int
+                        or next_offset != offset + 100 or next_offset > 10000))):
+                raise CoordinatorInvalid('Coordinator returned an invalid response')
+            problems.extend(page)
+            if next_offset is None:
+                return {**result, 'problems': problems}
+            offset = next_offset
+
+    def problem(self, set_id, version, problem_id):
+        path = (f'/v1/fixture-sets/{quote(set_id, safe="")}/versions/{version}'
+                f'/problems/{quote(problem_id, safe="")}')
+        result = self.get(path, ('id', 'title', 'statement', 'imports', 'environment',
+                                  'sha256', 'set_id', 'version'))
+        if (result['id'] != problem_id or not isinstance(result['title'], str)
+                or result['set_id'] != set_id or result['version'] != version
+                or not isinstance(result['statement'], str) or not isinstance(result['sha256'], str)
+                or not isinstance(result['imports'], list)
+                or any(not isinstance(value, str) for value in result['imports'])):
+            raise CoordinatorInvalid('Coordinator returned an invalid response')
+        return result
+
+    def run(self, run_id):
+        return self.get('/v1/runs/' + quote(run_id, safe=''), ('id', 'status'))
+
+    def start_fixture_run(self, payload):
+        request = Request(self.origin + '/v1/fixture-runs', data=json.dumps(payload).encode(),
+                          headers={'Accept': 'application/json', 'Content-Type': 'application/json'})
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                if response.status != 201:
+                    raise CoordinatorInvalid('Coordinator returned an incompatible response')
+                if response.headers.get_content_type() != 'application/json':
+                    raise CoordinatorInvalid('Coordinator returned an invalid response')
+                raw = response.read(256 * 1024 + 1)
+        except HTTPError as error:
+            error.close()
+            if error.code == 400:
+                raise CoordinatorInvalid('Coordinator rejected the fixture or settings; refresh and try again') from error
+            if error.code < 500:
+                raise CoordinatorInvalid('Coordinator returned an incompatible response') from error
+            raise CoordinatorOffline('Coordinator is unavailable') from error
+        except (HTTPException, URLError, TimeoutError, OSError) as error:
+            raise CoordinatorOffline('Coordinator is unavailable') from error
+        try:
+            result = json.loads(raw) if len(raw) <= 256 * 1024 else None
+        except (ValueError, UnicodeDecodeError) as error:
+            raise CoordinatorInvalid('Coordinator returned an invalid response') from error
+        if (not isinstance(result, dict) or not isinstance(result.get('run_id'), str)
+                or len(result['run_id']) != 32 or any(c not in '0123456789abcdef' for c in result['run_id'])):
+            raise CoordinatorInvalid('Coordinator returned an invalid response')
+        return result['run_id']

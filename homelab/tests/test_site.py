@@ -8,7 +8,9 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError
+import re
 
 from solvenet_homelab.server import make_server
 from solvenet_homelab.settings import Settings
@@ -25,11 +27,34 @@ class Stub(BaseHTTPRequestHandler):
             models = parse_qs(urlsplit(self.path).query).get('model', [])
             body = json.dumps({'items': [self.server.activity.get(model, {'model': model, 'status': 'unknown'})
                                          for model in models]}).encode()
+        elif self.path.startswith('/v1/fixture-sets/core/versions/1?limit=100&offset='):
+            offset = int(self.path.rsplit('=', 1)[-1])
+            body = json.dumps({'problems': [{'id': 'lemma-one', 'title': '<Lemma>'}]
+                               if offset == 0 else [{'id': 'lemma-two', 'title': 'Second'}],
+                               'sha256': 'a' * 64, 'environment': 'Lean',
+                               'next_offset': 100 if self.server.paginated and offset == 0 else None}).encode()
+        elif self.path == '/v1/fixture-sets/core/versions/1/problems/lemma-one':
+            body = json.dumps({'id': 'lemma-one', 'title': '<Lemma>', 'statement': ': True',
+                               'set_id': 'core', 'version': 1,
+                               'imports': ['Init'], 'environment': 'Lean', 'sha256': 'a' * 64,
+                               'reference_proof': 'SECRET_PROOF'}).encode()
+        elif self.path == '/v1/runs/' + 'a' * 32:
+            body = b'{"id":"run","status":"running"}'
         else:
             self.send_error(404)
             return
         self.send_response(200)
         self.send_header('Content-Type', self.server.content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        self.server.paths.append(self.path)
+        self.server.submissions.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+        body = json.dumps({'run_id': 'a' * 32}).encode()
+        self.send_response(self.server.post_status)
+        self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -59,7 +84,10 @@ class SiteTests(unittest.TestCase):
         server = ThreadingHTTPServer(('127.0.0.1', 0), Stub)
         server.catalog, server.runs, server.content_type = catalog, runs, content_type
         server.activity = {}
+        server.paginated = False
+        server.post_status = 201
         server.paths = []
+        server.submissions = []
         self.start(server)
         return server, f'http://127.0.0.1:{server.server_port}'
 
@@ -206,6 +234,72 @@ class SiteTests(unittest.TestCase):
             Settings(other)
         with sqlite3.connect(other) as db:
             self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [('runs',)])
+
+    def test_problem_submission_validation_csrf_and_confirmation(self):
+        stub, url = self.stub()
+        self.settings.select(url)
+        self.settings.add_model('ollama/a', 'Local', 'Ollama', 'On this device')
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle'}
+        with urlopen(self.site_url + '/problems') as response:
+            listing = response.read().decode()
+        self.assertIn('&lt;Lemma&gt;', listing)
+        stub.paginated = True
+        with urlopen(self.site_url + '/problems') as response:
+            self.assertIn('Second', response.read().decode())
+        path = '/problems/core/1/lemma-one'
+        with urlopen(self.site_url + path) as response:
+            detail = response.read().decode()
+            cookie = response.headers['Set-Cookie'].split(';')[0]
+        self.assertIn(': True', detail)
+        self.assertIn('Init', detail)
+        self.assertNotIn('SECRET_PROOF', detail)
+        token = re.search(r'name="csrf" value="([0-9a-f]+)"', detail).group(1)
+        def post(fields, cookie_value=cookie):
+            from urllib.parse import urlencode
+            request = Request(self.site_url + path, data=urlencode(fields).encode(),
+                              headers={'Content-Type': 'application/x-www-form-urlencoded',
+                                       'Cookie': cookie_value})
+            try:
+                with urlopen(request) as response:
+                    return response.status, response.read().decode()
+            except HTTPError as error:
+                with error:
+                    return error.code, error.read().decode()
+        values = {'csrf': token, 'model': 'ollama/a', 'strategy': 'repair', 'attempts': '2',
+                  'max_output_tokens': '512', 'generation_timeout_seconds': '60'}
+        self.assertEqual(post(values, '')[0], 403)
+        self.assertEqual(post({**values, 'csrf': 'wrong'})[0], 403)
+        for field, invalid in [('model', 'unconfigured'), ('strategy', 'bad'), ('attempts', '0'),
+                               ('max_output_tokens', '999999'), ('generation_timeout_seconds', 'abc')]:
+            status, html = post({**values, field: invalid})
+            self.assertEqual(status, 400)
+            self.assertIn('role="alert"', html)
+        self.assertEqual(stub.submissions, [])
+        status, html = post(values)
+        self.assertEqual(status, 200)  # urllib follows the 303 to the confirmation page
+        self.assertIn('Run started', html)
+        self.assertEqual(stub.submissions, [{'set_id': 'core', 'version': 1, 'sha256': 'a' * 64,
+                                            'problem_id': 'lemma-one', 'model': 'ollama/a',
+                                            'attempts': 2, 'max_output_tokens': 512,
+                                            'generation_timeout_seconds': 60, 'max_repairs': 2}])
+        self.assertNotIn('SECRET_PROOF', json.dumps(stub.submissions))
+        stub.post_status = 200
+        status, html = post(values)
+        self.assertEqual(status, 503)
+        self.assertIn('incompatible response', html)
+        stub.post_status = 201
+        long_path = '/problems/core/' + '9' * 5000 + '/lemma-one'
+        for method in ('GET', 'POST'):
+            request = Request(self.site_url + long_path, method=method,
+                              data=b'csrf=x' if method == 'POST' else None)
+            with self.assertRaises(HTTPError) as error:
+                urlopen(request, timeout=2)
+            self.assertEqual(error.exception.code, 404)
+            error.exception.close()
+        stub.shutdown()
+        status, html = post(values)
+        self.assertEqual(status, 503)
+        self.assertIn('Check the coordinator and retry', html)
 
 
 if __name__ == '__main__':

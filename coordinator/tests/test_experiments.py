@@ -398,7 +398,7 @@ class ExperimentsTest(unittest.TestCase):
         self.assertIsNone(report['runs'][0]['time_to_first_verified_proof_seconds'])
         self.assertEqual(report['time_to_first_verified_proof']['unknown_count'], 1)
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
             self.assertIsNone(db.execute("SELECT created_at FROM runs WHERE id='r'").fetchone()[0])
             self.assertIsNone(db.execute("SELECT verified_at FROM verifications WHERE attempt_id='t'").fetchone()[0])
 

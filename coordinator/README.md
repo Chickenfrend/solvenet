@@ -13,6 +13,16 @@ metadata. Optional `limit` (1–100, default 20) and `offset` (nonnegative,
 default 0) paginate problem rows. Missing set/version/problem IDs return 404.
 Fixture reference proofs are excluded from every response.
 
+To start a single checked-in fixture while retaining its identity, POST
+`/v1/fixture-runs` with `set_id`, `version`, `sha256`, `problem_id`, `model`,
+and optional run settings (`attempts`, `max_repairs`, `max_output_tokens`,
+`generation_timeout_seconds`, `max_assignments`, `generation_settings`). The
+coordinator obtains statement/imports from the pinned fixture and returns a
+new `run_id` (201). The run detail includes fixture set, version, hash and
+problem ID; the list endpoint includes set/version/problem ID. Unknown fields,
+unknown problem IDs and mismatched hashes are rejected. Validation-only proofs
+never enter the run or worker claim.
+
 `GET /v1/runs` and `GET /v1/experiments` return compact recent activity as
 `{"items": [...], "next_cursor": integer_or_null}`. Rows are newest first by
 persisted insertion order, even when creation timestamps are equal or absent.

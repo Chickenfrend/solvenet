@@ -1,9 +1,8 @@
-# Private homelab service (H2–H3)
+# Private homelab service (H2–H4)
 
 The homelab site is a separate Python process and keeps only local operator
-settings in its own SQLite database. The Models landing page reads fixture sets,
-recent runs and model activity via the coordinator HTTP API. Run actions and
-problem/detail pages follow in H4–H5.
+settings in its own SQLite database. Models and Problems read fixture sets,
+recent runs and model activity via the coordinator HTTP API.
 
 From the repository root, with Python 3.11+:
 
@@ -29,6 +28,15 @@ worker claims show idle presence; live leases plus worker contact show a job
 as working. Expired worker contact shows Offline, and models never seen by the
 coordinator show Unknown. A missing/incompatible activity API also shows
 Unknown rather than inventing activity. Refresh the page to update the status.
+The Problems link opens a vertical fixture list. On a problem detail page you can
+choose a configured model with a recent worker signal (Idle or Working), an
+independent or repair strategy, initial chains, output tokens and generation
+timeout. A successful form redirects to a run confirmation link. The coordinator
+`POST /v1/fixture-runs` records the checked-in fixture identity for exactly one
+problem; it rejects changed fixture hashes. The form and coordinator never send
+the fixture's validation-only reference proof to workers. Form submissions use
+a server-validated CSRF token and strict same-site cookie.
+Full candidate/verification inspection follows in H5.
 Coordinator history stays on the
 coordinator; switching origins immediately changes API-backed data and never
 copies it into the site database.

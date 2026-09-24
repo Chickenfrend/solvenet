@@ -420,6 +420,19 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     return self.respond(201 if created else 200, experiment)
                 if parts == ['v1', 'runs']:
                     return self.respond(201, coordinator.store.submit(**run_options(data)))
+                if parts == ['v1', 'fixture-runs']:
+                    allowed = {'set_id', 'version', 'sha256', 'problem_id', 'model', 'attempts',
+                               'max_repairs', 'max_output_tokens', 'generation_timeout_seconds',
+                               'max_assignments', 'generation_settings'}
+                    if set(data) - allowed:
+                        raise ValueError('Unknown fixture-run fields')
+                    text(data.get('model'), 'model', limits.MAX_MODEL_BYTES)
+                    fixture = load_experiment_set(data.get('set_id'), data.get('version'), data.get('sha256'))
+                    problem = next((p for p in fixture.problems if p.id == data.get('problem_id')), None)
+                    if problem is None:
+                        raise ValueError('Unknown fixture problem')
+                    options = run_options({**data, 'statement': problem.statement, 'imports': list(problem.imports)})
+                    return self.respond(201, coordinator.store.submit_fixture(fixture, problem, **options))
                 if parts == ['v1', 'claim']:
                     worker = text(data.get('worker_id'), 'worker_id', limits.MAX_IDENTIFIER_BYTES)
                     models = data.get('models')

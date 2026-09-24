@@ -36,6 +36,44 @@ class BrowseTests(unittest.TestCase):
         with response:
             return response.status, json.load(response)
 
+    def post(self, path, payload):
+        request = Request(self.url + path, data=json.dumps(payload).encode(),
+                          headers={'Content-Type': 'application/json'})
+        try:
+            response = urlopen(request, timeout=10)
+        except HTTPError as error:
+            response = error
+        with response:
+            return response.status, json.load(response)
+
+    def test_single_fixture_run_identity_and_no_reference_proof(self):
+        fixture = load()
+        problem = fixture.problems[0]
+        payload = {'set_id': fixture.set_id, 'version': fixture.version, 'sha256': fixture.sha256,
+                   'problem_id': problem.id, 'model': 'local', 'attempts': 2,
+                   'max_repairs': 2, 'max_output_tokens': 512, 'generation_timeout_seconds': 60}
+        status, created = self.post('/v1/fixture-runs', payload)
+        self.assertEqual(status, 201)
+        detail = self.get('/v1/runs/' + created['run_id'])[1]
+        self.assertEqual((detail['fixture_set_id'], detail['fixture_version'], detail['fixture_sha256'],
+                          detail['fixture_problem_id']), (fixture.set_id, fixture.version, fixture.sha256, problem.id))
+        self.assertEqual(detail['problem']['statement'], problem.statement)
+        self.assertEqual(detail['initial_jobs'], [{'model': 'local', 'count': 2, 'max_output_tokens': 512}])
+        self.assertEqual(detail['max_repairs'], 2)
+        self.assertEqual(detail['generation_timeout_seconds'], 60)
+        row = self.get('/v1/runs?limit=1')[1]['items'][0]
+        self.assertEqual(row['fixture_problem_id'], problem.id)
+        self.assertEqual(row['fixture_set_id'], fixture.set_id)
+        self.assertNotIn(problem.reference_proof, json.dumps(detail))
+        claim = self.store.claim('worker', ['local'])
+        self.assertEqual(claim['job']['statement'], problem.statement)
+        self.assertNotIn(problem.reference_proof, json.dumps(claim))
+        for bad in ({**payload, 'sha256': '0' * 64}, {**payload, 'problem_id': 'missing'},
+                    {**payload, 'reference_proof': problem.reference_proof},
+                    {**payload, 'statement': ': False'}):
+            self.assertEqual(self.post('/v1/fixture-runs', bad)[0], 400)
+        self.assertEqual(len(self.get('/v1/runs?limit=10')[1]['items']), 1)
+
     def test_fixture_catalog_pages_and_proof_exclusion(self):
         status, catalog = self.get('/v1/fixture-sets')
         self.assertEqual(status, 200)

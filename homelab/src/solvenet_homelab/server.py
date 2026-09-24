@@ -1,12 +1,16 @@
 """Small server-rendered private homelab overview."""
 
 import argparse
+import hmac
+import secrets
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from http.cookies import SimpleCookie
+from urllib.parse import urlsplit, parse_qs
 
 from .client import Client, CoordinatorInvalid, CoordinatorOffline
 from .settings import LOCATIONS, Settings
+from . import problems
 
 
 def render(url, models, catalog, runs, error=None, activity=None):
@@ -61,21 +65,86 @@ color: #fff; background: #513016; padding: .35rem .75rem; font-weight: 700 }}
 @media (min-width: 42rem) {{ .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)) }}
 .model-card {{ min-height: 17rem }} }}
 @media (min-width: 68rem) {{ .grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)) }} }}
-</style></head><body><header class="top"><h1>Models</h1><a href="/">Refresh status</a></header>
+</style></head><body><header class="top"><h1>Models</h1><nav><a href="/problems">Problems</a> · <a href="/">Refresh status</a></nav></header>
 <p class="selected">Selected coordinator: {text(url)}</p>
 <main><div class="grid">{configured}</div>
 <section class="overview"><h2>Coordinator activity</h2>{overview}</section></main></body></html>'''
 
 
 def make_server(settings, address, timeout=2):
+    secret = secrets.token_bytes(32)
+
     class Handler(BaseHTTPRequestHandler):
+        def send_page(self, body, status=200, cookie=None):
+            body = body.encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            if cookie:
+                self.send_header('Set-Cookie', f'csrf_session={cookie}; HttpOnly; SameSite=Strict; Path=/')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def csrf_cookie(self):
+            cookies = SimpleCookie()
+            try:
+                cookies.load(self.headers.get('Cookie', ''))
+            except Exception:
+                pass
+            value = cookies.get('csrf_session')
+            if value and len(value.value) == 64 and all(c in '0123456789abcdef' for c in value.value):
+                return value.value, None
+            value = secrets.token_hex(32)
+            return value, value
+
+        def token(self, cookie):
+            return hmac.digest(secret, cookie.encode(), 'sha256').hex()
+
         def do_GET(self):
-            if urlsplit(self.path).path != '/':
+            path = urlsplit(self.path).path
+            if path != '/' and path != '/problems' and not path.startswith('/problems/') and not path.startswith('/runs/'):
                 self.send_error(404)
                 return
             url = settings.selected()
             models = settings.models(url)
             client = Client(url, timeout)
+            if path != '/':
+                parts = path.strip('/').split('/')
+                if parts[0] == 'runs' and len(parts) == 2 and problems.RUN_ID.fullmatch(parts[1]):
+                    try:
+                        run = client.run(parts[1])
+                        body = problems.page('Run started', f'<p><a href="/runs/{parts[1]}">Run {parts[1]}</a> — {escape(str(run["status"]))}</p>'
+                                             '<p>Refresh this page to check status.</p>')
+                    except (CoordinatorOffline, CoordinatorInvalid) as exc:
+                        body = problems.page('Run', f'<p role="alert">{escape(str(exc))}. Refresh to retry.</p>')
+                    return self.send_page(body)
+                if path == '/problems':
+                    try:
+                        catalog, runs = client.overview()
+                        rows = []
+                        for fixture in catalog:
+                            if not problems.ID.fullmatch(str(fixture['set_id'])) or type(fixture['version']) is not int:
+                                raise CoordinatorInvalid('Coordinator returned an invalid response')
+                            listing = client.fixture_set(fixture['set_id'], fixture['version'])
+                            rows.extend((fixture, p) for p in listing['problems'])
+                        body = problems.list_page(catalog, rows, runs)
+                    except (CoordinatorOffline, CoordinatorInvalid) as exc:
+                        body = problems.list_page([], [], [], str(exc))
+                    return self.send_page(body)
+                if len(parts) != 4 or parts[0] != 'problems' or not problems.ID.fullmatch(parts[1]) or not parts[2].isascii() or not parts[2].isdecimal() or len(parts[2]) > 18 or not problems.ID.fullmatch(parts[3]):
+                    self.send_error(404)
+                    return
+                try:
+                    fixture = client.problem(parts[1], int(parts[2]), parts[3])
+                    runs = client.overview()[1]
+                    activity = client.model_activity([m[0] for m in models])
+                    available = [m for m in models if activity.get(m[0], {}).get('status') in ('working', 'idle')]
+                    cookie, new_cookie = self.csrf_cookie()
+                    return self.send_page(problems.detail(fixture, fixture, available, runs,
+                                                          self.token(cookie)), cookie=new_cookie)
+                except (CoordinatorOffline, CoordinatorInvalid) as exc:
+                    return self.send_page(problems.page('Problem', f'<p role="alert">{escape(str(exc))}. Refresh to retry.</p>'), 503)
             try:
                 catalog, runs = client.overview()
                 error = None
@@ -85,13 +154,55 @@ def make_server(settings, address, timeout=2):
                 activity = client.model_activity([row[0] for row in models]) if error is None else {}
             except (CoordinatorOffline, CoordinatorInvalid):
                 activity = {}
-            body = render(url, models, catalog, runs, error, activity).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_page(render(url, models, catalog, runs, error, activity))
+
+        def do_POST(self):
+            parts = urlsplit(self.path).path.strip('/').split('/')
+            if (len(parts) != 4 or parts[0] != 'problems' or not problems.ID.fullmatch(parts[1])
+                    or not parts[2].isascii() or not parts[2].isdecimal() or len(parts[2]) > 18 or not problems.ID.fullmatch(parts[3])):
+                self.send_error(404)
+                return
+            if self.headers.get('Content-Type') != 'application/x-www-form-urlencoded':
+                self.send_error(415)
+                return
+            try:
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 1 <= size <= 4096:
+                    raise ValueError()
+                fields = parse_qs(self.rfile.read(size).decode('utf-8'), keep_blank_values=True,
+                                  strict_parsing=True, max_num_fields=8)
+            except (ValueError, UnicodeError):
+                self.send_error(400)
+                return
+            cookie, new_cookie = self.csrf_cookie()
+            if (new_cookie or len(fields.get('csrf', [])) != 1
+                    or not hmac.compare_digest(fields['csrf'][0], self.token(cookie))):
+                self.send_error(403)
+                return
+            url = settings.selected()
+            client = Client(url, timeout)
+            models = settings.models(url)
+            try:
+                fixture = client.problem(parts[1], int(parts[2]), parts[3])
+                activity = client.model_activity([m[0] for m in models])
+                available = [m for m in models if activity.get(m[0], {}).get('status') in ('working', 'idle')]
+                values = problems.validate(fields, {m[0] for m in available})
+                payload = {'set_id': parts[1], 'version': int(parts[2]), 'sha256': fixture['sha256'],
+                           'problem_id': parts[3], 'model': values['model'], 'attempts': values['attempts'],
+                           'max_output_tokens': values['max_output_tokens'],
+                           'generation_timeout_seconds': values['generation_timeout_seconds'],
+                           'max_repairs': 0 if values['strategy'] == 'independent' else 2}
+                run_id = client.start_fixture_run(payload)
+            except ValueError as exc:
+                return self.send_page(problems.detail(fixture, fixture, available, [],
+                                      self.token(cookie), str(exc), {k: v[0] for k, v in fields.items()}), 400)
+            except (CoordinatorOffline, CoordinatorInvalid) as exc:
+                return self.send_page(problems.page('Problem', f'<p role="alert">{escape(str(exc))}. Check the coordinator and retry.</p>'), 503)
+            self.send_response(303)
+            self.send_header('Location', '/runs/' + run_id)
             self.send_header('Cache-Control', 'no-store')
-            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Content-Length', '0')
             self.end_headers()
-            self.wfile.write(body)
 
         def log_message(self, format, *args):
             # Never log request targets or upstream exceptions (which may contain secrets).
