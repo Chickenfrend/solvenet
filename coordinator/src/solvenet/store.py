@@ -383,6 +383,49 @@ class Store:
         with self.connect() as db:
             return self._experiment(db, experiment_id)
 
+    def recent_experiments(self, limit, before=None):
+        with self.connect() as db:
+            rows = db.execute('''SELECT e.rowid AS cursor, e.id, e.created_at, e.config,
+                count(r.id) AS run_count,
+                sum(CASE WHEN r.status='solved' THEN 1 ELSE 0 END) AS solved_count
+                FROM experiments e LEFT JOIN runs r ON r.experiment_id=e.id
+                WHERE (? IS NULL OR e.rowid < ?)
+                GROUP BY e.rowid ORDER BY e.rowid DESC LIMIT ?''',
+                (before, before, limit + 1)).fetchall()
+            items = []
+            for row in rows[:limit]:
+                config = json.loads(row['config'])
+                items.append({'id': row['id'], 'created_at': row['created_at'],
+                              'set_id': config['set_id'], 'version': config['version'],
+                              'sha256': config['sha256'], 'strategy': config['strategy'],
+                              'run_count': row['run_count'], 'solved_count': row['solved_count']})
+            return {'items': items, 'next_cursor': rows[limit - 1]['cursor']
+                    if len(rows) > limit else None}
+
+    def recent_runs(self, limit, before=None):
+        with self.connect() as db:
+            db.execute('BEGIN')
+            rows = db.execute('''SELECT r.rowid AS cursor, r.id, r.problem_id,
+                r.fixture_problem_id, r.experiment_id, r.status, r.created_at,
+                json_extract(e.config, '$.set_id') AS fixture_set_id,
+                json_extract(e.config, '$.version') AS fixture_version
+                FROM runs r LEFT JOIN experiments e ON e.id=r.experiment_id
+                WHERE (? IS NULL OR r.rowid < ?)
+                ORDER BY r.rowid DESC LIMIT ?''', (before, before, limit + 1)).fetchall()
+            items = []
+            for row in rows[:limit]:
+                models = [r['model'] for r in db.execute('''SELECT model FROM jobs
+                    WHERE run_id=? AND repair_depth=0 GROUP BY model ORDER BY min(rowid)''',
+                    (row['id'],))]
+                items.append({'run_id': row['id'], 'problem_id': row['problem_id'],
+                              'fixture_problem_id': row['fixture_problem_id'],
+                              'fixture_set_id': row['fixture_set_id'],
+                              'fixture_version': row['fixture_version'],
+                              'experiment_id': row['experiment_id'], 'status': row['status'],
+                              'created_at': row['created_at'], 'models': models})
+            return {'items': items, 'next_cursor': rows[limit - 1]['cursor']
+                    if len(rows) > limit else None}
+
     def experiment_summary(self, experiment_id):
         from .experiment_summary import summary
 

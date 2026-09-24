@@ -1,5 +1,31 @@
 # Lean verifier
 
+## Browse API
+
+`GET /v1/fixture-sets` lists checked-in set IDs, versions, hashes, pinned
+environments and problem counts, sorted by set ID and version.
+`GET /v1/fixture-sets/{set_id}/versions/{version}` returns the same set fields
+plus `problems` (fixture-order compact rows with `id`, `title`, `category`,
+`description`, `difficulty`) and `next_offset`. Follow a row with
+`GET /v1/fixture-sets/{set_id}/versions/{version}/problems/{problem_id}`
+for its statement and imports, together with set identity and descriptive
+metadata. Optional `limit` (1–100, default 20) and `offset` (nonnegative,
+default 0) paginate problem rows. Missing set/version/problem IDs return 404.
+Fixture reference proofs are excluded from every response.
+
+`GET /v1/runs` and `GET /v1/experiments` return compact recent activity as
+`{"items": [...], "next_cursor": integer_or_null}`. Rows are newest first by
+persisted insertion order, even when creation timestamps are equal or absent.
+Use `?limit=20&before=<next_cursor>` to fetch older rows (`limit` defaults to
+20, maximum 100). A null cursor means there are no more rows. Run rows contain
+`run_id`, stored `problem_id`, `fixture_problem_id`, `fixture_set_id`,
+`fixture_version`, `experiment_id`, `status`, `created_at` and initial `models`;
+fixture and experiment fields are null for ad hoc runs. Experiment rows contain
+`id`, `created_at`, `set_id`, `version`, `sha256`, `strategy`, `run_count`, and
+`solved_count`. Fetch `GET /v1/runs/{run_id}` or
+`GET /v1/experiments/{id}` for full detail. Invalid pagination returns 400.
+These list responses omit candidates, raw generations, and diagnostics.
+
 ## Versioned experiments
 
 The coordinator selects the checked-in `problems/core-v1.json` (`core`, version

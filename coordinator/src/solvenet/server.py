@@ -7,11 +7,11 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote_to_bytes, urlsplit
+from urllib.parse import parse_qsl, unquote_to_bytes, urlsplit
 
 from . import protocol_limits as limits
 from .experiment_summary import markdown
-from .problem_set import load_experiment_set
+from .problem_set import EXPERIMENT_SETS, load, load_experiment_set, public_problem, public_set
 from .sandbox import (
     DEFAULT_CONTAINER_TIMEOUT_SECONDS,
     ContainerVerifier,
@@ -273,6 +273,27 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
         def identifier(self, value):
             return value if IDENTIFIER_RE.fullmatch(value) else None
 
+        def pagination(self, *, offset=False):
+            query = urlsplit(self.path).query
+            try:
+                pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True,
+                                  max_num_fields=2, errors='strict')
+            except (ValueError, UnicodeDecodeError) as error:
+                raise ValueError('Invalid pagination query') from error
+            allowed = {'limit', 'offset' if offset else 'before'}
+            if len({key for key, _ in pairs}) != len(pairs) or any(key not in allowed for key, _ in pairs):
+                raise ValueError('Unknown or repeated pagination parameter')
+            values = dict(pairs)
+            def number(name, default, minimum, maximum):
+                raw = values.get(name)
+                if raw is None:
+                    return default
+                if not raw.isascii() or not raw.isdecimal() or not minimum <= int(raw) <= maximum:
+                    raise ValueError(f'{name} must be an integer between {minimum} and {maximum}')
+                return int(raw)
+            return (number('limit', 20, 1, 100),
+                    number('offset' if offset else 'before', 0 if offset else None, 0 if offset else 1, 2**63 - 1))
+
         def read_json(self, limit):
             raw_size = self.headers.get('Content-Length')
             if raw_size is None:
@@ -310,6 +331,36 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     if readiness.diagnostics:
                         value['diagnostics'] = readiness.diagnostics
                     return self.respond(200 if readiness.ready else 503, value)
+                if parts == ['v1', 'fixture-sets']:
+                    return self.respond(200, {'items': [public_set(load(path)) for _, path in
+                                                       sorted(EXPERIMENT_SETS.items())]})
+                if (len(parts) >= 5 and parts[:2] == ['v1', 'fixture-sets']
+                        and parts[3] == 'versions'):
+                    try:
+                        version = int(parts[4]) if parts[4].isascii() and parts[4].isdecimal() else None
+                    except ValueError:
+                        version = None
+                    path = EXPERIMENT_SETS.get((parts[2], version))
+                    if path is not None:
+                        fixture = load(path)
+                        if len(parts) == 5:
+                            limit, offset = self.pagination(offset=True)
+                            return self.respond(200, public_set(fixture) | {
+                                'problems': [public_problem(p) for p in fixture.problems[offset:offset + limit]],
+                                'next_offset': offset + limit if offset + limit < len(fixture.problems) else None})
+                        if len(parts) == 7 and parts[5] == 'problems':
+                            problem = next((p for p in fixture.problems if p.id == parts[6]), None)
+                            if problem is not None:
+                                return self.respond(200, public_set(fixture) | public_problem(problem, detail=True))
+                            return self.respond(404, {'error': 'Unknown fixture problem'})
+                    if len(parts) in (5, 7) and (len(parts) == 5 or parts[5] == 'problems'):
+                        return self.respond(404, {'error': 'Unknown fixture set/version'})
+                if parts == ['v1', 'runs']:
+                    limit, before = self.pagination()
+                    return self.respond(200, coordinator.store.recent_runs(limit, before))
+                if parts == ['v1', 'experiments']:
+                    limit, before = self.pagination()
+                    return self.respond(200, coordinator.store.recent_experiments(limit, before))
                 if (len(parts) == 3 and parts[:2] == ['v1', 'runs']
                         and self.identifier(parts[2])):
                     run = coordinator.store.run(parts[2])

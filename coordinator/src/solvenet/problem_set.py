@@ -126,6 +126,22 @@ def load_experiment_set(set_id: object, version: object, sha256: object) -> Prob
     return fixture
 
 
+def public_set(fixture: ProblemSet) -> dict:
+    """Explicit allowlist of fixture fields safe to expose over HTTP."""
+    return {'set_id': fixture.set_id, 'version': fixture.version,
+            'sha256': fixture.sha256, 'environment': fixture.environment,
+            'problem_count': len(fixture.problems)}
+
+
+def public_problem(problem: Problem, *, detail: bool = False) -> dict:
+    result = {'id': problem.id, 'title': problem.title,
+              'category': problem.category, 'description': problem.description,
+              'difficulty': problem.difficulty}
+    if detail:
+        result.update(statement=problem.statement, imports=list(problem.imports))
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Submit versioned Lean fixtures to a local coordinator")
     parser.add_argument("--set", type=Path, default=DEFAULT_SET)
