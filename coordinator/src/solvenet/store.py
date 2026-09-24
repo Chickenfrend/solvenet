@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import protocol_limits as limits
+from .group_state import MIGRATION_14, GroupState
 
 
 class Conflict(Exception):
@@ -163,6 +164,23 @@ FAILURE_CATEGORIES = ('provider_failure', 'formatting_failure', 'other_failure')
 REJECTION_KINDS = ('malformed_assignment', 'unsupported_protocol')
 
 
+def validate_task_request(model, task_type, messages, max_output_tokens):
+    if task_type not in TASK_TYPES:
+        raise ValueError('Invalid task_type')
+    if not isinstance(model, str) or not model.strip() or len(model.encode()) > limits.MAX_MODEL_BYTES:
+        raise ValueError('Invalid model')
+    if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= limits.MAX_OUTPUT_TOKENS:
+        raise ValueError('Invalid max_output_tokens')
+    if not isinstance(messages, list) or not 1 <= len(messages) <= MAX_TASK_MESSAGES:
+        raise ValueError('Invalid task messages')
+    for message in messages:
+        if (not isinstance(message, dict) or set(message) != {'role', 'content'} or
+                message['role'] != 'user' or
+                not isinstance(message['content'], str) or not message['content'].strip() or
+                len(message['content'].encode()) > MAX_TASK_MESSAGE_BYTES):
+            raise ValueError('Invalid task message')
+
+
 def validate_settings(settings):
     if not isinstance(settings, dict) or set(settings) - {'temperature', 'seed'}:
         raise ValueError('generation_settings must contain only temperature and seed')
@@ -210,7 +228,7 @@ def identifier():
     return uuid4().hex
 
 
-class Store:
+class Store(GroupState):
     def __init__(self, path: Path, *, lease_seconds=30, clock=time.time):
         self.path = path
         self.lease_seconds = lease_seconds
@@ -272,7 +290,10 @@ class Store:
             if version == 12:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_13 + "COMMIT;")
                 version = 13
-            if version != 13:
+            if version == 13:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_14 + "COMMIT;")
+                version = 14
+            if version != 14:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -311,21 +332,10 @@ class Store:
 
     def enqueue_task(self, run_id, model, task_type, messages, *, max_output_tokens=512):
         """Add one bounded non-proof call to a running run; group orchestration owns timing."""
-        if task_type not in TASK_TYPES:
-            raise ValueError('Invalid task_type')
-        if not isinstance(model, str) or not model.strip() or len(model.encode()) > limits.MAX_MODEL_BYTES:
-            raise ValueError('Invalid model')
-        if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= limits.MAX_OUTPUT_TOKENS:
-            raise ValueError('Invalid max_output_tokens')
-        if not isinstance(messages, list) or not 1 <= len(messages) <= MAX_TASK_MESSAGES:
-            raise ValueError('Invalid task messages')
-        for message in messages:
-            if (not isinstance(message, dict) or set(message) != {'role', 'content'} or
-                    message['role'] != 'user' or
-                    not isinstance(message['content'], str) or not message['content'].strip() or
-                    len(message['content'].encode()) > MAX_TASK_MESSAGE_BYTES):
-                raise ValueError('Invalid task message')
+        validate_task_request(model, task_type, messages, max_output_tokens)
         with self.transaction() as db:
+            if db.execute('SELECT 1 FROM group_runs WHERE run_id=?', (run_id,)).fetchone():
+                raise Conflict('Group run jobs must be enqueued through the group API')
             run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
             if run is None or run['status'] != 'running':
                 raise Conflict('Run is not running')
