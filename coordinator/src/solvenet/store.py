@@ -136,6 +136,18 @@ ALTER TABLE worker_presence ADD COLUMN reason TEXT;
 PRAGMA user_version = 12;
 """
 
+MIGRATION_13 = """
+ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'model.generate';
+ALTER TABLE jobs ADD COLUMN task_type TEXT;
+ALTER TABLE jobs ADD COLUMN messages TEXT NOT NULL DEFAULT '[]';
+PRAGMA user_version = 13;
+"""
+
+TASK_TYPES = ('plan', 'question', 'finding', 'critique', 'task_proposal')
+MAX_TASK_MESSAGE_BYTES = 8192
+MAX_TASK_MESSAGES = 8
+MAX_TASK_RESULT_BYTES = 8192
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 MAX_REPAIR_DIAGNOSTICS_BYTES = 8 * 1024
 DEFAULT_INITIAL_ATTEMPTS = 3
@@ -257,7 +269,10 @@ class Store:
             if version == 11:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_12 + "COMMIT;")
                 version = 12
-            if version != 12:
+            if version == 12:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_13 + "COMMIT;")
+                version = 13
+            if version != 13:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -292,7 +307,36 @@ class Store:
         validate_job_settings(initial_jobs, settings)
         with self.transaction() as db:
             return self._insert_run(db, statement, imports, initial_jobs, max_repairs,
-                                     generation_timeout_seconds, max_assignments, generation_settings=settings)
+                                      generation_timeout_seconds, max_assignments, generation_settings=settings)
+
+    def enqueue_task(self, run_id, model, task_type, messages, *, max_output_tokens=512):
+        """Add one bounded non-proof call to a running run; group orchestration owns timing."""
+        if task_type not in TASK_TYPES:
+            raise ValueError('Invalid task_type')
+        if not isinstance(model, str) or not model.strip() or len(model.encode()) > limits.MAX_MODEL_BYTES:
+            raise ValueError('Invalid model')
+        if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= limits.MAX_OUTPUT_TOKENS:
+            raise ValueError('Invalid max_output_tokens')
+        if not isinstance(messages, list) or not 1 <= len(messages) <= MAX_TASK_MESSAGES:
+            raise ValueError('Invalid task messages')
+        for message in messages:
+            if (not isinstance(message, dict) or set(message) != {'role', 'content'} or
+                    message['role'] != 'user' or
+                    not isinstance(message['content'], str) or not message['content'].strip() or
+                    len(message['content'].encode()) > MAX_TASK_MESSAGE_BYTES):
+                raise ValueError('Invalid task message')
+        with self.transaction() as db:
+            run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+            if run is None or run['status'] != 'running':
+                raise Conflict('Run is not running')
+            job_id = identifier()
+            db.execute("""INSERT INTO jobs
+                (id, run_id, status, model, max_output_tokens, max_assignments,
+                 generation_timeout_seconds, kind, task_type, messages)
+                VALUES (?, ?, 'queued', ?, ?, ?, ?, 'model.respond', ?, ?)""",
+                (job_id, run_id, model, max_output_tokens, run['max_assignments'],
+                 run['generation_timeout_seconds'], task_type, json.dumps(messages)))
+            return job_id
 
     def submit_fixture(self, fixture, problem, **options):
         """Create a single run for a checked-in problem with durable fixture identity."""
@@ -509,7 +553,8 @@ class Store:
         with self.transaction() as db:
             self._expire(db)
 
-    def claim(self, worker_id, models, *, supports_generation_settings=False, provider_health=None):
+    def claim(self, worker_id, models, *, supports_generation_settings=False,
+              supports_model_respond=False, provider_health=None):
         with self.transaction() as db:
             self._expire(db)
             now = self.clock()
@@ -528,8 +573,10 @@ class Store:
               JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
               WHERE j.status='queued' AND r.status='running'
               AND j.model IN ({placeholders})
-              AND (? OR j.generation_settings='{{}}')
-              ORDER BY j.rowid, j.id LIMIT 1""", (*models, supports_generation_settings)).fetchone()
+               AND (? OR j.generation_settings='{{}}')
+               AND (? OR j.kind='model.generate')
+               ORDER BY j.rowid, j.id LIMIT 1""",
+               (*models, supports_generation_settings, supports_model_respond)).fetchone()
             if job is None:
                 return None
             assignment, token = identifier(), secrets.token_urlsafe(32)
@@ -545,15 +592,19 @@ class Store:
                 parent = db.execute("""SELECT t.candidate, v.diagnostics FROM attempts t
                   JOIN verifications v ON v.attempt_id=t.id WHERE t.id=?""", (job['parent_attempt_id'],)).fetchone()
                 messages.append({"role": "user", "content": repair_feedback(parent['candidate'], parent['diagnostics'])})
+            if job['kind'] == 'model.respond':
+                messages = json.loads(job['messages'])
+            wire_job = {"id": job['id'], "run_id": job['run_id'], "kind": job['kind'], "model": job['model'],
+                        "statement": job['statement'], "imports": json.loads(job['imports']),
+                        "parent_attempt_id": job['parent_attempt_id'], "repair_depth": job['repair_depth'],
+                        "max_output_tokens": job['max_output_tokens'],
+                        "timeout_seconds": job['generation_timeout_seconds'], "messages": messages,
+                        "generation_settings": json.loads(job['generation_settings'])}
+            if job['kind'] == 'model.respond':
+                wire_job['task_type'] = job['task_type']
             return {"protocol_version": 1, "assignment_id": assignment, "lease_token": token,
-                    "lease_expires_at": expires, "heartbeat_seconds": self.lease_seconds / 3,
-                    "job": {"id": job['id'], "run_id": job['run_id'], "kind": "model.generate", "model": job['model'],
-                             "statement": job['statement'], "imports": json.loads(job['imports']),
-                             "parent_attempt_id": job['parent_attempt_id'], "repair_depth": job['repair_depth'],
-                             "max_output_tokens": job['max_output_tokens'],
-                              "timeout_seconds": job['generation_timeout_seconds'],
-                              "messages": messages,
-                              "generation_settings": json.loads(job['generation_settings'])}}
+                     "lease_expires_at": expires, "heartbeat_seconds": self.lease_seconds / 3,
+                     "job": wire_job}
 
     def _assignment(self, db, assignment, token):
         row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment,)).fetchone()
@@ -628,6 +679,17 @@ class Store:
         canonical = json.dumps(payload, sort_keys=True, separators=(',', ':'))
         with self.transaction() as db:
             row = self._assignment(db, assignment, payload['lease_token'])
+            job = db.execute("SELECT * FROM jobs WHERE id=?", (row['job_id'],)).fetchone()
+            if payload['status'] == 'completed':
+                output = payload.get('output', {})
+                if job['kind'] == 'model.respond':
+                    if (not isinstance(output, dict) or set(output) != {'type', 'text'} or
+                            output.get('type') != job['task_type'] or
+                            not isinstance(output.get('text'), str) or not output['text'].strip() or
+                            len(output['text'].encode()) > MAX_TASK_RESULT_BYTES):
+                        raise ValueError('Invalid typed task output')
+                elif not isinstance(output, dict) or 'text' not in output:
+                    raise ValueError('Invalid proof output')
             if row['result'] is not None:
                 existing = json.loads(row['result'])
                 if existing.get('status') == 'failed':
@@ -643,12 +705,13 @@ class Store:
             assignment_status = 'rejected' if payload['status'] == 'rejected' else 'completed'
             db.execute("UPDATE assignments SET status=?, result=? WHERE id=?",
                        (assignment_status, canonical, assignment))
-            if payload['status'] == 'completed':
-                job = db.execute("SELECT model FROM jobs WHERE id=?", (row['job_id'],)).fetchone()
+            if payload['status'] == 'completed' and job['kind'] == 'model.generate':
                 db.execute("INSERT INTO attempts (id, assignment_id, candidate, model, usage, generation) VALUES (?, ?, ?, ?, ?, ?)",
                            (identifier(), assignment, payload['output']['text'], job['model'],
                             json.dumps(payload.get('usage', {})), json.dumps(payload.get('generation', {}))))
                 db.execute("UPDATE jobs SET status='verifying' WHERE id=?", (row['job_id'],))
+            elif payload['status'] == 'completed':
+                db.execute("UPDATE jobs SET status='done' WHERE id=?", (row['job_id'],))
             elif payload['status'] == 'failed':
                 if payload['failure_class'] == 'permanent':
                     db.execute("UPDATE jobs SET status='failed' WHERE id=?", (row['job_id'],))
@@ -737,12 +800,13 @@ class Store:
                 "SELECT * FROM jobs WHERE run_id=? ORDER BY rowid, id", (run_id,))]
             for job in result['jobs']:
                 job['generation_settings'] = json.loads(job['generation_settings'])
+                job['messages'] = json.loads(job['messages'])
             # Initial rows retain the selected model/budget and insertion order.
             # Adjacent identical groups are equivalent, so no separate run-level
             # strategy column is needed (including for pre-existing databases).
             result['initial_jobs'] = []
             for job in result['jobs']:
-                if job['repair_depth'] != 0:
+                if job['repair_depth'] != 0 or job['kind'] != 'model.generate':
                     continue
                 group = {'model': job['model'], 'count': 1,
                          'max_output_tokens': job['max_output_tokens']}
@@ -766,7 +830,9 @@ class Store:
                   ELSE NULL END AS failure_class,
                 json_extract(a.result, '$.rejection_kind') AS rejection_kind,
                json_extract(a.result, '$.generation') AS generation,
-              json_extract(a.result, '$.usage') AS usage
+                json_extract(a.result, '$.usage') AS usage,
+                CASE WHEN j.kind='model.respond' AND a.status='completed'
+                  THEN json_extract(a.result, '$.output') ELSE NULL END AS task_result
               FROM assignments a JOIN jobs j ON j.id=a.job_id WHERE j.run_id=?""", (run_id,))]
             for attempt in result['attempts']:
                 attempt['usage'] = json.loads(attempt['usage'])
@@ -776,4 +842,5 @@ class Store:
                 assignment['generation'] = json.loads(assignment['generation'] or '{}')
                 assignment['usage'] = json.loads(assignment['usage'] or '{}')
                 assignment['generation_settings'] = json.loads(assignment['generation_settings'])
+                assignment['task_result'] = json.loads(assignment['task_result']) if assignment['task_result'] else None
             return result

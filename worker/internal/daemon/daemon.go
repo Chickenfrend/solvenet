@@ -25,6 +25,7 @@ type Job struct {
 	ID                     string             `json:"id"`
 	RunID                  string             `json:"run_id,omitempty"`
 	Kind                   string             `json:"kind"`
+	TaskType               string             `json:"task_type,omitempty"`
 	Model                  string             `json:"model"`
 	Statement              string             `json:"statement"`
 	Imports                []string           `json:"imports"`
@@ -106,6 +107,7 @@ func (a *Assignment) UnmarshalJSON(data []byte) error {
 
 type Output struct {
 	Text string `json:"text"`
+	Type string `json:"type,omitempty"`
 }
 
 // Generation describes the provider response, including failed extraction.
@@ -235,6 +237,7 @@ type Worker struct {
 	Client                     *http.Client
 	Executor                   Executor
 	SupportsGenerationSettings bool
+	SupportsModelRespond       bool
 	Progress                   func(context.Context, string, string, string, string)
 }
 
@@ -243,6 +246,20 @@ type ProgressExecutor interface {
 }
 
 const protocolVersion = 1
+
+const (
+	MaxTaskMessageBytes = 8192
+	MaxTaskMessages     = 8
+	MaxTaskResultBytes  = 8192
+)
+
+func validTaskType(value string) bool {
+	switch value {
+	case "plan", "question", "finding", "critique", "task_proposal":
+		return true
+	}
+	return false
+}
 
 // UnsupportedProtocolVersionError identifies a well-formed assignment for a
 // protocol this worker cannot execute. It is separate from field validation so
@@ -287,8 +304,15 @@ func (a Assignment) validate(workerModel string) error {
 	if a.Job.RunID != "" && validateText(a.Job.RunID, "job.run_id", MaxIdentifierBytes) != nil {
 		return fmt.Errorf("invalid job.run_id")
 	}
-	if a.Job.Kind != "model.generate" {
-		return fmt.Errorf("job.kind must be model.generate")
+	if a.Job.Kind != "model.generate" && a.Job.Kind != "model.respond" {
+		return fmt.Errorf("unsupported job.kind")
+	}
+	if a.Job.Kind == "model.respond" {
+		if !validTaskType(a.Job.TaskType) {
+			return fmt.Errorf("invalid job.task_type")
+		}
+	} else if a.Job.TaskType != "" {
+		return fmt.Errorf("proof job must not have task_type")
 	}
 	if err := validateText(a.Job.Model, "job.model", MaxModelBytes); err != nil {
 		return err
@@ -314,12 +338,21 @@ func (a Assignment) validate(workerModel string) error {
 		return fmt.Errorf("job.messages must contain at most %d messages", MaxMessages)
 	}
 	for i, message := range a.Job.Messages {
+		if a.Job.Kind == "model.respond" && message.Role != "user" {
+			return fmt.Errorf("job.messages[%d].role must be user for model.respond", i)
+		}
 		if message.Role != "system" && message.Role != "user" && message.Role != "assistant" {
 			return fmt.Errorf("job.messages[%d].role must be system, user, or assistant", i)
 		}
 		if err := validateText(message.Content, fmt.Sprintf("job.messages[%d].content", i), MaxMessageContentBytes); err != nil {
 			return err
 		}
+		if a.Job.Kind == "model.respond" && len(message.Content) > MaxTaskMessageBytes {
+			return fmt.Errorf("job.messages[%d].content exceeds task limit", i)
+		}
+	}
+	if a.Job.Kind == "model.respond" && (len(a.Job.Messages) == 0 || len(a.Job.Messages) > MaxTaskMessages || a.Job.ParentAttemptID != nil || a.Job.RepairDepth != 0) {
+		return fmt.Errorf("invalid model.respond messages or repair fields")
 	}
 	if a.Job.MaxOutputTokens <= 0 || a.Job.MaxOutputTokens > MaxOutputTokens {
 		return fmt.Errorf("job.max_output_tokens must be between 1 and %d", MaxOutputTokens)
@@ -457,6 +490,10 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	if w.SupportsGenerationSettings {
 		claim["capabilities"] = []string{"generation_settings"}
 	}
+	if w.SupportsModelRespond {
+		capabilities, _ := claim["capabilities"].([]string)
+		claim["capabilities"] = append(capabilities, "model_respond")
+	}
 	if checker, ok := w.Executor.(HealthChecker); ok {
 		claim["provider_health"] = checker.Health(ctx)
 	}
@@ -473,6 +510,9 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	}
 	if err := a.validate(w.Model); err != nil {
 		return true, w.rejectAssignment(ctx, raw, err)
+	}
+	if a.Job.Kind == "model.respond" && !w.SupportsModelRespond {
+		return true, w.rejectAssignment(ctx, raw, fmt.Errorf("worker does not support model.respond"))
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Job.TimeoutSeconds)*time.Second)
 	defer cancel()
@@ -503,7 +543,7 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	}()
 	var execution Execution
 	var executeErr error
-	if executor, ok := w.Executor.(ProgressExecutor); ok && w.Progress != nil && a.Job.RunID != "" {
+	if executor, ok := w.Executor.(ProgressExecutor); ok && w.Progress != nil && a.Job.RunID != "" && a.Job.Kind == "model.generate" {
 		publish := func(raw string) { w.Progress(jobCtx, a.Job.RunID, a.Job.ID, a.ID, raw) }
 		publish("")
 		execution, executeErr = executor.ExecuteProgress(jobCtx, a.Job, publish)
@@ -512,8 +552,13 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	}
 	result := Result{Token: a.Token, Status: "completed", Output: &Output{Text: execution.Text},
 		Generation: execution.Generation, Usage: execution.Usage}
-	if executeErr == nil && (len(strings.TrimSpace(execution.Text)) == 0 || len(execution.Text) > MaxCandidateBytes) {
-		executeErr = Categorize(Permanent(fmt.Errorf("executor output must be 1–%d bytes", MaxCandidateBytes)), FormattingFailure)
+	maximum := MaxCandidateBytes
+	if a.Job.Kind == "model.respond" {
+		maximum = MaxTaskResultBytes
+		result.Output.Type = a.Job.TaskType
+	}
+	if executeErr == nil && (len(strings.TrimSpace(execution.Text)) == 0 || len(execution.Text) > maximum) {
+		executeErr = Categorize(Permanent(fmt.Errorf("executor output must be 1–%d bytes", maximum)), FormattingFailure)
 	}
 	if executeErr != nil {
 		message := boundedError(executeErr)

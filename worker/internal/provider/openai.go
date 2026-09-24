@@ -54,7 +54,7 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > daemon.MaxOutputTokens {
 		return fail(daemon.Permanent(fmt.Errorf("invalid job output-token limit")))
 	}
-	messages := []daemon.Message{{Role: "system", Content: proofInstructions},
+	messages := []daemon.Message{{Role: "system", Content: instructions(job)},
 		{Role: "user", Content: "Lean imports: " + strings.Join(job.Imports, ", ") + "\nTheorem (text after its name):\n" + job.Statement}}
 	messages = append(messages, job.Messages...)
 	body := map[string]any{"model": o.Model, "messages": messages, "stream": false,
@@ -160,9 +160,13 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if execution.Generation.RawResponseTruncated {
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI generated text exceeded %d bytes", daemon.MaxRawResponseBytes)), daemon.FormattingFailure)
 	}
-	proof, err := extractProof(text)
+	proof, err := extractOutput(text, job)
 	if err != nil {
-		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI proof format: %w", err)), daemon.FormattingFailure)
+		label := "proof"
+		if job.Kind == "model.respond" {
+			label = "task"
+		}
+		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI %s format: %w", label, err)), daemon.FormattingFailure)
 	}
 	execution.Text = proof
 	return execution, nil

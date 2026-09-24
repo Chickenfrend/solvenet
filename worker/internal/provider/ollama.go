@@ -145,7 +145,7 @@ func (o *Ollama) ExecuteProgress(ctx context.Context, job daemon.Job, progress f
 	// For repair jobs this keeps the candidate and Lean feedback as the final,
 	// most recent user message rather than obscuring it with a theorem reminder.
 	messages := []daemon.Message{
-		{Role: "system", Content: proofInstructions},
+		{Role: "system", Content: instructions(job)},
 		{Role: "user", Content: "Lean imports: " + strings.Join(job.Imports, ", ") +
 			"\nTheorem (text after its name):\n" + job.Statement},
 	}
@@ -162,6 +162,10 @@ func (o *Ollama) ExecuteProgress(ctx context.Context, job daemon.Job, progress f
 		"format": map[string]any{"type": "object", "properties": map[string]any{
 			"proof": map[string]string{"type": "string"}}, "required": []string{"proof"}, "additionalProperties": false},
 		"options": options,
+	}
+	if job.Kind == "model.respond" {
+		body["format"] = map[string]any{"type": "object", "properties": map[string]any{
+			"text": map[string]string{"type": "string"}}, "required": []string{"text"}, "additionalProperties": false}
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -300,9 +304,13 @@ func (o *Ollama) ExecuteProgress(ctx context.Context, job daemon.Job, progress f
 	if generation.RawResponseTruncated {
 		return execution, formattingFailure(daemon.Permanent(fmt.Errorf("Ollama generated text exceeded %d bytes", daemon.MaxRawResponseBytes)))
 	}
-	proof, err := extractProof(content.String())
+	proof, err := extractOutput(content.String(), job)
 	if err != nil {
-		return execution, formattingFailure(daemon.Permanent(fmt.Errorf("Ollama proof format: %w", err)))
+		label := "proof"
+		if job.Kind == "model.respond" {
+			label = "task"
+		}
+		return execution, formattingFailure(daemon.Permanent(fmt.Errorf("Ollama %s format: %w", label, err)))
 	}
 	execution.Text = proof
 	return execution, nil

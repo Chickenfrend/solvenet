@@ -89,6 +89,53 @@ func TestNoWork(t *testing.T) {
 	}
 }
 
+func TestTypedTaskClaimAndBoundedResult(t *testing.T) {
+	for _, response := range []string{"short finding", strings.Repeat("x", daemon.MaxTaskResultBytes+1)} {
+		t.Run(strings.TrimSpace(response[:1]), func(t *testing.T) {
+			var submitted daemon.Result
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/claim":
+					var claim struct {
+						Capabilities []string `json:"capabilities"`
+					}
+					json.NewDecoder(r.Body).Decode(&claim)
+					if len(claim.Capabilities) != 1 || claim.Capabilities[0] != "model_respond" {
+						t.Errorf("claim: %+v", claim)
+					}
+					a := validAssignment()
+					a.Job.Kind, a.Job.TaskType = "model.respond", "finding"
+					a.Job.Messages = []daemon.Message{{Role: "user", Content: "Explore induction"}}
+					json.NewEncoder(w).Encode(a)
+				case "/v1/assignments/assignment/result":
+					json.NewDecoder(r.Body).Decode(&submitted)
+					w.Write([]byte(`{"accepted":true}`))
+				default:
+					t.Errorf("unexpected %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			worker := daemon.Worker{URL: server.URL, ID: "worker", Model: "scripted", Client: server.Client(), SupportsModelRespond: true,
+				Executor: executorFunc(func(_ context.Context, job daemon.Job) (daemon.Execution, error) {
+					if job.TaskType != "finding" {
+						t.Errorf("task: %+v", job)
+					}
+					return daemon.Execution{Text: response}, nil
+				})}
+			if _, err := worker.Once(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(response) <= daemon.MaxTaskResultBytes {
+				if submitted.Status != "completed" || submitted.Output.Type != "finding" || submitted.Output.Text != response {
+					t.Fatalf("result: %+v", submitted)
+				}
+			} else if submitted.Status != "failed" || submitted.FailureCategory != daemon.FormattingFailure || submitted.FailureClass != string(daemon.FailurePermanent) {
+				t.Fatalf("oversized result: %+v", submitted)
+			}
+		})
+	}
+}
+
 func TestClaimAdvertisesGenerationSettingsOnlyWhenEnabled(t *testing.T) {
 	requests := make(chan map[string]json.RawMessage, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

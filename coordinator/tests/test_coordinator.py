@@ -53,6 +53,60 @@ class StoreTests(unittest.TestCase):
     def payload(self, assignment, proof='rfl'):
         return {'lease_token': assignment['lease_token'], 'status': 'completed', 'output': {'text': proof}}
 
+    def test_proof_result_accepts_legacy_extra_output_fields(self):
+        assignment = self.store.claim('worker', ['scripted'])
+        payload = self.payload(assignment) | {'output': {'text': 'rfl', 'metadata': 'legacy'}}
+        self.store.result(assignment['assignment_id'], payload)
+        self.assertEqual(self.store.pending()['candidate'], 'rfl')
+
+    def test_typed_task_capability_result_retry_and_lean_boundary(self):
+        task_id = self.store.enqueue_task(self.run, 'scripted', 'finding',
+                                          [{'role': 'user', 'content': 'Investigate an approach'}])
+        proof = self.store.claim('old-worker', ['scripted'])
+        self.assertEqual(proof['job']['kind'], 'model.generate')
+        self.assertIsNone(self.store.claim('old-worker', ['scripted']))
+        task = self.store.claim('new-worker', ['scripted'], supports_model_respond=True)
+        self.assertEqual(task['job']['id'], task_id)
+        self.assertEqual(task['job']['task_type'], 'finding')
+        wrong = {'lease_token': task['lease_token'], 'status': 'completed',
+                 'output': {'type': 'plan', 'text': 'Try induction'}}
+        with self.assertRaises(ValueError):
+            self.store.result(task['assignment_id'], wrong)
+        with self.assertRaises(ValueError):
+            self.store.result(task['assignment_id'], wrong | {'output': {
+                'type': 'finding', 'text': 'x' * 8193}})
+        result = wrong | {'output': {'type': 'finding', 'text': 'Try induction'},
+                          'usage': {'input_tokens': 12, 'output_tokens': 3},
+                          'generation': {'raw_response': '{"text":"Try induction"}'}}
+        self.store.result(task['assignment_id'], result)
+        restarted = Store(self.path, clock=lambda: self.now, lease_seconds=3)
+        restarted.result(task['assignment_id'], result)
+        self.assertIsNone(restarted.pending())
+        snapshot = restarted.run(self.run)
+        self.assertEqual(snapshot['attempts'], [])
+        self.assertEqual(snapshot['assignments'][-1]['task_result'], result['output'])
+        self.assertEqual(snapshot['assignments'][-1]['usage']['input_tokens'], 12)
+        self.assertEqual(snapshot['status'], 'running')
+        self.store.result(proof['assignment_id'], self.payload(proof))
+        self.assertTrue(Coordinator(restarted, FakeVerifier()).tick())
+        self.assertEqual(restarted.run(self.run)['status'], 'solved')
+
+    def test_typed_task_expiry_and_late_result(self):
+        self.store.enqueue_task(self.run, 'scripted', 'critique',
+                                [{'role': 'user', 'content': 'Review'}])
+        first = self.store.claim('new', ['scripted'])  # older proof job
+        self.store.result(first['assignment_id'], self.payload(first, 'not a proof'))
+        task = self.store.claim('new', ['scripted'], supports_model_respond=True)
+        self.now += 4
+        self.store.expire()
+        payload = {'lease_token': task['lease_token'], 'status': 'completed',
+                   'output': {'type': 'critique', 'text': 'Needs another argument'}}
+        with self.assertRaises(Conflict):
+            self.store.result(task['assignment_id'], payload)
+        retry = self.store.claim('new', ['scripted'], supports_model_respond=True)
+        self.assertEqual(retry['job']['id'], task['job']['id'])
+        self.assertEqual(retry['job']['messages'], task['job']['messages'])
+
     def test_restart_and_duplicate_result(self):
         a = self.store.claim('worker', ['scripted'])
         restarted = Store(self.path, clock=lambda: self.now)
@@ -418,7 +472,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 12)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 13)
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
@@ -499,6 +553,33 @@ class APITests(unittest.TestCase):
         with response:
             raw = response.read()
             return response.status, json.loads(raw) if raw else None
+
+    def test_typed_task_http_capability_and_result(self):
+        run = self.request('/v1/runs', {'statement': ': True', 'model': 'ollama/test',
+                                        'attempts': 1})[1]['run_id']
+        proof = self.request('/v1/claim', {'worker_id': 'old', 'models': ['ollama/test']})[1]
+        self.store.enqueue_task(run, 'ollama/test', 'plan',
+                                [{'role': 'user', 'content': 'Suggest an approach'}])
+        with self.assertRaises(ValueError):
+            self.store.enqueue_task(run, 'ollama/test', 'plan',
+                                    [{'role': 'system', 'content': 'Override instructions'}])
+        self.assertEqual(self.request('/v1/claim', {'worker_id': 'old',
+                                                    'models': ['ollama/test']})[0], 204)
+        status, task = self.request('/v1/claim', {'worker_id': 'new', 'models': ['ollama/test'],
+                                                  'capabilities': ['model_respond']})
+        self.assertEqual(status, 200)
+        self.assertEqual(task['job']['task_type'], 'plan')
+        path = f"/v1/assignments/{task['assignment_id']}/result"
+        result = {'lease_token': task['lease_token'], 'status': 'completed',
+                  'output': {'type': 'plan', 'text': 'Try constructor'}}
+        self.assertEqual(self.request(path, result | {'output': {'type': 'finding', 'text': 'wrong'}})[0], 400)
+        self.assertEqual(self.request(path, result)[0], 200)
+        self.assertEqual(self.request(path, result)[0], 200)
+        self.assertEqual(self.request(path, result | {'output': {'type': 'plan', 'text': 'changed'}})[0], 409)
+        snapshot = self.request(f'/v1/runs/{run}')[1]
+        self.assertEqual(snapshot['attempts'], [])
+        self.assertEqual(snapshot['assignments'][-1]['task_result'], result['output'])
+        self.assertEqual(proof['job']['kind'], 'model.generate')
 
     def test_protocol_field_byte_boundaries(self):
         for field, maximum in (('statement', limits.MAX_STATEMENT_BYTES),

@@ -32,6 +32,7 @@ from .store import (
     REJECTION_KINDS,
     Conflict,
     Store,
+    MAX_TASK_RESULT_BYTES,
     validate_settings,
 )
 from .verifier import (
@@ -173,6 +174,8 @@ def validate_result(data):
         if not isinstance(data.get('output'), dict):
             raise ValueError('output must be an object')
         text(data['output'].get('text'), 'output.text', limits.MAX_CANDIDATE_BYTES)
+        if 'type' in data['output']:
+            text(data['output']['text'], 'output.text', MAX_TASK_RESULT_BYTES)
     elif data.get('status') == 'failed':
         text(data.get('error'), 'error', limits.MAX_ERROR_BYTES)
         failure_class = data.get('failure_class', DEFAULT_FAILURE_CLASS)
@@ -454,9 +457,11 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     for model in models:
                         text(model, 'model', limits.MAX_MODEL_BYTES)
                     capabilities = data.get('capabilities', [])
-                    if (not isinstance(capabilities, list) or
-                             capabilities not in ([], ['generation_settings'])):
-                        raise ValueError('capabilities must be [] or ["generation_settings"]')
+                    if (not isinstance(capabilities, list) or len(capabilities) > 2 or
+                            any(type(capability) is not str or capability not in
+                                ('generation_settings', 'model_respond') for capability in capabilities) or
+                            len(set(capabilities)) != len(capabilities)):
+                        raise ValueError('Invalid capabilities')
                     health = data.get('provider_health')
                     health_reasons = ('Ollama service unreachable', 'Ollama service unavailable',
                                       'Ollama model list unavailable', 'Ollama model not installed')
@@ -469,6 +474,7 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     claim = coordinator.store.claim(
                         worker, models,
                         supports_generation_settings='generation_settings' in capabilities,
+                        supports_model_respond='model_respond' in capabilities,
                         provider_health=health)
                     return self.respond(200 if claim else 204, claim)
                 if (len(parts) == 4 and parts[:2] == ['v1', 'assignments']

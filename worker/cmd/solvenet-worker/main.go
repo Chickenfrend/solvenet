@@ -118,6 +118,7 @@ func main() {
 	}
 	w := daemon.Worker{URL: cfg.coordinatorURL, ID: cfg.id, Model: requestedModel, Client: &http.Client{Timeout: 10 * time.Second}, Executor: executor,
 		SupportsGenerationSettings: cfg.providerName == "ollama" || cfg.providerName == "openai"}
+	w.SupportsModelRespond = cfg.providerName == "ollama" || cfg.providerName == "openai"
 	if cfg.progressURL != "" && cfg.providerName == "ollama" {
 		token := os.Getenv("SOLVENET_PROGRESS_TOKEN")
 		u, err := url.Parse(cfg.progressURL)
