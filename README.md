@@ -25,7 +25,8 @@ Requirements: Python 3.11+, Go 1.22+, and either Docker or Lean 4.19 via
 [elan](https://github.com/leanprover/elan). Commands below start at the repository
 root unless otherwise noted.
 
-For the separate private, read-only homelab site, see [homelab/README.md](homelab/README.md).
+For the separate private homelab site, see [homelab/README.md](homelab/README.md).
+For the Docker Compose installation, see [docs/homelab-docker.md](docs/homelab-docker.md).
 
 **1. Start the coordinator**, choosing one verifier:
 

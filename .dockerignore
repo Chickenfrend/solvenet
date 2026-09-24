@@ -3,4 +3,4 @@
 **/.lake
 **/.venv
 *.db*
-worker
+trial*.json

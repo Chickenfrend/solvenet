@@ -1,0 +1,114 @@
+name: solvenet-homelab
+
+services:
+  init-data:
+    image: python:3.12.10-slim-bookworm
+    command: ["chown", "10001:10001", "/site", "/coordinator"]
+    volumes:
+      - site-data:/site
+      - coordinator-data:/coordinator
+    network_mode: none
+    restart: "no"
+
+  site:
+    build:
+      context: .
+      dockerfile: Dockerfile.homelab
+    depends_on:
+      init-data:
+        condition: service_completed_successfully
+      coordinator:
+        condition: service_started
+    volumes:
+      - site-data:/data
+    ports:
+      - "${SITE_BIND_IP:-127.0.0.1}:${SITE_PORT:-8081}:8081"
+    networks:
+      - frontend
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/', timeout=5).close()"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+    restart: unless-stopped
+
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.coordinator
+    depends_on:
+      init-data:
+        condition: service_completed_successfully
+    group_add:
+      - "${DOCKER_GID:?Set DOCKER_GID to the host Docker socket group ID}"
+    volumes:
+      - coordinator-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/solvenet/verify:/var/lib/solvenet/verify:rw
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command:
+      - -coordinator=http://coordinator:8080
+      - -provider=ollama
+      - -model=${OLLAMA_MODEL:?Set OLLAMA_MODEL to an already downloaded Ollama model}
+      - -ollama-url=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - -ollama-context=${OLLAMA_CONTEXT:-4096}
+      - -id=homelab-ollama
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - backend
+      - frontend
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    restart: unless-stopped
+
+  # Build-only service: docker compose build verifier loads the image into the host daemon.
+  verifier:
+    profiles: [build-only]
+    image: solvenet-verifier:homelab
+    build:
+      context: .
+      dockerfile: Dockerfile.verifier
+    network_mode: none
+
+volumes:
+  site-data:
+  coordinator-data:
+
+networks:
+  frontend:
+  backend:
+    internal: true

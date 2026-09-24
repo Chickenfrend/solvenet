@@ -479,6 +479,7 @@ def main():
     parser.add_argument('--db', type=Path, default=Path('solvenet.db'))
     parser.add_argument('--project', type=Path, default=Path('lean'))
     parser.add_argument('--port', type=int, default=8080)
+    parser.add_argument('--host', default='127.0.0.1', help='API bind address (default: loopback)')
     parser.add_argument('--verifier', choices=('docker', 'local'), default='docker')
     parser.add_argument('--image', default='solvenet-verifier:local')
     parser.add_argument(
@@ -511,9 +512,9 @@ def main():
     coordinator = Coordinator(Store(args.db), verifier)
     stop = threading.Event()
     thread = threading.Thread(target=coordinator.loop, args=(stop,), daemon=True)
-    server = make_server(coordinator, ('127.0.0.1', args.port))
+    server = make_server(coordinator, (args.host, args.port))
     thread.start()
-    LOG.info('Coordinator listening on http://127.0.0.1:%s', args.port)
+    LOG.info('Coordinator listening on http://%s:%s', args.host, args.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -7,7 +7,7 @@ RUN version="$(sed 's/leanprover\/lean4:v//' /tmp/lean-toolchain)" \
     && mkdir /opt/lean \
     && tar --zstd -xf /tmp/lean.tar.zst -C /opt/lean --strip-components=1
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12.10-slim-bookworm
 COPY --from=toolchain /opt/lean /opt/lean
 COPY lean /opt/solvenet/lean
 COPY coordinator/src /opt/solvenet/src

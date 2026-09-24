@@ -1,0 +1,9 @@
+FROM python:3.12.10-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends docker.io ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY coordinator/src /opt/solvenet/coordinator/src
+COPY problems /opt/solvenet/problems
+ENV PYTHONPATH=/opt/solvenet/coordinator/src PYTHONDONTWRITEBYTECODE=1 TMPDIR=/var/lib/solvenet/verify
+WORKDIR /opt/solvenet
+USER 10001:10001
+CMD ["python", "-m", "solvenet.server", "--host", "0.0.0.0", "--db", "/data/solvenet.db", "--image", "solvenet-verifier:homelab"]

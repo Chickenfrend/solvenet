@@ -1,5 +1,8 @@
 # Private homelab service (H2–H5)
 
+For a Docker Compose installation with a local coordinator, worker and pinned
+Lean verifier, see [the Docker homelab guide](../docs/homelab-docker.md).
+
 The homelab site is a separate Python process and keeps only local operator
 settings in its own SQLite database. Models and Problems read fixture sets,
 recent runs and model activity via the coordinator HTTP API.

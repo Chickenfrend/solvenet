@@ -1,0 +1,5 @@
+FROM python:3.12.10-slim-bookworm
+COPY homelab/src /opt/solvenet/src
+ENV PYTHONPATH=/opt/solvenet/src PYTHONDONTWRITEBYTECODE=1
+USER 10001:10001
+CMD ["python", "-m", "solvenet_homelab.server", "--db", "/data/homelab.db", "serve", "--host", "0.0.0.0"]

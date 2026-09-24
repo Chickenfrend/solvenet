@@ -1,0 +1,12 @@
+FROM golang:1.22.12-bookworm AS build
+WORKDIR /src
+COPY worker/go.mod ./
+COPY worker/cmd ./cmd
+COPY worker/internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /worker ./cmd/solvenet-worker
+
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /worker /worker
+USER 65532:65532
+ENTRYPOINT ["/worker"]
