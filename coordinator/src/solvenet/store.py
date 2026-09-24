@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from . import protocol_limits as limits
 from .group_state import MIGRATION_14, GroupState
+from .group_loop import MIGRATION_15, GroupLoop
 
 
 class Conflict(Exception):
@@ -228,7 +229,7 @@ def identifier():
     return uuid4().hex
 
 
-class Store(GroupState):
+class Store(GroupLoop, GroupState):
     def __init__(self, path: Path, *, lease_seconds=30, clock=time.time):
         self.path = path
         self.lease_seconds = lease_seconds
@@ -293,7 +294,10 @@ class Store(GroupState):
             if version == 13:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_14 + "COMMIT;")
                 version = 14
-            if version != 14:
+            if version == 14:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_15 + "COMMIT;")
+                version = 15
+            if version != 15:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -556,7 +560,9 @@ class Store(GroupState):
             (job_id,),
         ).fetchone()[0]
         job = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        state = 'queued' if count < job['max_assignments'] else 'failed'
+        stopped = db.execute("""SELECT 1 FROM group_jobs gj JOIN group_loops gl ON gl.group_id=gj.group_id
+            WHERE gj.job_id=? AND gl.phase='stopped'""", (job_id,)).fetchone()
+        state = 'cancelled' if stopped else ('queued' if count < job['max_assignments'] else 'failed')
         db.execute("UPDATE jobs SET status=? WHERE id=?", (state, job_id))
 
     def expire(self):
@@ -580,13 +586,16 @@ class Store(GroupState):
                 return None
             placeholders = ','.join('?' for _ in models)
             job = db.execute(f"""SELECT j.*, p.statement, p.imports FROM jobs j
-              JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
-              WHERE j.status='queued' AND r.status='running'
-              AND j.model IN ({placeholders})
-               AND (? OR j.generation_settings='{{}}')
-               AND (? OR j.kind='model.generate')
-               ORDER BY j.rowid, j.id LIMIT 1""",
-               (*models, supports_generation_settings, supports_model_respond)).fetchone()
+               JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
+               LEFT JOIN group_jobs gj ON gj.job_id=j.id
+               LEFT JOIN group_loops gl ON gl.group_id=gj.group_id
+               WHERE j.status='queued' AND r.status='running'
+               AND j.model IN ({placeholders})
+                AND (? OR j.generation_settings='{{}}')
+                AND (? OR j.kind='model.generate')
+                AND (gl.group_id IS NULL OR (gl.phase!='stopped' AND gl.deadline>?))
+                ORDER BY j.rowid, j.id LIMIT 1""",
+                (*models, supports_generation_settings, supports_model_respond, now)).fetchone()
             if job is None:
                 return None
             assignment, token = identifier(), secrets.token_urlsafe(32)
@@ -603,6 +612,8 @@ class Store(GroupState):
                   JOIN verifications v ON v.attempt_id=t.id WHERE t.id=?""", (job['parent_attempt_id'],)).fetchone()
                 messages.append({"role": "user", "content": repair_feedback(parent['candidate'], parent['diagnostics'])})
             if job['kind'] == 'model.respond':
+                messages = json.loads(job['messages'])
+            elif db.execute('SELECT 1 FROM group_jobs WHERE job_id=?', (job['id'],)).fetchone():
                 messages = json.loads(job['messages'])
             wire_job = {"id": job['id'], "run_id": job['run_id'], "kind": job['kind'], "model": job['model'],
                         "statement": job['statement'], "imports": json.loads(job['imports']),
@@ -758,6 +769,13 @@ class Store(GroupState):
                 # already-dispatched attempt ended the run first.
                 db.execute("""UPDATE runs SET status='solved'
                   WHERE id=? AND status IN ('running','exhausted','error')""", (job['run_id'],))
+                # A deadline may have stopped the group while this candidate
+                # was waiting for Lean. Verification remains authoritative,
+                # including after a coordinator restart.
+                db.execute("""UPDATE group_loops SET phase='stopped',reason='verified_target'
+                  WHERE group_id IN (SELECT group_id FROM group_runs WHERE run_id=?)""", (job['run_id'],))
+                db.execute("""UPDATE group_tasks SET status='done' WHERE request_key='synthesize'
+                  AND group_id IN (SELECT group_id FROM group_runs WHERE run_id=?)""", (job['run_id'],))
             elif result.status == 'verifier_error':
                 # Infrastructure failure terminates only a running run. It
                 # must not overwrite a proof that Lean has already verified.

@@ -472,7 +472,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 14)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 15)
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
@@ -580,6 +580,29 @@ class APITests(unittest.TestCase):
         self.assertEqual(snapshot['attempts'], [])
         self.assertEqual(snapshot['assignments'][-1]['task_result'], result['output'])
         self.assertEqual(proof['job']['kind'], 'model.generate')
+
+    def test_group_loop_http_creation_and_inspection(self):
+        options = {'request_key': 'local-group', 'statement': ': True ∧ True',
+                   'imports': ['Init'], 'environment': 'lean-test',
+                   'models': {role: 'scripted' for role in
+                              ('planner', 'investigator', 'critic', 'synthesizer')}}
+        status, created = self.request('/v1/groups', options)
+        self.assertEqual(status, 201)
+        group_id = created['id']
+        self.assertEqual(self.request('/v1/groups', options)[1]['id'], group_id)
+        status, snapshot = self.request(f'/v1/groups/{group_id}')
+        self.assertEqual(status, 200)
+        self.assertEqual(snapshot['loop']['phase'], 'plan')
+        self.assertEqual(len(snapshot['group']['agents']), 5)
+        self.assertEqual(self.request('/v1/groups/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')[0], 404)
+        for key in ('request_key', 'statement', 'imports', 'environment', 'models'):
+            with self.subTest(missing=key):
+                self.assertEqual(self.request('/v1/groups', {k: v for k, v in options.items()
+                                                              if k != key})[0], 400)
+        for deadline in (float('nan'), float('inf'), float('-inf')):
+            with self.subTest(deadline=deadline):
+                self.assertEqual(self.request('/v1/groups', options | {
+                    'request_key': 'bad-' + str(deadline), 'deadline': deadline})[0], 400)
 
     def test_protocol_field_byte_boundaries(self):
         for field, maximum in (('statement', limits.MAX_STATEMENT_BYTES),

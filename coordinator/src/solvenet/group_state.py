@@ -6,6 +6,8 @@ immediate transactions, including the idempotency and budget checks.
 
 import json
 
+from . import protocol_limits as limits
+
 
 MIGRATION_14 = """
 CREATE TABLE agent_groups (
@@ -107,9 +109,10 @@ class GroupState:
         """Create an immutable target and a bounded pool of model-call work units."""
         from .store import identifier
         _key(request_key)
-        _text(statement, 'statement', 65536)
-        if not isinstance(imports, list) or len(imports) > 64 or any(
-                not isinstance(item, str) or not item or len(item.encode()) > 256 for item in imports):
+        _text(statement, 'statement', limits.MAX_STATEMENT_BYTES)
+        if not isinstance(imports, list) or not 1 <= len(imports) <= limits.MAX_IMPORTS or any(
+                not isinstance(item, str) or not item.strip() or
+                len(item.encode()) > limits.MAX_IMPORT_BYTES for item in imports):
             raise ValueError('Invalid imports')
         _text(environment, 'environment', 1024)
         _number(max_work, 'max_work', 256)

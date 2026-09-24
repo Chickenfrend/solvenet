@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from solvenet import protocol_limits as limits
 from solvenet.store import Conflict, Store
 
 
@@ -23,6 +24,24 @@ class GroupStateTests(unittest.TestCase):
         return self.store.enqueue_group_job(
             group, task, agent, key, environment, 'scripted', 'finding',
             [{'role': 'user', 'content': 'Investigate the goal'}], **options)
+
+    def test_group_wire_context_bounds_and_claim(self):
+        for imports in ([], ['Init'] * (limits.MAX_IMPORTS + 1)):
+            with self.subTest(imports=len(imports)), self.assertRaises(ValueError):
+                self.store.create_group('invalid-' + str(len(imports)), ': True', imports, 'lean-v1')
+        with self.assertRaises(ValueError):
+            self.store.create_group('oversize-statement', 'x' * (limits.MAX_STATEMENT_BYTES + 1),
+                                    ['Init'], 'lean-v1')
+        imports = ['I' * limits.MAX_IMPORT_BYTES] * limits.MAX_IMPORTS
+        statement = ':' + ' ' * (limits.MAX_STATEMENT_BYTES - 1)
+        group = self.store.create_group('wire-boundary', statement, imports, 'lean-v1')
+        agent = self.store.add_agent(group, 'planner', 'planner')
+        task = self.store.add_group_task(group, 'plan', agent, agent, 'Plan', 1)
+        job = self.enqueue(group, task, agent)
+        claim = self.store.claim('compatible', ['scripted'], supports_model_respond=True)
+        self.assertEqual(claim['job']['id'], job)
+        self.assertEqual(claim['job']['statement'], statement)
+        self.assertEqual(claim['job']['imports'], imports)
 
     def test_restart_provenance_and_idempotence(self):
         group, planner, one, two = self.group_with_agents(max_work=4, max_tasks=3, max_messages=3)

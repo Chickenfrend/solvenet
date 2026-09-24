@@ -199,9 +199,10 @@ class Coordinator:
 
     def tick(self):
         self.store.expire()
+        changed = self.store.advance_groups()
         attempt = self.store.pending()
         if not attempt:
-            return False
+            return changed
         try:
             result = self.verifier.verify(attempt['statement'], attempt['candidate'],
                                           imports=json.loads(attempt['imports']))
@@ -381,6 +382,12 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 if parts == ['v1', 'runs']:
                     limit, before = self.pagination()
                     return self.respond(200, coordinator.store.recent_runs(limit, before))
+                if (len(parts) == 3 and parts[:2] == ['v1', 'groups']
+                        and self.identifier(parts[2])):
+                    group = coordinator.store.group(parts[2])
+                    loop = coordinator.store.group_loop(parts[2]) if group else None
+                    return self.respond(200 if loop else 404,
+                                        {'group': group, 'loop': loop} if loop else {'error': 'Unknown group'})
                 if parts == ['v1', 'experiments']:
                     limit, before = self.pagination()
                     return self.respond(200, coordinator.store.recent_experiments(limit, before))
@@ -436,6 +443,14 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     return self.respond(201 if created else 200, experiment)
                 if parts == ['v1', 'runs']:
                     return self.respond(201, coordinator.store.submit(**run_options(data)))
+                if parts == ['v1', 'groups']:
+                    required = {'request_key', 'statement', 'imports', 'environment', 'models'}
+                    if set(data) - (required | {'max_work', 'deadline'}):
+                        raise ValueError('Unknown group field')
+                    if required - set(data):
+                        raise ValueError('Missing group fields: ' + ', '.join(sorted(required - set(data))))
+                    group_id = coordinator.store.start_group_loop(**data)
+                    return self.respond(201, {'id': group_id, 'loop': coordinator.store.group_loop(group_id)})
                 if parts == ['v1', 'fixture-runs']:
                     allowed = {'set_id', 'version', 'sha256', 'problem_id', 'model', 'attempts',
                                'max_repairs', 'max_output_tokens', 'generation_timeout_seconds',
