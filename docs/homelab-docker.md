@@ -23,7 +23,8 @@ From the repository root:
 # coordinator. Each request creates a private temporary subdirectory here.
 sudo install -d -m 0700 -o 10001 -g 10001 /var/lib/solvenet/verify
 cp .env.homelab.example .env
-# Edit .env: OLLAMA_MODEL, SITE_BIND_IP (trusted LAN interface), DOCKER_GID.
+# Edit .env: OLLAMA_MODEL, SITE_BIND_IP (trusted LAN interface), DOCKER_GID,
+# SOLVENET_PROGRESS_TOKEN (generate with openssl rand -hex 32).
 docker compose build verifier coordinator site worker
 docker compose up -d site worker
 docker compose ps
@@ -61,6 +62,17 @@ your trusted LAN interface or VPN IP, **not** `0.0.0.0`, and firewall that port
 to trusted devices. The backend network is internal and the coordinator has no
 host port. Never route the site to the public internet without adding access
 control first.
+
+The Ollama worker posts short, bearer-authenticated progress previews directly
+to the site over the private Compose network. Generate one random
+`SOLVENET_PROGRESS_TOKEN` in `.env` for both containers; it is never sent to the
+coordinator. The site holds at most 32 previews of 8 KiB each in memory for up
+to a minute. The run page polls a small fragment while active, labels it
+partial/unverified, and offers a manual refresh; after a stalled worker or site
+restart the preview may disappear. The final candidate, Lean diagnostics, raw
+model response and usage come from the coordinator on a full run refresh.
+Outside Compose, use the same token in both processes and pass the worker
+`-progress-url=http://<private-site-origin>`; omit the flag to disable previews.
 
 ### Optional OpenAI hosted worker
 

@@ -23,6 +23,7 @@ type Message struct {
 
 type Job struct {
 	ID                     string             `json:"id"`
+	RunID                  string             `json:"run_id,omitempty"`
 	Kind                   string             `json:"kind"`
 	Model                  string             `json:"model"`
 	Statement              string             `json:"statement"`
@@ -234,6 +235,11 @@ type Worker struct {
 	Client                     *http.Client
 	Executor                   Executor
 	SupportsGenerationSettings bool
+	Progress                   func(context.Context, string, string, string, string)
+}
+
+type ProgressExecutor interface {
+	ExecuteProgress(context.Context, Job, func(string)) (Execution, error)
 }
 
 const protocolVersion = 1
@@ -277,6 +283,9 @@ func (a Assignment) validate(workerModel string) error {
 	}
 	if err := validateText(a.Job.ID, "job.id", MaxIdentifierBytes); err != nil {
 		return err
+	}
+	if a.Job.RunID != "" && validateText(a.Job.RunID, "job.run_id", MaxIdentifierBytes) != nil {
+		return fmt.Errorf("invalid job.run_id")
 	}
 	if a.Job.Kind != "model.generate" {
 		return fmt.Errorf("job.kind must be model.generate")
@@ -492,7 +501,15 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 			}
 		}
 	}()
-	execution, executeErr := w.Executor.Execute(jobCtx, a.Job)
+	var execution Execution
+	var executeErr error
+	if executor, ok := w.Executor.(ProgressExecutor); ok && w.Progress != nil && a.Job.RunID != "" {
+		publish := func(raw string) { w.Progress(jobCtx, a.Job.RunID, a.Job.ID, a.ID, raw) }
+		publish("")
+		execution, executeErr = executor.ExecuteProgress(jobCtx, a.Job, publish)
+	} else {
+		execution, executeErr = w.Executor.Execute(jobCtx, a.Job)
+	}
 	result := Result{Token: a.Token, Status: "completed", Output: &Output{Text: execution.Text},
 		Generation: execution.Generation, Usage: execution.Usage}
 	if executeErr == nil && (len(strings.TrimSpace(execution.Text)) == 0 || len(execution.Text) > MaxCandidateBytes) {

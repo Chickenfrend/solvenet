@@ -547,7 +547,7 @@ class Store:
                 messages.append({"role": "user", "content": repair_feedback(parent['candidate'], parent['diagnostics'])})
             return {"protocol_version": 1, "assignment_id": assignment, "lease_token": token,
                     "lease_expires_at": expires, "heartbeat_seconds": self.lease_seconds / 3,
-                    "job": {"id": job['id'], "kind": "model.generate", "model": job['model'],
+                    "job": {"id": job['id'], "run_id": job['run_id'], "kind": "model.generate", "model": job['model'],
                              "statement": job['statement'], "imports": json.loads(job['imports']),
                              "parent_attempt_id": job['parent_attempt_id'], "repair_depth": job['repair_depth'],
                              "max_output_tokens": job['max_output_tokens'],
@@ -715,8 +715,12 @@ class Store:
             attempts = db.execute('''SELECT count(*) FROM attempts t
                 JOIN assignments a ON a.id=t.assignment_id
                 JOIN jobs j ON j.id=a.job_id WHERE j.run_id=?''', (run_id,)).fetchone()[0]
+            active = db.execute('''SELECT a.id, a.job_id FROM assignments a
+                JOIN jobs j ON j.id=a.job_id WHERE j.run_id=? AND a.status='active'
+                ORDER BY a.rowid DESC LIMIT 1''', (run_id,)).fetchone()
             return {'id': run_id, 'status': row['status'], 'jobs': jobs,
-                    'assignments': assignments, 'attempts': attempts}
+                    'assignments': assignments, 'attempts': attempts,
+                    'active_assignment': dict(active) if active else None}
 
     def run(self, run_id):
         with self.connect() as db:

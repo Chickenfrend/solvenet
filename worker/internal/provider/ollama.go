@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -124,6 +125,12 @@ func rawGeneration(raw string) *daemon.Generation {
 }
 
 func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution, error) {
+	return o.ExecuteProgress(ctx, job, nil)
+}
+
+// ExecuteProgress emits only provider-visible content; the final JSON proof is
+// parsed exactly once after the terminal event. Progress is best effort.
+func (o *Ollama) ExecuteProgress(ctx context.Context, job daemon.Job, progress func(string)) (daemon.Execution, error) {
 	var execution daemon.Execution
 	providerFailure := func(err error) error { return daemon.Categorize(err, daemon.ProviderFailure) }
 	formattingFailure := func(err error) error { return daemon.Categorize(err, daemon.FormattingFailure) }
@@ -151,7 +158,7 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		options["seed"] = *job.GenerationSettings.Seed
 	}
 	body := map[string]any{
-		"model": o.Model, "messages": messages, "stream": false,
+		"model": o.Model, "messages": messages, "stream": true,
 		"format": map[string]any{"type": "object", "properties": map[string]any{
 			"proof": map[string]string{"type": "string"}}, "required": []string{"proof"}, "additionalProperties": false},
 		"options": options,
@@ -180,20 +187,10 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		return execution, providerFailure(daemon.Transient(fmt.Errorf("Ollama request failed (check local service)")))
 	}
 	defer response.Body.Close()
-	data, readErr := io.ReadAll(io.LimitReader(response.Body, maxOllamaResponse+1))
-	execution.Generation = o.rawGeneration(strings.ToValidUTF8(string(data), "�"), job)
-	execution.Generation.ModelDigest = digest
-	if readErr != nil {
-		if ctx.Err() != nil {
-			return execution, providerFailure(ctx.Err())
-		}
-		o.invalidateHealth()
-		return execution, providerFailure(daemon.Transient(fmt.Errorf("reading Ollama response: %w", readErr)))
-	}
-	if len(data) > maxOllamaResponse {
-		return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama response exceeded 1 MiB")))
-	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(response.Body, maxOllamaResponse+1))
+		execution.Generation = o.rawGeneration(strings.ToValidUTF8(string(data), "�"), job)
+		execution.Generation.ModelDigest = digest
 		o.invalidateHealth()
 		err := fmt.Errorf("Ollama HTTP %d (check service and installed model %q); response retained in generation.raw_response", response.StatusCode, o.Model)
 		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
@@ -216,13 +213,70 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		PromptDuration *int64 `json:"prompt_eval_duration"`
 		EvalDuration   *int64 `json:"eval_duration"`
 	}
-	if err := json.Unmarshal(data, &reply); err != nil {
-		return execution, providerFailure(daemon.Permanent(fmt.Errorf("invalid Ollama response JSON: %w", err)))
+	reader := &io.LimitedReader{R: response.Body, N: maxOllamaResponse + 1}
+	decoder := json.NewDecoder(reader)
+	var content strings.Builder
+	lastProgress := time.Time{}
+	for {
+		var event struct {
+			Model   string `json:"model"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Done           bool   `json:"done"`
+			DoneReason     string `json:"done_reason"`
+			Error          string `json:"error"`
+			PromptCount    *int   `json:"prompt_eval_count"`
+			EvalCount      *int   `json:"eval_count"`
+			TotalDuration  *int64 `json:"total_duration"`
+			LoadDuration   *int64 `json:"load_duration"`
+			PromptDuration *int64 `json:"prompt_eval_duration"`
+			EvalDuration   *int64 `json:"eval_duration"`
+		}
+		err := decoder.Decode(&event)
+		if err != nil {
+			execution.Generation = o.rawGeneration(content.String(), job)
+			execution.Generation.ModelDigest = digest
+			if ctx.Err() != nil {
+				return execution, providerFailure(ctx.Err())
+			}
+			if reader.N == 0 {
+				return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama response exceeded 1 MiB")))
+			}
+			if err == io.EOF {
+				return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama returned an incomplete streaming response")))
+			}
+			// I/O failures are retriable; malformed provider JSON is not.
+			var syntax *json.SyntaxError
+			if errors.As(err, &syntax) {
+				return execution, providerFailure(daemon.Permanent(fmt.Errorf("invalid Ollama streaming JSON: %w", err)))
+			}
+			o.invalidateHealth()
+			return execution, providerFailure(daemon.Transient(fmt.Errorf("reading Ollama response: %w", err)))
+		}
+		if event.Error != "" {
+			execution.Generation = o.rawGeneration(content.String(), job)
+			execution.Generation.ModelDigest = digest
+			return execution, providerFailure(daemon.Transient(fmt.Errorf("Ollama reported an error; response retained in generation.raw_response")))
+		}
+		content.WriteString(event.Message.Content)
+		if content.Len() > maxOllamaResponse {
+			execution.Generation = o.rawGeneration(content.String(), job)
+			return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama response exceeded 1 MiB")))
+		}
+		if progress != nil && (event.Done || event.Message.Content != "") && (lastProgress.IsZero() || time.Since(lastProgress) >= 300*time.Millisecond || event.Done) {
+			progress(content.String())
+			lastProgress = time.Now()
+		}
+		if event.Done {
+			reply.Model, reply.Done, reply.DoneReason = event.Model, true, event.DoneReason
+			reply.PromptCount, reply.EvalCount = event.PromptCount, event.EvalCount
+			reply.TotalDuration, reply.LoadDuration = event.TotalDuration, event.LoadDuration
+			reply.PromptDuration, reply.EvalDuration = event.PromptDuration, event.EvalDuration
+			break
+		}
 	}
-	if reply.Error != "" {
-		return execution, providerFailure(daemon.Transient(fmt.Errorf("Ollama reported an error; response retained in generation.raw_response")))
-	}
-	generation := o.rawGeneration(reply.Message.Content, job)
+	generation := o.rawGeneration(content.String(), job)
 	generation.ModelDigest = digest
 	generation.Model, generation.FinishReason = reply.Model, reply.DoneReason
 	generation.TotalDurationNS, generation.LoadDurationNS = reply.TotalDuration, reply.LoadDuration
@@ -243,13 +297,10 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		generation.Model, generation.FinishReason = "", ""
 		return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama model/finish metadata exceeded size limit")))
 	}
-	if !reply.Done {
-		return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama returned an incomplete non-streaming response")))
-	}
 	if generation.RawResponseTruncated {
 		return execution, formattingFailure(daemon.Permanent(fmt.Errorf("Ollama generated text exceeded %d bytes", daemon.MaxRawResponseBytes)))
 	}
-	proof, err := extractProof(reply.Message.Content)
+	proof, err := extractProof(content.String())
 	if err != nil {
 		return execution, formattingFailure(daemon.Permanent(fmt.Errorf("Ollama proof format: %w", err)))
 	}

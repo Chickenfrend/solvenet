@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 import re
 
 from solvenet_homelab.server import make_server
+from solvenet_homelab.progress import Progress, MAX_ENTRIES, MAX_OUTPUT, fragment
 from solvenet_homelab.settings import Settings
 
 
@@ -47,7 +48,9 @@ class Stub(BaseHTTPRequestHandler):
         elif self.path == '/v1/runs/' + 'a' * 32 + '/status':
             run = self.server.run_detail
             body = json.dumps({'id': run['id'], 'status': run['status'],
-                               **{key: len(run[key]) for key in ('jobs', 'assignments', 'attempts')}}).encode()
+                                **{key: len(run[key]) for key in ('jobs', 'assignments', 'attempts')},
+                                'active_assignment': next(({'id': row['id'], 'job_id': row['job_id']}
+                                                           for row in run['assignments'] if row['status'] == 'active'), None)}).encode()
         else:
             self.send_error(404)
             return
@@ -105,6 +108,76 @@ class SiteTests(unittest.TestCase):
         with urlopen(self.site_url, timeout=2) as response:
             self.assertEqual(response.headers['Cache-Control'], 'no-store')
             return response.read().decode()
+
+    def test_authenticated_bounded_live_progress_and_small_fragment(self):
+        coordinator, url = self.stub()
+        self.settings.select(url)
+        site = make_server(self.settings, ('127.0.0.1', 0), timeout=.3, progress_token='x' * 40)
+        self.start(site)
+        origin = f'http://127.0.0.1:{site.server_port}'
+        run = 'a' * 32
+        payload = {'run_id': run, 'job_id': 'b' * 32, 'assignment_id': 'c' * 32, 'output': ''}
+        coordinator.run_detail['assignments'] = [{'id': 'c' * 32, 'job_id': 'b' * 32, 'status': 'active'}]
+
+        def post(data, token='x' * 40):
+            request = Request(origin + '/internal/progress', data=json.dumps(data).encode(),
+                              headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
+            try:
+                with urlopen(request) as response:
+                    return response.status
+            except HTTPError as error:
+                error.close()
+                return error.code
+
+        self.assertEqual(post(payload, 'wrong'), 403)
+        self.assertEqual(post({**payload, 'output': 'x' * (MAX_OUTPUT + 1)}), 400)
+        self.assertEqual(post(payload), 204)
+        self.assertEqual(post(payload), 429)
+        with urlopen(origin + '/runs/' + run + '/progress') as response:
+            self.assertIn('Waiting for model output', response.read().decode())
+        time.sleep(.21)
+        self.assertEqual(post({**payload, 'output': '<script>part 1</script>'}), 204)
+        with urlopen(origin + '/runs/' + run + '/progress') as response:
+            html = response.read().decode()
+        self.assertIn('&lt;script&gt;part 1&lt;/script&gt;', html)
+        self.assertIn('Partial, unverified', html)
+        self.assertNotIn('<script>part', html)
+        self.assertIn('hx-get="/runs/' + run + '/progress"', html)
+        self.assertEqual(coordinator.paths[-1], '/v1/runs/' + run + '/status')
+        self.assertIn('Refresh run details', html)
+        coordinator.run_detail['assignments'] = []
+        with urlopen(origin + '/runs/' + run + '/progress') as response:
+            self.assertIn('Waiting for the next assignment', response.read().decode())
+        coordinator.run_detail['assignments'] = [{'id': 'c' * 32, 'job_id': 'b' * 32, 'status': 'active'}]
+        time.sleep(.21)
+        self.assertEqual(post({**payload, 'output': '<script>part 1</script> more'}), 204)
+        with urlopen(origin + '/runs/' + run + '/progress') as response:
+            self.assertIn('part 1&lt;/script&gt; more', response.read().decode())
+        time.sleep(.21)
+        self.assertEqual(post({**payload, 'output': '<script>part 1</script> more complete'}), 204)
+        with urlopen(origin + '/runs/' + run + '/progress') as response:
+            self.assertIn('more complete', response.read().decode())
+        coordinator.run_detail['status'] = 'exhausted'
+        with urlopen(origin + '/runs/' + run + '/progress') as response:
+            self.assertNotIn('part 1', response.read().decode())
+        coordinator.shutdown()
+        with urlopen(origin + '/runs/' + run + '/progress') as response:
+            self.assertIn('hx-get="/runs/' + run + '/progress"', response.read().decode())
+
+    def test_progress_eviction_stall_and_restart(self):
+        store = Progress()
+        for i in range(MAX_ENTRIES + 2):
+            store.put(f'{i:032x}', 'b' * 32, 'c' * 32, 'text')
+        self.assertEqual(len(store.entries), MAX_ENTRIES)
+        self.assertIsNone(store.snapshot(f'{0:032x}'))
+        run = 'a' * 32
+        self.assertIn('Waiting for model output', fragment(run, 'running', Progress().snapshot(run)))
+        store.put(run, 'b' * 32, 'c' * 32, 'partial')
+        with store.lock:
+            key = (run, 'b' * 32, 'c' * 32)
+            updated, started, output = store.entries[key]
+            store.entries[key] = (updated - 15, started, output)
+        self.assertIn('expired or stalled', fragment(run, 'running', store.snapshot(run)))
 
     def test_separate_storage_and_switching_coordinator(self):
         first, first_url = self.stub()

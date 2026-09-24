@@ -2,6 +2,9 @@
 
 import argparse
 import hmac
+import json
+import os
+import re
 import secrets
 from datetime import datetime, timezone
 from html import escape
@@ -12,7 +15,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from .client import Client, CoordinatorInvalid, CoordinatorOffline
 from .settings import LOCATIONS, Settings
-from . import layout, problems, runs as run_pages
+from . import layout, problems, progress, runs as run_pages
 
 
 def model_cards(models, activity, titles=None):
@@ -96,8 +99,13 @@ def selectable_model(model, activity):
             or (signal.get('status') == 'idle' and not model_id.startswith('ollama/')))
 
 
-def make_server(settings, address, timeout=2):
+def make_server(settings, address, timeout=2, progress_token=None):
     secret = secrets.token_bytes(32)
+    progress_token = progress_token if progress_token is not None else os.environ.get('SOLVENET_PROGRESS_TOKEN', '')
+    if progress_token and len(progress_token) < 32:
+        raise ValueError('SOLVENET_PROGRESS_TOKEN must be at least 32 characters')
+    live = progress.Progress()
+    identifier = re.compile(r'[0-9a-f]{32}\Z')
 
     class Handler(BaseHTTPRequestHandler):
         def send_page(self, body, status=200, cookie=None):
@@ -152,10 +160,14 @@ def make_server(settings, address, timeout=2):
                 return self.send_page(body)
             if path != '/':
                 parts = path.strip('/').split('/')
-                if parts[0] == 'runs' and len(parts) in (2, 3) and problems.RUN_ID.fullmatch(parts[1]) and (len(parts) == 2 or parts[2] == 'status'):
+                if parts[0] == 'runs' and len(parts) in (2, 3) and problems.RUN_ID.fullmatch(parts[1]) and (len(parts) == 2 or parts[2] in ('status', 'progress')):
                     try:
                         run = client.run_status(parts[1]) if len(parts) == 3 else client.run(parts[1])
-                        if len(parts) == 3:
+                        if len(parts) == 3 and parts[2] == 'progress':
+                            active = run.get('active_assignment', None)
+                            body = progress.fragment(parts[1], run['status'], live.snapshot(parts[1]),
+                                                     active if active is not None else False if 'active_assignment' in run else None)
+                        elif len(parts) == 3:
                             body = run_pages.summary(run)
                         else:
                             title = None
@@ -166,10 +178,14 @@ def make_server(settings, address, timeout=2):
                                                            run['fixture_problem_id'])['title']
                                 except (CoordinatorOffline, CoordinatorInvalid):
                                     pass  # The run remains inspectable if the catalog is unavailable.
-                            body = run_pages.detail(run, title)
+                            active = next(({'id': row['id'], 'job_id': row['job_id']}
+                                           for row in reversed(run['assignments']) if row.get('status') == 'active'), False)
+                            body = run_pages.detail(run, title, progress.fragment(parts[1], run['status'], live.snapshot(parts[1]), active))
                     except (CoordinatorOffline, CoordinatorInvalid) as exc:
                         message = f'<p role="alert">{escape(str(exc))}. Refresh to retry.</p>'
-                        body = (f'<section id="run-status" hx-get="/runs/{parts[1]}/status" '
+                        body = (f'<section id="run-progress" hx-get="/runs/{parts[1]}/progress" '
+                                f'hx-trigger="every 2s" hx-swap="outerHTML">{message}</section>' if len(parts) == 3 and parts[2] == 'progress' else
+                                f'<section id="run-status" hx-get="/runs/{parts[1]}/status" '
                                 f'hx-trigger="every 5s" hx-swap="outerHTML">{message}</section>'
                                 if len(parts) == 3 else problems.page('Run', message))
                     return self.send_page(body)
@@ -211,6 +227,32 @@ def make_server(settings, address, timeout=2):
             self.send_page(render(url, models, catalog, runs, error, activity, fixture_titles(client, activity)))
 
         def do_POST(self):
+            if urlsplit(self.path).path == '/internal/progress':
+                if not progress_token or not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + progress_token):
+                    self.send_error(403)
+                    return
+                if self.headers.get('Content-Type') != 'application/json':
+                    self.send_error(415)
+                    return
+                try:
+                    size = int(self.headers.get('Content-Length', '0'))
+                    if not 1 <= size <= 9000:
+                        raise ValueError()
+                    payload = json.loads(self.rfile.read(size))
+                    if (not isinstance(payload, dict) or set(payload) != {'run_id', 'job_id', 'assignment_id', 'output'}
+                            or any(not isinstance(payload.get(key), str) or not identifier.fullmatch(payload[key])
+                                   for key in ('run_id', 'job_id', 'assignment_id'))
+                            or not isinstance(payload['output'], str) or len(payload['output'].encode()) > progress.MAX_OUTPUT):
+                        raise ValueError()
+                except (ValueError, UnicodeError):
+                    self.send_error(400)
+                    return
+                accepted = live.put(payload['run_id'], payload['job_id'], payload['assignment_id'], payload['output'])
+                self.send_response(204 if accepted else 429)
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             parts = urlsplit(self.path).path.strip('/').split('/')
             if (len(parts) != 4 or parts[0] != 'problems' or not problems.ID.fullmatch(parts[1])
                     or not parts[2].isascii() or not parts[2].isdecimal() or len(parts[2]) > 18 or not problems.ID.fullmatch(parts[3])):

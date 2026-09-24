@@ -91,7 +91,7 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Model != "qwen2.5-coder:7b" || request.Stream || request.Options.Predict != 256 || request.Options.Context != 8192 {
+		if request.Model != "qwen2.5-coder:7b" || !request.Stream || request.Options.Predict != 256 || request.Options.Context != 8192 {
 			t.Errorf("wrong model/options: %+v", request)
 		}
 		if request.Options.Temperature == nil || *request.Options.Temperature != 0 || request.Options.Seed == nil || *request.Options.Seed != 42 {
@@ -136,6 +136,73 @@ func TestOllamaRequestAndMetadata(t *testing.T) {
 	}
 	if result.Generation.ModelDigest != "sha256:"+strings.Repeat("a", 64) || *result.Generation.Temperature != 0 || *result.Generation.Seed != 42 {
 		t.Fatalf("lost settings/digest: %+v", result.Generation)
+	}
+}
+
+func TestOllamaSlowStreamShowsPartialJSONBeforeFinalProof(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.Write([]byte(`{"models":[]}`))
+			return
+		}
+		flusher := w.(http.Flusher)
+		for _, event := range []string{
+			`{"message":{"content":"{\"proof\":\""},"done":false}`,
+			`{"message":{"content":"rfl"},"done":false}`,
+			`{"message":{"content":"\"}"},"done":false}`,
+			`{"model":"test","done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":4}`,
+		} {
+			w.Write([]byte(event + "\n"))
+			flusher.Flush()
+			time.Sleep(320 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+	o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
+	var updates []string
+	result, err := o.ExecuteProgress(context.Background(), daemon.Job{MaxOutputTokens: 10}, func(s string) { updates = append(updates, s) })
+	if err != nil || result.Text != "rfl" || result.Generation.RawResponse != `{"proof":"rfl"}` || *result.Usage["output_tokens"] != 4 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(updates) < 3 || updates[0] != `{"proof":"` || updates[1] != `{"proof":"rfl` || updates[2] != `{"proof":"rfl"}` {
+		t.Fatalf("partial updates: %q", updates)
+	}
+}
+
+func TestOllamaTerminalEventFlushesFastStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.Write([]byte(`{"models":[]}`))
+			return
+		}
+		w.Write([]byte("{\"message\":{\"content\":\"{\\\"proof\\\":\\\"\"},\"done\":false}\n"))
+		w.Write([]byte("{\"message\":{\"content\":\"rfl\\\"}\"},\"done\":false}\n"))
+		w.Write([]byte("{\"done\":true,\"eval_count\":3}\n"))
+	}))
+	defer server.Close()
+	o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
+	var updates []string
+	result, err := o.ExecuteProgress(context.Background(), daemon.Job{MaxOutputTokens: 10}, func(s string) { updates = append(updates, s) })
+	if err != nil || result.Text != "rfl" || len(updates) != 2 || updates[1] != `{"proof":"rfl"}` {
+		t.Fatalf("result=%+v err=%v updates=%q", result, err, updates)
+	}
+}
+
+func TestOllamaInterruptedStreamRetainsPartialAndRetries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.Write([]byte(`{"models":[]}`))
+			return
+		}
+		w.Header().Set("Content-Length", "10000")
+		w.Write([]byte("{\"message\":{\"content\":\"{\\\"proof\\\":\\\"r\"},\"done\":false}\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer server.Close()
+	o, _ := NewOllama(server.URL, "test", DefaultOllamaContext)
+	result, err := o.Execute(context.Background(), daemon.Job{MaxOutputTokens: 10})
+	if err == nil || daemon.FailureClassOf(err) != daemon.FailureTransient || result.Generation == nil || result.Generation.RawResponse != `{"proof":"r` {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
 
@@ -238,12 +305,12 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 	}{
 		{"not-found", 404, `{"error":"model not found"}`, "HTTP 404", daemon.FailurePermanent, daemon.ProviderFailure},
 		{"unavailable", 503, `service unavailable`, "HTTP 503", daemon.FailureTransient, daemon.ProviderFailure},
-		{"invalid-envelope", 200, `not JSON`, "invalid Ollama response JSON", daemon.FailurePermanent, daemon.ProviderFailure},
+		{"invalid-envelope", 200, `not JSON`, "invalid Ollama streaming JSON", daemon.FailurePermanent, daemon.ProviderFailure},
 		{"error-envelope", 200, `{"error":"runner stopped"}`, "reported an error", daemon.FailureTransient, daemon.ProviderFailure},
 		{"invalid-proof", 200, `{"done":true,"message":{"content":"refl"},"eval_count":7}`, "proof format", daemon.FailurePermanent, daemon.FormattingFailure},
 		{"incomplete", 200, `{"done":false,"message":{"content":"partial"}}`, "incomplete", daemon.FailurePermanent, daemon.ProviderFailure},
 		{"truncated-json", 200, `{"done":true,"done_reason":"length","message":{"content":"{\"proof\":"}}`, "proof format", daemon.FailurePermanent, daemon.FormattingFailure},
-		{"large", 200, strings.Repeat("x", maxOllamaResponse+1), "exceeded 1 MiB", daemon.FailurePermanent, daemon.ProviderFailure},
+		{"large", 200, `{"done":true,"message":{"content":"` + strings.Repeat("x", maxOllamaResponse+1) + `"}}`, "exceeded 1 MiB", daemon.FailurePermanent, daemon.ProviderFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(test.status); w.Write([]byte(test.body)) }))
@@ -259,7 +326,7 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 			if category := daemon.FailureCategoryOf(err); category != test.category {
 				t.Fatalf("category=%q, want %q", category, test.category)
 			}
-			if result.Generation == nil || result.Generation.RawResponse == "" || len(result.Generation.RawResponse) > daemon.MaxRawResponseBytes {
+			if result.Generation == nil || len(result.Generation.RawResponse) > daemon.MaxRawResponseBytes || (test.status != 200 && result.Generation.RawResponse == "") {
 				t.Fatal("missing or unbounded raw response")
 			}
 			if result.Generation.ContextLength != DefaultOllamaContext || result.Generation.MaxOutputTokens != 10 {
@@ -267,9 +334,6 @@ func TestOllamaFailuresRetainOutput(t *testing.T) {
 			}
 			if test.name == "invalid-proof" && *result.Usage["output_tokens"] != 7 {
 				t.Fatal("lost usage on failure")
-			}
-			if test.name == "large" && !result.Generation.RawResponseTruncated {
-				t.Fatal("missing truncation marker")
 			}
 		})
 	}

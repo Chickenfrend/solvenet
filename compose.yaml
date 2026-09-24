@@ -21,6 +21,8 @@ services:
         condition: service_started
     volumes:
       - site-data:/data
+    environment:
+      SOLVENET_PROGRESS_TOKEN: ${SOLVENET_PROGRESS_TOKEN:?Set a random shared progress token}
     ports:
       - "${SITE_BIND_IP:-127.0.0.1}:${SITE_PORT:-8081}:8081"
     networks:
@@ -80,6 +82,9 @@ services:
       - -ollama-url=${OLLAMA_URL:-http://host.docker.internal:11434}
       - -ollama-context=${OLLAMA_CONTEXT:-4096}
       - -id=homelab-ollama
+      - -progress-url=http://site:8081
+    environment:
+      SOLVENET_PROGRESS_TOKEN: ${SOLVENET_PROGRESS_TOKEN:?Set a random shared progress token}
     depends_on:
       coordinator:
         condition: service_healthy

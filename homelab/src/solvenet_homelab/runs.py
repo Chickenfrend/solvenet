@@ -41,7 +41,7 @@ def summary(run):
                '<p>Run finished. Refresh for the latest details.</p>') + '</section>')
 
 
-def detail(run, problem_title=None):
+def detail(run, problem_title=None, progress_html=''):
     e = text
     jobs = run['jobs']
     leases = run['assignments']
@@ -83,7 +83,7 @@ def detail(run, problem_title=None):
         + '<h4>Reported usage</h4>' + usage(attempt.get('usage')) + '</article>'
         for attempt in attempts if 'id' in attempt)
     return problems.page(problem_title or 'Run details',
-                          summary(run) + fixture
+                           summary(run) + progress_html + fixture
                           + f'<p><a href="/runs/{e(run["id"])}">Refresh run details</a></p>'
                           + f'<p class="selected">Run ID: {e(run["id"])}</p>'
                           + '<h2>Jobs (generation requests)</h2>'

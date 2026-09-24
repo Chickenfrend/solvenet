@@ -67,7 +67,8 @@ class BrowseTests(unittest.TestCase):
         status, compact = self.get('/v1/runs/' + created['run_id'] + '/status')
         self.assertEqual(status, 200)
         self.assertEqual(compact, {'id': created['run_id'], 'status': 'running',
-                                   'jobs': 2, 'assignments': 0, 'attempts': 0})
+                                    'jobs': 2, 'assignments': 0, 'attempts': 0,
+                                    'active_assignment': None})
         self.assertNotIn(problem.reference_proof, json.dumps(compact))
         self.assertEqual(self.get('/v1/runs/' + 'a' * 32 + '/status')[0], 404)
         self.assertEqual((detail['fixture_set_id'], detail['fixture_version'], detail['fixture_sha256'],
@@ -82,6 +83,7 @@ class BrowseTests(unittest.TestCase):
         self.assertNotIn(problem.reference_proof, json.dumps(detail))
         claim = self.store.claim('worker', ['local'])
         self.assertEqual(claim['job']['statement'], problem.statement)
+        self.assertEqual(claim['job']['run_id'], detail['id'])
         self.assertNotIn(problem.reference_proof, json.dumps(claim))
         for bad in ({**payload, 'sha256': '0' * 64}, {**payload, 'problem_id': 'missing'},
                     {**payload, 'reference_proof': problem.reference_proof},
