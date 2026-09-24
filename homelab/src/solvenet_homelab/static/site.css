@@ -43,6 +43,13 @@ p { margin: .6rem 0 1rem }
 .problem-preview { padding: .2rem 1.25rem 1.25rem; border-top: 1px solid #393632; min-width: 0 }
 .problem-preview pre { margin: .35rem 0 1rem }
 .run-card { border-left: 3px solid #a86839 }
+.run-outcome { min-width: 0; padding: .5rem 1.25rem 1.25rem; background: #242321; border-radius: .75rem }
+.run-outcome h2 { margin-top: .5rem }
+.run-activity { padding-left: 1.5rem; min-width: 0 }
+.run-activity .run-card { margin: .7rem 0; padding: .8rem 1rem }
+.run-technical { min-width: 0; margin: .75rem 0 }
+.run-technical summary { cursor: pointer; color: #ffc183; min-height: 2.75rem; padding: .55rem 0 }
+.run-technical pre { max-height: 35rem; overflow: auto }
 .empty, [role="alert"] { border-left: 3px solid #e6a461; padding: .8rem 1rem; background: #302820; border-radius: .25rem }
 [role="status"] { padding: .75rem 1rem; background: #292825; border-radius: .4rem }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; max-width: 100%; min-width: 0; background: #1b1a19; border-radius: .4rem; padding: 1rem }

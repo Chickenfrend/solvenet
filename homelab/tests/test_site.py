@@ -499,11 +499,16 @@ class SiteTests(unittest.TestCase):
             html = response.read().decode()
         self.assertIn('<h1>&lt;Lemma&gt;</h1>', html)
         self.assertLess(html.index('<h1>&lt;Lemma&gt;</h1>'), html.index('Run status: solved'))
-        self.assertLess(html.index('Run status: solved'), html.index('Run ID:'))
+        self.assertLess(html.index('Run status: solved'), html.index('Run configuration and identifiers'))
         self.assertIn('Run status: solved', html)
         self.assertIn('2 jobs · 2 leased assignments · 2 completed candidate attempts', html)
         self.assertIn('Lean verification: verified', html)
         self.assertIn('Lean verification: rejected', html)
+        self.assertIn('Outcome: Repaired proof verified', html)
+        self.assertIn('Selected model: &lt;model&gt;, local', html)
+        self.assertIn('Job 1: queued → completed', html)
+        self.assertIn('Leased work → completed', html)
+        self.assertIn('Generated candidate → Lean verification: verified', html)
         self.assertIn('href="#attempt-' + parent + '"', html)
         self.assertIn('href="/problems/core/1/lemma-one"', html)
         self.assertIn(escape(payload), html)
@@ -544,9 +549,9 @@ class SiteTests(unittest.TestCase):
         self.assertNotIn('hx-trigger=', fragment)
         with urlopen(self.site_url + path) as response:
             html = response.read().decode()
-        self.assertIn('Job ' + 'd' * 32 + ' — failed', html)
+        self.assertIn('Job 1: queued → failed', html)
         self.assertIn('Failure: &lt;failure&gt;', html)
-        self.assertIn('No candidate attempts yet.', html)
+        self.assertIn('Outcome: zero candidates; provider/worker failure', html)
         self.assertNotIn('hx-trigger=', html)
         self.assertEqual(stub.paths, ['/v1/runs/' + 'a' * 32,
                                       '/v1/runs/' + 'a' * 32 + '/status',
@@ -557,6 +562,70 @@ class SiteTests(unittest.TestCase):
             fragment = response.read().decode()
         self.assertIn('hx-trigger="every 5s"', fragment)
         self.assertIn('unavailable', fragment)
+
+    def test_nine_failed_leases_zero_candidates_are_not_proof_failures(self):
+        stub, url = self.stub()
+        self.settings.select(url)
+        self.settings.add_model('ollama', 'Local prover', 'ollama', 'On this device')
+        stub.run_detail.update(status='exhausted',
+            jobs=[{'id': f'{i:032x}', 'model': 'ollama', 'status': 'failed'} for i in range(9)],
+            assignments=[{'id': f'{i+100:032x}', 'job_id': f'{i:032x}', 'status': 'failed',
+                          'error': 'dial tcp: connection refused <offline>',
+                          'failure_class': 'transient', 'usage': {},
+                          'generation': {'raw_response': ''}} for i in range(9)])
+        with urlopen(self.site_url + '/runs/' + 'a' * 32) as response:
+            html = response.read().decode()
+        self.assertIn('Selected model: Local prover (ollama)', html)
+        self.assertIn('Outcome: zero candidates; provider unreachable', html)
+        self.assertIn('9 failed leased assignment(s); no proof reached Lean', html)
+        self.assertNotIn('candidate(s) rejected by Lean', html)
+        self.assertEqual(html.count('Leased work → failed'), 9)
+        self.assertEqual(html.count('Lease details, raw output and usage'), 9)
+        self.assertIn('connection refused &lt;offline&gt;', html)
+        self.assertNotIn('<offline>', html)
+
+    def test_initial_verification_and_rejected_proof_have_distinct_outcomes(self):
+        stub, url = self.stub()
+        self.settings.select(url)
+        attempt = {'id': 'c' * 32, 'job_id': 'b' * 32, 'assignment_id': 'd' * 32,
+                   'model': 'm', 'candidate': 'by trivial <proof>',
+                   'diagnostics': '<error>' * 500, 'usage': {},
+                   'generation': {'raw_response': '<raw response>'}}
+        stub.run_detail.update(status='solved',
+            jobs=[{'id': 'b' * 32, 'model': 'm', 'status': 'completed'}],
+            assignments=[{'id': 'd' * 32, 'job_id': 'b' * 32, 'status': 'completed'}],
+            attempts=[{**attempt, 'verification_status': 'verified', 'diagnostics': ''}])
+        path = self.site_url + '/runs/' + 'a' * 32
+        with urlopen(path) as response:
+            verified = response.read().decode()
+        self.assertIn('Outcome: Initial proof verified', verified)
+        self.assertNotIn('Repaired proof verified', verified)
+        self.assertEqual(verified.count('by trivial &lt;proof&gt;'), 1)
+        self.assertIn('Input tokens</dt><dd>Unknown', verified)
+        self.assertIn('&lt;raw response&gt;', verified)
+        stub.run_detail.update(status='exhausted', attempts=[{**attempt, 'verification_status': 'rejected'}])
+        with urlopen(path) as response:
+            rejected = response.read().decode()
+        self.assertIn('Outcome: 1 candidate(s) rejected by Lean', rejected)
+        self.assertNotIn('zero candidates', rejected)
+        self.assertIn(escape(attempt['diagnostics']), rejected)
+        self.assertEqual(rejected.count(escape(attempt['diagnostics'])), 1)
+        self.assertNotIn('<error>', rejected)
+        stub.run_detail.update(status='error', attempts=[{**attempt, 'verification_status': 'verifier_error'}])
+        with urlopen(path) as response:
+            verifier_error = response.read().decode()
+        self.assertIn('Outcome: Lean verification error', verifier_error)
+        self.assertNotIn('zero candidates', verifier_error)
+        stub.run_detail.update(status='running', attempts=[{**attempt, 'verification_status': None}])
+        with urlopen(path) as response:
+            pending = response.read().decode()
+        self.assertIn('Outcome: Verification pending', pending)
+        self.assertNotIn('No candidate has completed', pending)
+        stub.run_detail.update(status='solved', attempts=[{**attempt, 'verification_status': 'verified',
+                                                            'parent_attempt_id': 'e' * 32}])
+        with urlopen(path) as response:
+            repaired = response.read().decode()
+        self.assertIn('Outcome: Repaired proof verified', repaired)
 
 
 if __name__ == '__main__':

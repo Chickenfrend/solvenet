@@ -180,7 +180,8 @@ def make_server(settings, address, timeout=2, progress_token=None):
                                     pass  # The run remains inspectable if the catalog is unavailable.
                             active = next(({'id': row['id'], 'job_id': row['job_id']}
                                            for row in reversed(run['assignments']) if row.get('status') == 'active'), False)
-                            body = run_pages.detail(run, title, progress.fragment(parts[1], run['status'], live.snapshot(parts[1]), active))
+                            body = run_pages.detail(run, title, progress.fragment(parts[1], run['status'], live.snapshot(parts[1]), active),
+                                                    {row[0]: row[1] for row in models})
                     except (CoordinatorOffline, CoordinatorInvalid) as exc:
                         message = f'<p role="alert">{escape(str(exc))}. Refresh to retry.</p>'
                         body = (f'<section id="run-progress" hx-get="/runs/{parts[1]}/progress" '
