@@ -30,13 +30,15 @@ For the optional hosted OpenAI worker, use an `openai/gpt-4o-mini` model ID,
 provider `OpenAI`, and location `Cloud API`; see the
 [hosted-worker setup](../docs/homelab-docker.md#optional-openai-hosted-worker).
 Credentials are configured only on the worker.
-Configured models alone are **not** evidence of worker availability. Recent
-worker claims show idle presence; live leases plus worker contact show a job
-as working. Expired worker contact shows Offline, and models never seen by the
-coordinator show Unknown. A missing/incompatible activity API also shows
-Unknown rather than inventing activity. Refresh the page to update the status.
+Configured models alone are **not** evidence of worker availability. The Ollama
+worker checks its service and installed model before each claim; failed checks
+report Provider unavailable and do not lease a job. A recent healthy claim
+shows Idle — ready; older workers without health reporting show unobserved
+health. Live leases show Working and link to the run, with a fixture title when
+available. Stale contact shows Offline/stale. The cards refresh their small
+activity fragment every ten seconds while open, and also offer manual refresh.
 The Problems link opens a vertical fixture list. On a problem detail page you can
-choose a configured model with a recent worker signal (Idle or Working), an
+choose a configured model with a healthy worker signal (Idle — ready or Working), an
 independent or repair strategy, initial chains, output tokens and generation
 timeout. A successful form redirects to the run detail page. The coordinator
 `POST /v1/fixture-runs` records the checked-in fixture identity for exactly one

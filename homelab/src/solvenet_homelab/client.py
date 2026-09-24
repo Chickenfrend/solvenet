@@ -68,7 +68,10 @@ class Client:
                             ('items',))['items']
             if (not isinstance(rows, list) or len(rows) != len(batch)
                     or any(not isinstance(row, dict) or row.get('model') not in batch
-                           or row.get('status') not in ('working', 'idle', 'offline', 'unknown')
+                            or row.get('status') not in ('working', 'idle', 'offline', 'unknown', 'unavailable')
+                            or (row.get('ready') is not None and type(row['ready']) is not bool)
+                            or (row.get('reason') is not None and
+                                (not isinstance(row['reason'], str) or len(row['reason']) > 120))
                            or (row.get('status') == 'working' and
                                (not isinstance(row.get('job_id'), str) or not row['job_id']
                                 or not isinstance(row.get('run_id'), str) or not row['run_id']))

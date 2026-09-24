@@ -7,12 +7,61 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"solvenet/worker/internal/daemon"
 )
+
+func TestOllamaHealthUnavailableAndRecovery(t *testing.T) {
+	var installed atomic.Bool
+	var reachable atomic.Bool
+	var checks atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		checks.Add(1)
+		if !reachable.Load() {
+			time.Sleep(2 * time.Second)
+			return
+		}
+		if !installed.Load() {
+			w.Write([]byte(`{"models":[]}`))
+			return
+		}
+		w.Write([]byte(`{"models":[{"name":"tiny:latest"}]}`))
+	}))
+	defer server.Close()
+	o, err := NewOllama(server.URL, "tiny", DefaultOllamaContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if health := o.Health(context.Background()); health.Status != "unavailable" || health.Reason != "Ollama service unreachable" {
+		t.Fatalf("health: %+v", health)
+	}
+	if time.Since(start) > 1500*time.Millisecond {
+		t.Fatal("health check exceeded deadline")
+	}
+	initial := checks.Load()
+	if o.Health(context.Background()).Status != "unavailable" || checks.Load() != initial {
+		t.Fatal("unavailable provider was probed again before backoff elapsed")
+	}
+	reachable.Store(true)
+	o.healthMu.Lock()
+	o.healthUntil = time.Time{} // simulate expiry without a ten-second test delay
+	o.healthMu.Unlock()
+	if health := o.Health(context.Background()); health.Reason != "Ollama model not installed" {
+		t.Fatalf("health: %+v", health)
+	}
+	installed.Store(true)
+	o.healthMu.Lock()
+	o.healthUntil = time.Time{}
+	o.healthMu.Unlock()
+	if health := o.Health(context.Background()); health.Status != "ready" || health.Reason != "" {
+		t.Fatalf("health: %+v", health)
+	}
+}
 
 func TestOllamaRequestAndMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

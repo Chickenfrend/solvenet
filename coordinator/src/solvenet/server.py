@@ -455,11 +455,21 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                         text(model, 'model', limits.MAX_MODEL_BYTES)
                     capabilities = data.get('capabilities', [])
                     if (not isinstance(capabilities, list) or
-                            capabilities not in ([], ['generation_settings'])):
+                             capabilities not in ([], ['generation_settings'])):
                         raise ValueError('capabilities must be [] or ["generation_settings"]')
+                    health = data.get('provider_health')
+                    health_reasons = ('Ollama service unreachable', 'Ollama service unavailable',
+                                      'Ollama model list unavailable', 'Ollama model not installed')
+                    if health is not None and (not isinstance(health, dict)
+                            or set(health) - {'status', 'reason'}
+                            or health.get('status') not in ('ready', 'unavailable')
+                            or ('reason' in health and health['reason'] not in health_reasons)
+                            or (health['status'] == 'ready' and 'reason' in health)):
+                        raise ValueError('Invalid provider health')
                     claim = coordinator.store.claim(
                         worker, models,
-                        supports_generation_settings='generation_settings' in capabilities)
+                        supports_generation_settings='generation_settings' in capabilities,
+                        provider_health=health)
                     return self.respond(200 if claim else 204, claim)
                 if (len(parts) == 4 and parts[:2] == ['v1', 'assignments']
                         and self.identifier(parts[2])

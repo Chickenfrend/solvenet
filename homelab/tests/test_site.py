@@ -214,15 +214,27 @@ class SiteTests(unittest.TestCase):
         self.settings.add_model('ollama/b', 'LAN', 'Ollama', 'Local network')
         self.settings.add_model('cloud/c', 'Cloud', 'API', 'Cloud API')
         stub.activity = {
-            'ollama/a': {'model': 'ollama/a', 'status': 'working', 'job_id': '<job>', 'run_id': 'run-1'},
+            'ollama/a': {'model': 'ollama/a', 'status': 'working', 'job_id': '<job>', 'run_id': 'a' * 32,
+                         'fixture_set_id': 'core', 'fixture_version': 1, 'fixture_problem_id': 'lemma-one'},
             'ollama/b': {'model': 'ollama/b', 'status': 'offline'},
         }
         html = self.page()
-        self.assertIn('Working on job &lt;job&gt; (run run-1)', html)
+        self.assertIn('Working on &lt;Lemma&gt;', html)
+        self.assertIn('href="/runs/' + 'a' * 32 + '">View run</a>', html)
         self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', html)
         self.assertNotIn('<script>alert(1)</script>', html)
-        self.assertIn('Offline — worker signal is stale', html)
-        self.assertIn('Unknown — configured; no worker signal', html)
+        self.assertIn('Offline/stale — worker signal is stale', html)
+        self.assertIn('Configured but unobserved — no worker signal', html)
+        self.assertIn('Last checked:', html)
+        self.assertIn('hx-get="/models/activity"', html)
+        self.assertNotIn('/v1/runs/' + 'a' * 32, stub.paths)
+        previous = list(stub.paths)
+        with urlopen(self.site_url + '/models/activity') as response:
+            fragment = response.read().decode()
+        self.assertIn('Working on &lt;Lemma&gt;', fragment)
+        self.assertNotIn('Coordinator activity</h2>', fragment)
+        self.assertEqual(stub.paths[len(previous):], ['/v1/model-activity?model=ollama%2Fa&model=cloud%2Fc&model=ollama%2Fb',
+                                                       '/v1/fixture-sets/core/versions/1/problems/lemma-one'])
         self.assertLess(html.index('On this device'), html.index('Local network'))
         self.assertIn('name="viewport" content="width=device-width, initial-scale=1"', html)
         self.assertIn('href="/static/site.css"', html)
@@ -235,11 +247,18 @@ class SiteTests(unittest.TestCase):
         self.assertIn('grid-template-columns: minmax(0, 1fr)', css)
         self.assertIn('overflow-wrap: anywhere', css)
         self.assertIn(':focus-visible', css)
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle', 'ready': True}
+        self.assertIn('Idle — ready', self.page())
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'unavailable', 'reason': 'Ollama service unreachable'}
+        self.assertIn('Provider unavailable — Ollama service unreachable', self.page())
         stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle'}
-        self.assertIn('Idle — worker recently checked in', self.page())
+        self.assertIn('Idle — provider health unobserved', self.page())
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'working',
+                                      'job_id': '<job>', 'run_id': 'a' * 32}
+        self.assertIn('Working on job &lt;job&gt;', self.page())
         stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'working', 'job_id': '<job>'}
         html = self.page()
-        self.assertIn('Unknown — configured; no worker signal', html)
+        self.assertIn('Configured but unobserved — no worker signal', html)
         self.assertNotIn('Working on job', html)
 
     def test_shared_navigation_and_empty_states(self):
@@ -261,6 +280,18 @@ class SiteTests(unittest.TestCase):
         with urlopen(self.site_url + '/problems') as response:
             self.assertIn('role="alert"', response.read().decode())
 
+    def test_idle_hosted_model_remains_selectable_without_ollama_health(self):
+        stub, url = self.stub()
+        self.settings.select(url)
+        self.settings.add_model('openai/gpt-4o-mini', 'Hosted', 'OpenAI', 'Cloud API')
+        self.settings.add_model('ollama/tiny', 'Ollama', 'Ollama', 'On this device')
+        stub.activity['openai/gpt-4o-mini'] = {'model': 'openai/gpt-4o-mini', 'status': 'idle'}
+        stub.activity['ollama/tiny'] = {'model': 'ollama/tiny', 'status': 'idle'}
+        with urlopen(self.site_url + '/problems/core/1/lemma-one') as response:
+            page = response.read().decode()
+        self.assertIn('value="openai/gpt-4o-mini"', page)
+        self.assertNotIn('value="ollama/tiny"', page)
+
     def test_refuse_coordinator_database(self):
         other = self.db.parent / 'other.db'
         with sqlite3.connect(other) as db:
@@ -274,7 +305,7 @@ class SiteTests(unittest.TestCase):
         stub, url = self.stub()
         self.settings.select(url)
         self.settings.add_model('ollama/a', 'Local', 'Ollama', 'On this device')
-        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle'}
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle', 'ready': True}
         with urlopen(self.site_url + '/problems') as response:
             listing = response.read().decode()
         self.assertIn('&lt;Lemma&gt;', listing)

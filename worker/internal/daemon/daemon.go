@@ -217,6 +217,16 @@ type Executor interface {
 	Execute(context.Context, Job) (Execution, error)
 }
 
+// Health is deliberately coarse: never send provider URLs or credentials.
+type Health struct {
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type HealthChecker interface {
+	Health(context.Context) Health
+}
+
 type Worker struct {
 	URL                        string
 	ID                         string
@@ -437,6 +447,9 @@ func (w *Worker) Once(ctx context.Context) (bool, error) {
 	claim := map[string]any{"worker_id": w.ID, "models": []string{w.Model}}
 	if w.SupportsGenerationSettings {
 		claim["capabilities"] = []string{"generation_settings"}
+	}
+	if checker, ok := w.Executor.(HealthChecker); ok {
+		claim["provider_health"] = checker.Health(ctx)
 	}
 	code, err := w.post(ctx, "/v1/claim", claim, &raw)
 	if err != nil {

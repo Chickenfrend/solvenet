@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,8 @@ import (
 
 const maxOllamaResponse = 1024 * 1024
 const ollamaDigestTimeout = 200 * time.Millisecond
+const ollamaHealthTimeout = 800 * time.Millisecond
+const ollamaHealthRetry = 10 * time.Second
 
 const DefaultOllamaContext = 4096
 const MaxOllamaContext = 1024 * 1024
@@ -33,6 +36,9 @@ type Ollama struct {
 	Model       string
 	ContextSize int
 	Client      *http.Client
+	healthMu    sync.Mutex
+	healthUntil time.Time
+	health      daemon.Health
 }
 
 func NewOllama(baseURL, model string, contextSize int) (*Ollama, error) {
@@ -48,6 +54,62 @@ func NewOllama(baseURL, model string, contextSize int) (*Ollama, error) {
 	}
 	return &Ollama{URL: strings.TrimRight(baseURL, "/"), Model: model, ContextSize: contextSize,
 		Client: &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+// Health checks both service reachability and installation of this model.
+// Only fixed reasons cross the worker/coordinator boundary.
+func (o *Ollama) Health(ctx context.Context) daemon.Health {
+	o.healthMu.Lock()
+	defer o.healthMu.Unlock()
+	if time.Now().Before(o.healthUntil) {
+		return o.health
+	}
+	o.health = o.checkHealth(ctx)
+	// An unavailable provider should not be probed on every claim.
+	o.healthUntil = time.Now().Add(ollamaHealthRetry)
+	return o.health
+}
+
+func (o *Ollama) invalidateHealth() {
+	o.healthMu.Lock()
+	o.healthUntil = time.Time{}
+	o.healthMu.Unlock()
+}
+
+func (o *Ollama) checkHealth(ctx context.Context) daemon.Health {
+	bad := func(reason string) daemon.Health { return daemon.Health{Status: "unavailable", Reason: reason} }
+	checkCtx, cancel := context.WithTimeout(ctx, ollamaHealthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(checkCtx, "GET", o.URL+"/api/tags", nil)
+	if err != nil {
+		return bad("Ollama service unreachable")
+	}
+	resp, err := o.Client.Do(req)
+	if err != nil {
+		return bad("Ollama service unreachable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return bad("Ollama service unavailable")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxOllamaResponse+1))
+	if err != nil || len(data) > maxOllamaResponse {
+		return bad("Ollama model list unavailable")
+	}
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(data, &tags) != nil || tags.Models == nil {
+		return bad("Ollama model list unavailable")
+	}
+	for _, model := range tags.Models {
+		if model.Name == o.Model || (strings.TrimSuffix(model.Name, ":latest") == o.Model && !strings.Contains(o.Model, ":")) {
+			return daemon.Health{Status: "ready"}
+		}
+	}
+	return bad("Ollama model not installed")
 }
 
 func rawGeneration(raw string) *daemon.Generation {
@@ -114,6 +176,7 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		if ctx.Err() != nil {
 			return execution, providerFailure(ctx.Err())
 		}
+		o.invalidateHealth()
 		return execution, providerFailure(daemon.Transient(fmt.Errorf("Ollama request failed (check local service)")))
 	}
 	defer response.Body.Close()
@@ -124,12 +187,14 @@ func (o *Ollama) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		if ctx.Err() != nil {
 			return execution, providerFailure(ctx.Err())
 		}
+		o.invalidateHealth()
 		return execution, providerFailure(daemon.Transient(fmt.Errorf("reading Ollama response: %w", readErr)))
 	}
 	if len(data) > maxOllamaResponse {
 		return execution, providerFailure(daemon.Permanent(fmt.Errorf("Ollama response exceeded 1 MiB")))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		o.invalidateHealth()
 		err := fmt.Errorf("Ollama HTTP %d (check service and installed model %q); response retained in generation.raw_response", response.StatusCode, o.Model)
 		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
 			return execution, providerFailure(daemon.Transient(err))

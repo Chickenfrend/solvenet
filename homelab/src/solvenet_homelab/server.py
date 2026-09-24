@@ -3,6 +3,7 @@
 import argparse
 import hmac
 import secrets
+from datetime import datetime, timezone
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
@@ -14,7 +15,41 @@ from .settings import LOCATIONS, Settings
 from . import layout, problems, runs as run_pages
 
 
-def render(url, models, catalog, runs, error=None, activity=None):
+def model_cards(models, activity, titles=None):
+    def text(value):
+        return escape(str(value), quote=True)
+    activity = activity or {}
+    titles = titles or {}
+    cards = []
+    for model_id, name, provider, location in sorted(
+            models, key=lambda row: (row[3] != 'On this device' or row[2].casefold() != 'ollama',
+                                     row[1].casefold(), row[0])):
+        signal = activity.get(model_id, {})
+        status = signal.get('status', 'unknown')
+        if status == 'working':
+            run_id = signal['run_id']
+            title = titles.get(model_id)
+            label = f'Working on {text(title)}' if title else f'Working on job {text(signal["job_id"])}'
+            state = f'{label}<br><a href="/runs/{text(run_id)}">View run</a>' if problems.RUN_ID.fullmatch(run_id) else label
+        elif status == 'idle':
+            state = 'Idle — ready' if signal.get('ready') is True else 'Idle — provider health unobserved'
+        elif status == 'unavailable':
+            state = f'Provider unavailable — {text(signal.get("reason") or "Check the worker provider")}'
+        elif status == 'offline':
+            state = 'Offline/stale — worker signal is stale'
+        else:
+            state = 'Configured but unobserved — no worker signal'
+        cards.append(f'''<article class="model-card"><h2>{text(name)}</h2>
+<span class="location">{text(location)}</span><p class="provider">{text(provider)}</p>
+<p class="status">{state}</p><p class="model-id">Model ID: {text(model_id)}</p></article>''')
+    configured = ''.join(cards) or '<p class="empty">No models configured yet. Add a model to see its status here.</p>'
+    checked = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    return (f'<section id="model-activity" hx-get="/models/activity" hx-trigger="every 10s" '
+            f'hx-swap="outerHTML"><div class="grid">{configured}</div>'
+            f'<p class="muted">Last checked: <time>{checked}</time> · <a href="/">Refresh status</a></p></section>')
+
+
+def render(url, models, catalog, runs, error=None, activity=None, titles=None):
     def text(value):
         return escape(str(value), quote=True)
 
@@ -26,31 +61,39 @@ def render(url, models, catalog, runs, error=None, activity=None):
         recent = ''.join(f'<li>Run {text(row["run_id"])} — {text(row["status"])}</li>' for row in runs)
         overview = (f'<h3>Fixture sets</h3><ul>{sets or "<li>No fixture sets available.</li>"}</ul>'
                     f'<h3>Recent runs</h3><ul>{recent or "<li>No recent runs.</li>"}</ul>')
-    activity = activity or {}
-    cards = []
-    for model_id, name, provider, location in sorted(
-            models, key=lambda row: (row[3] != 'On this device' or row[2].casefold() != 'ollama',
-                                     row[1].casefold(), row[0])):
-        signal = activity.get(model_id, {})
-        status = signal.get('status', 'unknown')
-        if status == 'working':
-            state = f'Working on job {text(signal["job_id"])} (run {text(signal["run_id"])})'
-        elif status == 'idle':
-            state = 'Idle — worker recently checked in'
-        elif status == 'offline':
-            state = 'Offline — worker signal is stale'
-        else:
-            state = 'Unknown — configured; no worker signal'
-        cards.append(f'''<article class="model-card"><span class="location">{text(location)}</span>
-<h2>{text(name)}</h2><p class="provider">{text(provider)}</p>
-<p class="status">{state}</p><p class="model-id">Model ID: {text(model_id)}</p></article>''')
-    configured = ''.join(cards) or '<p class="empty">No models configured yet. Add a model to see its status here.</p>'
     return layout.page('Models',
                        '<p class="lede">Configured models and worker activity.</p>'
                        f'<p class="selected">Selected coordinator: {text(url)}</p>'
-                       f'<p><a href="/">Refresh status</a></p><div class="grid">{configured}</div>'
+                       f'{model_cards(models, activity, titles)}'
                        f'<section class="panel overview"><h2>Coordinator activity</h2>{overview}</section>',
-                       section='Models')
+                       section='Models', htmx=True)
+
+
+def fixture_titles(client, activity):
+    titles = {}
+    cache = {}
+    for model, signal in activity.items():
+        if signal.get('status') != 'working':
+            continue
+        key = (signal.get('fixture_set_id'), signal.get('fixture_version'), signal.get('fixture_problem_id'))
+        if (not isinstance(key[0], str) or not problems.ID.fullmatch(key[0])
+                or type(key[1]) is not int or not isinstance(key[2], str)
+                or not problems.ID.fullmatch(key[2])):
+            continue
+        if key not in cache:
+            try:
+                cache[key] = client.problem(*key)['title']
+            except (CoordinatorOffline, CoordinatorInvalid):
+                cache[key] = None
+        titles[model] = cache[key]
+    return titles
+
+
+def selectable_model(model, activity):
+    model_id = model[0]
+    signal = activity.get(model_id, {})
+    return (signal.get('status') == 'working' or signal.get('ready') is True
+            or (signal.get('status') == 'idle' and not model_id.startswith('ollama/')))
 
 
 def make_server(settings, address, timeout=2):
@@ -93,12 +136,20 @@ def make_server(settings, address, timeout=2):
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            if path != '/' and path != '/problems' and not path.startswith('/problems/') and not path.startswith('/runs/'):
+            if path not in ('/', '/models/activity', '/problems') and not path.startswith('/problems/') and not path.startswith('/runs/'):
                 self.send_error(404)
                 return
             url = settings.selected()
             models = settings.models(url)
             client = Client(url, timeout)
+            if path == '/models/activity':
+                try:
+                    activity = client.model_activity([row[0] for row in models])
+                    body = model_cards(models, activity, fixture_titles(client, activity))
+                except (CoordinatorOffline, CoordinatorInvalid):
+                    body = model_cards(models, {})
+                    body = body.replace('<div class="grid">', '<p role="alert">Coordinator activity unavailable. Refresh to retry.</p><div class="grid">', 1)
+                return self.send_page(body)
             if path != '/':
                 parts = path.strip('/').split('/')
                 if parts[0] == 'runs' and len(parts) in (2, 3) and problems.RUN_ID.fullmatch(parts[1]) and (len(parts) == 2 or parts[2] == 'status'):
@@ -142,7 +193,7 @@ def make_server(settings, address, timeout=2):
                     fixture = client.problem(parts[1], int(parts[2]), parts[3])
                     runs = client.overview()[1]
                     activity = client.model_activity([m[0] for m in models])
-                    available = [m for m in models if activity.get(m[0], {}).get('status') in ('working', 'idle')]
+                    available = [m for m in models if selectable_model(m, activity)]
                     cookie, new_cookie = self.csrf_cookie()
                     return self.send_page(problems.detail(fixture, fixture, available, runs,
                                                           self.token(cookie)), cookie=new_cookie)
@@ -157,7 +208,7 @@ def make_server(settings, address, timeout=2):
                 activity = client.model_activity([row[0] for row in models]) if error is None else {}
             except (CoordinatorOffline, CoordinatorInvalid):
                 activity = {}
-            self.send_page(render(url, models, catalog, runs, error, activity))
+            self.send_page(render(url, models, catalog, runs, error, activity, fixture_titles(client, activity)))
 
         def do_POST(self):
             parts = urlsplit(self.path).path.strip('/').split('/')
@@ -188,7 +239,7 @@ def make_server(settings, address, timeout=2):
             try:
                 fixture = client.problem(parts[1], int(parts[2]), parts[3])
                 activity = client.model_activity([m[0] for m in models])
-                available = [m for m in models if activity.get(m[0], {}).get('status') in ('working', 'idle')]
+                available = [m for m in models if selectable_model(m, activity)]
                 values = problems.validate(fields, {m[0] for m in available})
                 payload = {'set_id': parts[1], 'version': int(parts[2]), 'sha256': fixture['sha256'],
                            'problem_id': parts[3], 'model': values['model'], 'attempts': values['attempts'],

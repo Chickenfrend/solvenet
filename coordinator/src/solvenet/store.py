@@ -130,6 +130,12 @@ ALTER TABLE runs ADD COLUMN fixture_sha256 TEXT;
 PRAGMA user_version = 11;
 """
 
+MIGRATION_12 = """
+ALTER TABLE worker_presence ADD COLUMN health TEXT NOT NULL DEFAULT 'unobserved';
+ALTER TABLE worker_presence ADD COLUMN reason TEXT;
+PRAGMA user_version = 12;
+"""
+
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 120
 MAX_REPAIR_DIAGNOSTICS_BYTES = 8 * 1024
 DEFAULT_INITIAL_ATTEMPTS = 3
@@ -248,7 +254,10 @@ class Store:
             if version == 10:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_11 + "COMMIT;")
                 version = 11
-            if version != 11:
+            if version == 11:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_12 + "COMMIT;")
+                version = 12
+            if version != 12:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -500,14 +509,18 @@ class Store:
         with self.transaction() as db:
             self._expire(db)
 
-    def claim(self, worker_id, models, *, supports_generation_settings=False):
+    def claim(self, worker_id, models, *, supports_generation_settings=False, provider_health=None):
         with self.transaction() as db:
             self._expire(db)
             now = self.clock()
             for model in set(models):
-                db.execute("""INSERT INTO worker_presence VALUES (?, ?, ?)
-                    ON CONFLICT(worker_id, model) DO UPDATE SET seen_at=excluded.seen_at""",
-                           (worker_id, model, now))
+                health = provider_health if provider_health is not None else {'status': 'unobserved'}
+                db.execute("""INSERT INTO worker_presence (worker_id, model, seen_at, health, reason)
+                    VALUES (?, ?, ?, ?, ?) ON CONFLICT(worker_id, model) DO UPDATE SET
+                    seen_at=excluded.seen_at, health=excluded.health, reason=excluded.reason""",
+                           (worker_id, model, now, health['status'], health.get('reason')))
+            if provider_health is not None and provider_health['status'] == 'unavailable':
+                return None
             if not models:
                 return None
             placeholders = ','.join('?' for _ in models)
@@ -566,21 +579,31 @@ class Store:
         with self.connect() as db:
             items = []
             for model in models:
-                workers = db.execute("SELECT worker_id, seen_at FROM worker_presence WHERE model=?", (model,)).fetchall()
+                workers = db.execute("SELECT * FROM worker_presence WHERE model=?", (model,)).fetchall()
                 live = [w for w in workers if w['seen_at'] > cutoff]
                 active = None
                 for worker in live:
-                    active = db.execute("""SELECT j.id AS job_id, j.run_id FROM assignments a
-                        JOIN jobs j ON j.id=a.job_id WHERE a.worker_id=? AND j.model=?
+                    active = db.execute("""SELECT j.id AS job_id, j.run_id,
+                        r.fixture_set_id, r.fixture_version, r.fixture_problem_id FROM assignments a
+                        JOIN jobs j ON j.id=a.job_id JOIN runs r ON r.id=j.run_id WHERE a.worker_id=? AND j.model=?
                         AND a.status='active' AND a.expires>? ORDER BY a.rowid DESC LIMIT 1""",
                         (worker['worker_id'], model, now)).fetchone()
                     if active:
                         break
                 if active:
                     items.append({'model': model, 'status': 'working', 'job_id': active['job_id'],
-                                  'run_id': active['run_id']})
+                                   'run_id': active['run_id'],
+                                   'fixture_set_id': active['fixture_set_id'],
+                                   'fixture_version': active['fixture_version'],
+                                   'fixture_problem_id': active['fixture_problem_id']})
                 elif live:
-                    items.append({'model': model, 'status': 'idle'})
+                    if any(w['health'] == 'ready' for w in live):
+                        items.append({'model': model, 'status': 'idle', 'ready': True})
+                    elif any(w['health'] == 'unobserved' for w in live):
+                        items.append({'model': model, 'status': 'idle'})
+                    else:
+                        items.append({'model': model, 'status': 'unavailable',
+                                      'reason': next((w['reason'] for w in live if w['reason']), 'Provider could not be reached')})
                 elif workers:
                     items.append({'model': model, 'status': 'offline'})
                 else:

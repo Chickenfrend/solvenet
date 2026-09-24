@@ -205,7 +205,7 @@ class RepairTests(unittest.TestCase):
             {'model': 'scripted', 'count': 1, 'max_output_tokens': 256}])
         self.assertEqual([attempt['id'] for attempt in run['attempts']], ['t0', 't1'])
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 12)
             self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
             indexes = {row['name'] for row in db.execute("PRAGMA index_list('jobs')")}
             self.assertIn('jobs_status', indexes)

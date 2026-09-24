@@ -222,6 +222,25 @@ class BrowseTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'idle'])
         self.assertEqual(self.get('/v1/model-activity?model=ollama%2Fa&model=ollama%2Fa')[0], 400)
 
+    def test_provider_health_prevents_claim_and_recovers_with_legacy_worker(self):
+        self.store.submit(': True', ['Init'], model='ollama/test', attempts=1)
+        def claim(worker, health=None):
+            payload = {'worker_id': worker, 'models': ['ollama/test']}
+            if health is not None:
+                payload['provider_health'] = health
+            with urlopen(Request(self.url + '/v1/claim', json.dumps(payload).encode(),
+                                 {'Content-Type': 'application/json'})) as response:
+                return response.status
+        def activity():
+            return self.get('/v1/model-activity?model=ollama%2Ftest')[1]['items'][0]
+        self.assertEqual(claim('worker', {'status': 'unavailable', 'reason': 'Ollama service unreachable'}), 204)
+        self.assertEqual(activity()['status'], 'unavailable')
+        self.assertEqual(activity()['reason'], 'Ollama service unreachable')
+        self.assertEqual(claim('worker', {'status': 'ready'}), 200)
+        self.assertEqual(activity()['status'], 'working')
+        self.assertEqual(claim('older-worker'), 204)
+        self.assertNotIn('ready', activity())
+
 
 if __name__ == '__main__':
     unittest.main()

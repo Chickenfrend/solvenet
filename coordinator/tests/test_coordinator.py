@@ -418,7 +418,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 12)
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
@@ -806,10 +806,69 @@ class APITests(unittest.TestCase):
             outcome['assignments'][0]['rejection_kind'], 'malformed_assignment')
 
     @unittest.skipUnless(shutil.which('go'), 'Go required')
+    def test_go_ollama_unavailable_does_not_claim_and_recovers(self):
+        available = False
+
+        class OllamaHandler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                self.assertEqual(handler.path, '/api/tags')
+                body = (b'{"models":[{"name":"test:7b"}]}' if available else b'{"models":[]}')
+                handler.send_response(200)
+                handler.send_header('Content-Length', str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
+            def do_POST(handler):
+                self.assertTrue(available)
+                handler.rfile.read(int(handler.headers['Content-Length']))
+                body = json.dumps({'done': True, 'message': {'content': '{"proof":"rfl"}'}}).encode()
+                handler.send_response(200)
+                handler.send_header('Content-Length', str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
+        ollama = ThreadingHTTPServer(('127.0.0.1', 0), OllamaHandler)
+        thread = threading.Thread(target=ollama.serve_forever)
+        thread.start()
+        try:
+            self.coordinator.verifier = FakeVerifier()
+            _, submitted = self.request('/v1/runs', {'statement': ': True', 'attempts': 1,
+                                                     'model': 'ollama/test:7b', 'max_output_tokens': 64})
+
+            def worker():
+                subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url,
+                                '-provider', 'ollama', '-model', 'test:7b', '-ollama-url',
+                                f'http://127.0.0.1:{ollama.server_port}', '-once'],
+                               cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True)
+
+            worker()
+            run_id = submitted['run_id']
+            self.assertEqual(self.request('/v1/runs/' + run_id)[1]['assignments'], [])
+            activity = self.request('/v1/model-activity?model=ollama%2Ftest%3A7b')[1]['items'][0]
+            self.assertEqual(activity['status'], 'unavailable')
+            self.assertEqual(activity['reason'], 'Ollama model not installed')
+            available = True
+            worker()
+            self.coordinator.tick()
+            self.assertEqual(self.request('/v1/runs/' + run_id)[1]['status'], 'solved')
+        finally:
+            ollama.shutdown()
+            thread.join()
+            ollama.server_close()
+
+    @unittest.skipUnless(shutil.which('go'), 'Go required')
     def test_go_ollama_worker_success_and_format_failure(self):
         replies = [json.dumps({'proof': '```lean\nrfl\n```'}), json.dumps({'proof': 'refl'}), 'not valid JSON']
 
         class OllamaHandler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                self.assertEqual(handler.path, '/api/tags')
+                body = b'{"models":[{"name":"test:7b"}]}'
+                handler.send_response(200)
+                handler.send_header('Content-Length', str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
             def do_POST(handler):
                 self.assertEqual(handler.path, '/api/chat')
                 request = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
@@ -913,6 +972,14 @@ class APITests(unittest.TestCase):
         requests = []
 
         class OllamaHandler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                self.assertEqual(handler.path, '/api/tags')
+                body = b'{"models":[{"name":"test:7b"}]}'
+                handler.send_response(200)
+                handler.send_header('Content-Length', str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
             def do_POST(handler):
                 request = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
                 requests.append(request)
