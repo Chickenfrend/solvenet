@@ -6,11 +6,12 @@ import secrets
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
+from importlib.resources import files
 from urllib.parse import urlsplit, parse_qs
 
 from .client import Client, CoordinatorInvalid, CoordinatorOffline
 from .settings import LOCATIONS, Settings
-from . import problems
+from . import problems, runs as run_pages
 
 
 def render(url, models, catalog, runs, error=None, activity=None):
@@ -103,6 +104,14 @@ def make_server(settings, address, timeout=2):
 
         def do_GET(self):
             path = urlsplit(self.path).path
+            if path == '/static/htmx.min.js':
+                body = files('solvenet_homelab').joinpath('static/htmx.min.js').read_bytes()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/javascript; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path != '/' and path != '/problems' and not path.startswith('/problems/') and not path.startswith('/runs/'):
                 self.send_error(404)
                 return
@@ -111,13 +120,15 @@ def make_server(settings, address, timeout=2):
             client = Client(url, timeout)
             if path != '/':
                 parts = path.strip('/').split('/')
-                if parts[0] == 'runs' and len(parts) == 2 and problems.RUN_ID.fullmatch(parts[1]):
+                if parts[0] == 'runs' and len(parts) in (2, 3) and problems.RUN_ID.fullmatch(parts[1]) and (len(parts) == 2 or parts[2] == 'status'):
                     try:
-                        run = client.run(parts[1])
-                        body = problems.page('Run started', f'<p><a href="/runs/{parts[1]}">Run {parts[1]}</a> — {escape(str(run["status"]))}</p>'
-                                             '<p>Refresh this page to check status.</p>')
+                        run = client.run_status(parts[1]) if len(parts) == 3 else client.run(parts[1])
+                        body = run_pages.summary(run) if len(parts) == 3 else run_pages.detail(run)
                     except (CoordinatorOffline, CoordinatorInvalid) as exc:
-                        body = problems.page('Run', f'<p role="alert">{escape(str(exc))}. Refresh to retry.</p>')
+                        message = f'<p role="alert">{escape(str(exc))}. Refresh to retry.</p>'
+                        body = (f'<section id="run-status" hx-get="/runs/{parts[1]}/status" '
+                                f'hx-trigger="every 5s" hx-swap="outerHTML">{message}</section>'
+                                if len(parts) == 3 else problems.page('Run', message))
                     return self.send_page(body)
                 if path == '/problems':
                     try:

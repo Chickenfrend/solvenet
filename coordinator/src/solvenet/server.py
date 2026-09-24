@@ -378,6 +378,11 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     run = coordinator.store.run(parts[2])
                     return self.respond(200 if run else 404,
                                         run or {'error': 'Unknown run'})
+                if (len(parts) == 4 and parts[:2] == ['v1', 'runs']
+                        and self.identifier(parts[2]) and parts[3] == 'status'):
+                    status = coordinator.store.run_status(parts[2])
+                    return self.respond(200 if status else 404,
+                                        status or {'error': 'Unknown run'})
                 if (len(parts) == 3 and parts[:2] == ['v1', 'experiments']
                         and self.identifier(parts[2])):
                     experiment = coordinator.store.experiment(parts[2])

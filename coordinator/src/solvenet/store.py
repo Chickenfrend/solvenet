@@ -679,6 +679,22 @@ class Store:
                                  job['generation_timeout_seconds'], job['generation_settings']))
             self._refresh(db)
 
+    def run_status(self, run_id):
+        """Compact snapshot for polling; do not load candidate text or diagnostics."""
+        with self.connect() as db:
+            db.execute('BEGIN')
+            row = db.execute('SELECT status FROM runs WHERE id=?', (run_id,)).fetchone()
+            if row is None:
+                return None
+            jobs = db.execute('SELECT count(*) FROM jobs WHERE run_id=?', (run_id,)).fetchone()[0]
+            assignments = db.execute('''SELECT count(*) FROM assignments a
+                JOIN jobs j ON j.id=a.job_id WHERE j.run_id=?''', (run_id,)).fetchone()[0]
+            attempts = db.execute('''SELECT count(*) FROM attempts t
+                JOIN assignments a ON a.id=t.assignment_id
+                JOIN jobs j ON j.id=a.job_id WHERE j.run_id=?''', (run_id,)).fetchone()[0]
+            return {'id': run_id, 'status': row['status'], 'jobs': jobs,
+                    'assignments': assignments, 'attempts': attempts}
+
     def run(self, run_id):
         with self.connect() as db:
             db.execute('BEGIN')  # one consistent snapshot across run and detail queries

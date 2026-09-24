@@ -24,13 +24,13 @@ class Client:
         self.origin = origin
         self.timeout = timeout
 
-    def get(self, path, required):
+    def get(self, path, required, max_bytes=256 * 1024):
         request = Request(self.origin + path, headers={'Accept': 'application/json'})
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 if response.headers.get_content_type() != 'application/json':
                     raise CoordinatorInvalid('Coordinator returned an invalid response')
-                raw = response.read(256 * 1024 + 1)
+                raw = response.read(max_bytes + 1)
         except HTTPError as error:
             error.close()
             if error.code < 500:
@@ -38,7 +38,7 @@ class Client:
             raise CoordinatorOffline('Coordinator is unavailable') from error
         except (HTTPException, URLError, TimeoutError, OSError) as error:
             raise CoordinatorOffline('Coordinator is unavailable') from error
-        if len(raw) > 256 * 1024:
+        if len(raw) > max_bytes:
             raise CoordinatorInvalid('Coordinator returned an invalid response')
         try:
             result = json.loads(raw)
@@ -112,7 +112,29 @@ class Client:
         return result
 
     def run(self, run_id):
-        return self.get('/v1/runs/' + quote(run_id, safe=''), ('id', 'status'))
+        result = self.get('/v1/runs/' + quote(run_id, safe=''),
+                          ('id', 'status', 'jobs', 'assignments', 'attempts'), 8 * 1024 * 1024)
+        if (result['id'] != run_id or result['status'] not in ('running', 'solved', 'exhausted', 'error')
+                or any(not isinstance(result[key], list) or
+                       any(not isinstance(row, dict) for row in result[key])
+                       for key in ('jobs', 'assignments', 'attempts'))
+                or any(not isinstance(row.get('id'), str) or not row['id']
+                       for key in ('jobs', 'assignments', 'attempts') for row in result[key])
+                or any(not isinstance(row.get('candidate'), str) or
+                       (row.get('diagnostics') is not None and not isinstance(row['diagnostics'], str)) or
+                       not isinstance(row.get('usage'), dict)
+                       for row in result['attempts'])):
+            raise CoordinatorInvalid('Coordinator returned an invalid response')
+        return result
+
+    def run_status(self, run_id):
+        result = self.get('/v1/runs/' + quote(run_id, safe='') + '/status',
+                          ('id', 'status', 'jobs', 'assignments', 'attempts'))
+        if (result['id'] != run_id or result['status'] not in ('running', 'solved', 'exhausted', 'error')
+                or any(type(result[key]) is not int or result[key] < 0
+                       for key in ('jobs', 'assignments', 'attempts'))):
+            raise CoordinatorInvalid('Coordinator returned an invalid response')
+        return result
 
     def start_fixture_run(self, payload):
         request = Request(self.origin + '/v1/fixture-runs', data=json.dumps(payload).encode(),

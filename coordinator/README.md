@@ -36,6 +36,11 @@ fixture and experiment fields are null for ad hoc runs. Experiment rows contain
 `GET /v1/experiments/{id}` for full detail. Invalid pagination returns 400.
 These list responses omit candidates, raw generations, and diagnostics.
 
+`GET /v1/runs/{run_id}/status` returns the run ID, status and counts of jobs,
+assignments and candidate attempts, without loading candidate text or Lean
+diagnostics. It is suitable for active-run status polling; fetch the existing
+run detail endpoint to inspect newly generated candidates.
+
 `GET /v1/model-activity?model=ollama%2Fmodel-a` accepts up to 32 repeated
 `model` query parameters and reports `working` (with job/run IDs only when an
 unexpired lease and recent worker contact exist), `idle` (recent contact with

@@ -1,4 +1,4 @@
-# Private homelab service (H2–H4)
+# Private homelab service (H2–H5)
 
 The homelab site is a separate Python process and keeps only local operator
 settings in its own SQLite database. Models and Problems read fixture sets,
@@ -31,12 +31,20 @@ Unknown rather than inventing activity. Refresh the page to update the status.
 The Problems link opens a vertical fixture list. On a problem detail page you can
 choose a configured model with a recent worker signal (Idle or Working), an
 independent or repair strategy, initial chains, output tokens and generation
-timeout. A successful form redirects to a run confirmation link. The coordinator
+timeout. A successful form redirects to the run detail page. The coordinator
 `POST /v1/fixture-runs` records the checked-in fixture identity for exactly one
 problem; it rejects changed fixture hashes. The form and coordinator never send
 the fixture's validation-only reference proof to workers. Form submissions use
 a server-validated CSRF token and strict same-site cookie.
-Full candidate/verification inspection follows in H5.
+The run page distinguishes jobs, leased assignments and completed candidate
+attempts. It shows repair ancestry, complete candidate proofs, Lean diagnostics
+and reported token usage (unreported values are Unknown). Refresh the page to
+inspect newly completed work. While a run is active, a locally bundled HTMX
+script refreshes only the status/counts summary every five seconds using the
+compact run-status API; polling stops when the run is terminal and retries
+after a temporary coordinator outage. Navigation and manual
+refresh work without JavaScript. The site does not poll `/ready`.
+The bundled HTMX 2.0.8 license is in `src/solvenet_homelab/static/htmx-LICENSE`.
 Coordinator history stays on the
 coordinator; switching origins immediately changes API-backed data and never
 copies it into the site database.

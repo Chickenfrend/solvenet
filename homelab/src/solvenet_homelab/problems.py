@@ -13,19 +13,22 @@ def url(set_id, version, problem_id):
     return f'/problems/{quote(set_id, safe="")}/{version}/{quote(problem_id, safe="")}'
 
 
-def page(title, content):
+def page(title, content, htmx=False):
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)} · SolveNet</title><style>
 * {{ box-sizing: border-box }} body {{ max-width: 55rem; margin: auto; padding: 1.25rem;
 background: #171717; color: #fafafa; font: 1rem/1.5 system-ui,sans-serif; overflow-wrap: anywhere }}
 a {{ color: #ffbd72; min-height: 2.75rem; display: inline-flex; align-items: center }}
-h1,h2 {{ color: #ffac52 }} article,form {{ border: 1px solid #ed912c; border-radius: .75rem;
-padding: 1rem; margin: 1rem 0 }} pre {{ white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto }}
+ h1,h2 {{ color: #ffac52 }} article,form,#run-status {{ border: 1px solid #ed912c; border-radius: .75rem;
+ padding: 1rem; margin: 1rem 0; min-width: 0 }} pre {{ white-space: pre-wrap; overflow-wrap: anywhere;
+ overflow-x: auto; max-width: 100%; min-width: 0 }} .usage {{ display: grid; gap: .25rem }}
+ .usage div {{ display: flex; flex-wrap: wrap; gap: .5rem; min-width: 0 }} .usage dt {{ font-weight: 700 }}
+ .usage dd {{ margin: 0; min-width: 0; overflow-wrap: anywhere }}
 label {{ display: block; margin: .8rem 0 }} input,select,button {{ display: block; font: inherit;
 min-height: 2.75rem; max-width: 100%; width: 100%; padding: .35rem; }} button {{ background: #a94e00;
 color: white; border: 2px solid #ffb25e; cursor: pointer }} .error {{ border: 2px solid #ffb25e; padding: 1rem }}
-</style></head><body><nav><a href="/">Models</a> · <a href="/problems">Problems</a></nav>
+ </style>{'<script src="/static/htmx.min.js" defer></script>' if htmx else ''}</head><body><nav><a href="/">Models</a> · <a href="/problems">Problems</a></nav>
 <main><h1>{escape(title)}</h1>{content}</main></body></html>'''
 
 

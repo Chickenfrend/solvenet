@@ -11,5 +11,8 @@ requires-python = ">=3.11"
 [project.scripts]
 solvenet-homelab = "solvenet_homelab.server:main"
 
+[tool.setuptools.package-data]
+solvenet_homelab = ["static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

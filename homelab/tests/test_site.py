@@ -39,7 +39,11 @@ class Stub(BaseHTTPRequestHandler):
                                'imports': ['Init'], 'environment': 'Lean', 'sha256': 'a' * 64,
                                'reference_proof': 'SECRET_PROOF'}).encode()
         elif self.path == '/v1/runs/' + 'a' * 32:
-            body = b'{"id":"run","status":"running"}'
+            body = json.dumps(self.server.run_detail).encode()
+        elif self.path == '/v1/runs/' + 'a' * 32 + '/status':
+            run = self.server.run_detail
+            body = json.dumps({'id': run['id'], 'status': run['status'],
+                               **{key: len(run[key]) for key in ('jobs', 'assignments', 'attempts')}}).encode()
         else:
             self.send_error(404)
             return
@@ -88,6 +92,8 @@ class SiteTests(unittest.TestCase):
         server.post_status = 201
         server.paths = []
         server.submissions = []
+        server.run_detail = {'id': 'a' * 32, 'status': 'running', 'jobs': [],
+                             'assignments': [], 'attempts': []}
         self.start(server)
         return server, f'http://127.0.0.1:{server.server_port}'
 
@@ -277,7 +283,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(stub.submissions, [])
         status, html = post(values)
         self.assertEqual(status, 200)  # urllib follows the 303 to the confirmation page
-        self.assertIn('Run started', html)
+        self.assertIn('Run status: running', html)
         self.assertEqual(stub.submissions, [{'set_id': 'core', 'version': 1, 'sha256': 'a' * 64,
                                             'problem_id': 'lemma-one', 'model': 'ollama/a',
                                             'attempts': 2, 'max_output_tokens': 512,
@@ -300,6 +306,90 @@ class SiteTests(unittest.TestCase):
         status, html = post(values)
         self.assertEqual(status, 503)
         self.assertIn('Check the coordinator and retry', html)
+
+    def test_run_detail_solved_repairs_usage_and_escaped_large_text(self):
+        stub, url = self.stub()
+        self.settings.select(url)
+        payload = '<script>alert("x")</script>' + 'X' * 100000
+        parent = 'b' * 32
+        child = 'c' * 32
+        stub.run_detail = {
+            'id': 'a' * 32, 'status': 'solved', 'fixture_set_id': 'core',
+            'fixture_version': 1, 'fixture_problem_id': 'lemma-one',
+            'jobs': [{'id': 'd' * 32, 'status': 'completed', 'model': '<model>',
+                      'repair_depth': 0, 'parent_attempt_id': None},
+                     {'id': 'e' * 32, 'status': 'completed', 'model': 'local',
+                      'repair_depth': 1, 'parent_attempt_id': parent}],
+            'assignments': [{'id': 'f' * 32, 'job_id': 'd' * 32, 'worker_id': 'worker',
+                             'status': 'completed', 'usage': {'input_tokens': None}},
+                            {'id': '1' * 32, 'job_id': 'e' * 32, 'worker_id': 'worker',
+                             'status': 'completed', 'usage': {'output_tokens': 20}}],
+            'attempts': [{'id': parent, 'job_id': 'd' * 32, 'assignment_id': 'f' * 32,
+                          'parent_attempt_id': None, 'model': '<model>', 'candidate': payload,
+                          'verification_status': 'rejected', 'diagnostics': payload,
+                          'usage': {'input_tokens': None, 'output_tokens': 12,
+                                    '<metric>': None}},
+                         {'id': child, 'job_id': 'e' * 32, 'assignment_id': '1' * 32,
+                          'parent_attempt_id': parent, 'model': 'local', 'candidate': 'by trivial',
+                          'verification_status': 'verified', 'diagnostics': '', 'usage': {}}]}
+        with urlopen(self.site_url + '/runs/' + 'a' * 32) as response:
+            html = response.read().decode()
+        self.assertIn('Run status: solved', html)
+        self.assertIn('2 jobs · 2 leased assignments · 2 completed candidate attempts', html)
+        self.assertIn('Lean verification: verified', html)
+        self.assertIn('Lean verification: rejected', html)
+        self.assertIn('href="#attempt-' + parent + '"', html)
+        self.assertIn('href="/problems/core/1/lemma-one"', html)
+        self.assertIn(escape(payload), html)
+        self.assertNotIn('<script>alert', html)
+        self.assertIn('Input tokens</dt><dd>Unknown', html)
+        self.assertIn('Output tokens</dt><dd>12', html)
+        self.assertIn('&lt;metric&gt;</dt><dd>Unknown', html)
+        self.assertIn('max-width: 100%', html)
+        self.assertIn('overflow-wrap: anywhere', html)
+        self.assertIn('name="viewport"', html)
+        self.assertNotIn('hx-trigger=', html)
+        self.assertEqual(stub.paths, ['/v1/runs/' + 'a' * 32])
+
+    def test_run_polling_stops_on_terminal_and_manual_refresh_works_without_js(self):
+        stub, url = self.stub()
+        self.settings.select(url)
+        path = '/runs/' + 'a' * 32
+        with urlopen(self.site_url + path) as response:
+            html = response.read().decode()
+        self.assertIn('hx-get="' + path + '/status" hx-trigger="every 5s" hx-swap="outerHTML"', html)
+        self.assertIn('href="' + path + '">Refresh run details</a>', html)
+        self.assertIn('<script src="/static/htmx.min.js" defer></script>', html)
+        with urlopen(self.site_url + '/static/htmx.min.js') as response:
+            self.assertIn(b'htmx', response.read())
+        with urlopen(self.site_url + path + '/status') as response:
+            fragment = response.read().decode()
+        self.assertTrue(fragment.startswith('<section id="run-status"'))
+        self.assertIn('hx-trigger="every 5s"', fragment)
+        self.assertNotIn('<html', fragment)
+        stub.run_detail['status'] = 'exhausted'
+        stub.run_detail['jobs'] = [{'id': 'd' * 32, 'status': 'failed', 'repair_depth': 0}]
+        stub.run_detail['assignments'] = [{'id': 'e' * 32, 'job_id': 'd' * 32,
+                                           'status': 'failed', 'error': '<failure>', 'usage': {}}]
+        with urlopen(self.site_url + path + '/status') as response:
+            fragment = response.read().decode()
+        self.assertIn('Run status: exhausted', fragment)
+        self.assertNotIn('hx-trigger=', fragment)
+        with urlopen(self.site_url + path) as response:
+            html = response.read().decode()
+        self.assertIn('Job ' + 'd' * 32 + ' — failed', html)
+        self.assertIn('Failure: &lt;failure&gt;', html)
+        self.assertIn('No candidate attempts yet.', html)
+        self.assertNotIn('hx-trigger=', html)
+        self.assertEqual(stub.paths, ['/v1/runs/' + 'a' * 32,
+                                      '/v1/runs/' + 'a' * 32 + '/status',
+                                      '/v1/runs/' + 'a' * 32 + '/status',
+                                      '/v1/runs/' + 'a' * 32])
+        stub.shutdown()
+        with urlopen(self.site_url + path + '/status') as response:
+            fragment = response.read().decode()
+        self.assertIn('hx-trigger="every 5s"', fragment)
+        self.assertIn('unavailable', fragment)
 
 
 if __name__ == '__main__':

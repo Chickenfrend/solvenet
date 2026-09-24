@@ -55,6 +55,12 @@ class BrowseTests(unittest.TestCase):
         status, created = self.post('/v1/fixture-runs', payload)
         self.assertEqual(status, 201)
         detail = self.get('/v1/runs/' + created['run_id'])[1]
+        status, compact = self.get('/v1/runs/' + created['run_id'] + '/status')
+        self.assertEqual(status, 200)
+        self.assertEqual(compact, {'id': created['run_id'], 'status': 'running',
+                                   'jobs': 2, 'assignments': 0, 'attempts': 0})
+        self.assertNotIn(problem.reference_proof, json.dumps(compact))
+        self.assertEqual(self.get('/v1/runs/' + 'a' * 32 + '/status')[0], 404)
         self.assertEqual((detail['fixture_set_id'], detail['fixture_version'], detail['fixture_sha256'],
                           detail['fixture_problem_id']), (fixture.set_id, fixture.version, fixture.sha256, problem.id))
         self.assertEqual(detail['problem']['statement'], problem.statement)
