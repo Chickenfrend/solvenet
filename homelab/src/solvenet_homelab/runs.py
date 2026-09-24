@@ -41,7 +41,7 @@ def summary(run):
                '<p>Run finished. Refresh for the latest details.</p>') + '</section>')
 
 
-def detail(run):
+def detail(run, problem_title=None):
     e = text
     jobs = run['jobs']
     leases = run['assignments']
@@ -56,13 +56,13 @@ def detail(run):
             path = problems.url(run['fixture_set_id'], run['fixture_version'], run['fixture_problem_id'])
             fixture += f'<p><a href="{e(path)}">View problem</a></p>'
     job_html = ''.join(
-        f'<article id="job-{e(job["id"])}"><h3>Job {e(job["id"])} — {label(job.get("status"))}</h3>'
+        f'<article class="run-card" id="job-{e(job["id"])}"><h3>Job {e(job["id"])} — {label(job.get("status"))}</h3>'
         f'<p>Model: {label(job.get("model"))} · Repair depth: {label(job.get("repair_depth"))}</p>'
         + (f'<p>Repair of candidate attempt <a href="#attempt-{e(job["parent_attempt_id"])}">'
            f'{e(job["parent_attempt_id"])}</a></p>' if job.get('parent_attempt_id') else
            '<p>Initial job</p>') + '</article>' for job in jobs if 'id' in job)
     lease_html = ''.join(
-        f'<article><h3>Lease {e(lease["id"])} — {label(lease.get("status"))}</h3>'
+        f'<article class="run-card"><h3>Lease {e(lease["id"])} — {label(lease.get("status"))}</h3>'
         f'<p>Job <a href="#job-{e(lease.get("job_id"))}">{e(lease.get("job_id"))}</a>'
         f' · Worker: {label(lease.get("worker_id"))}</p>'
         + (f'<p>Failure: {e(lease["error"])}</p>' if lease.get('error') else '')
@@ -71,7 +71,7 @@ def detail(run):
         + '<h4>Reported usage</h4>' + usage(lease.get('usage')) + '</article>'
         for lease in leases if 'id' in lease)
     attempt_html = ''.join(
-        f'<article id="attempt-{e(attempt["id"])}"><h3>Candidate attempt {e(attempt["id"])}</h3>'
+        f'<article class="run-card" id="attempt-{e(attempt["id"])}"><h3>Candidate attempt {e(attempt["id"])}</h3>'
         f'<p>Job <a href="#job-{e(attempt.get("job_id"))}">{e(attempt.get("job_id"))}</a>'
         f' · Lease: {e(attempt.get("assignment_id"))} · Model: {label(attempt.get("model"))}</p>'
         + (f'<p>Repair of <a href="#attempt-{e(attempt["parent_attempt_id"])}">'
@@ -82,9 +82,11 @@ def detail(run):
         + '<h4>Lean diagnostics</h4>' + f'<pre>{e(attempt.get("diagnostics") or "No diagnostics reported")}</pre>'
         + '<h4>Reported usage</h4>' + usage(attempt.get('usage')) + '</article>'
         for attempt in attempts if 'id' in attempt)
-    return problems.page('Run ' + str(run['id']),
-                         f'<p><a href="/runs/{e(run["id"])}">Refresh run details</a></p>'
-                         + fixture + summary(run) + '<h2>Jobs (generation requests)</h2>'
+    return problems.page(problem_title or 'Run details',
+                          summary(run) + fixture
+                          + f'<p><a href="/runs/{e(run["id"])}">Refresh run details</a></p>'
+                          + f'<p class="selected">Run ID: {e(run["id"])}</p>'
+                          + '<h2>Jobs (generation requests)</h2>'
                          + (job_html or '<p>No jobs yet.</p>') + '<h2>Leased assignments (dispatches)</h2>'
                          + (lease_html or '<p>No leases yet.</p>')
                          + '<h2>Completed candidate attempts</h2>'

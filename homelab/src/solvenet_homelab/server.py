@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from .client import Client, CoordinatorInvalid, CoordinatorOffline
 from .settings import LOCATIONS, Settings
-from . import problems, runs as run_pages
+from . import layout, problems, runs as run_pages
 
 
 def render(url, models, catalog, runs, error=None, activity=None):
@@ -19,12 +19,13 @@ def render(url, models, catalog, runs, error=None, activity=None):
         return escape(str(value), quote=True)
 
     if error:
-        overview = f'<p role="status">{text(error)}. Check the selected coordinator and try refreshing.</p>'
+        overview = f'<p role="alert">{text(error)}. Check the selected coordinator and try refreshing.</p>'
     else:
         sets = ''.join(f'<li>{text(row["set_id"])} v{text(row["version"])} — {text(row["problem_count"])} problems</li>'
                        for row in catalog)
         recent = ''.join(f'<li>Run {text(row["run_id"])} — {text(row["status"])}</li>' for row in runs)
-        overview = (f'<h2>Fixture sets</h2><ul>{sets}</ul><h2>Recent runs</h2><ul>{recent}</ul>')
+        overview = (f'<h3>Fixture sets</h3><ul>{sets or "<li>No fixture sets available.</li>"}</ul>'
+                    f'<h3>Recent runs</h3><ul>{recent or "<li>No recent runs.</li>"}</ul>')
     activity = activity or {}
     cards = []
     for model_id, name, provider, location in sorted(
@@ -41,35 +42,15 @@ def render(url, models, catalog, runs, error=None, activity=None):
         else:
             state = 'Unknown — configured; no worker signal'
         cards.append(f'''<article class="model-card"><span class="location">{text(location)}</span>
-<h3>{text(name)}</h3><p class="provider">{text(provider)}</p>
+<h2>{text(name)}</h2><p class="provider">{text(provider)}</p>
 <p class="status">{state}</p><p class="model-id">Model ID: {text(model_id)}</p></article>''')
-    configured = ''.join(cards) or '<p>No models configured yet.</p>'
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Models · SolveNet</title><style>
-* {{ box-sizing: border-box }}
-body {{ max-width: 76rem; margin: 0 auto; padding: 1.25rem; background: #171717; color: #f8f8f8;
-font: 1rem/1.5 system-ui, sans-serif; overflow-wrap: anywhere }}
-h1, h2 {{ color: #ffac52 }} h1 {{ margin: 0 }}
-.top {{ display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem }}
-a {{ color: #ffbd72; min-height: 2.75rem; display: inline-flex; align-items: center }}
-.grid {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem }}
-.model-card, .overview {{ border: 1px solid #ed912c; border-radius: .75rem; padding: 1.25rem; min-width: 0 }}
-.model-card {{ display: flex; flex-direction: column; background: #222 }}
-.model-card h3 {{ font-size: 1.3rem; margin: 1rem 0 .15rem }}
-.model-card p {{ margin: .4rem 0 }}
-.location {{ align-self: flex-start; border: 2px solid #ffa44b; border-radius: .4rem;
-color: #fff; background: #513016; padding: .35rem .75rem; font-weight: 700 }}
-.status {{ font-weight: 650; margin-top: auto !important; padding-top: .75rem }}
-.model-id, .selected {{ color: #d8d8d8; font-size: .9rem }}
-.overview {{ margin-top: 2rem }} li {{ margin: .6rem 0 }}
-@media (min-width: 42rem) {{ .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)) }}
-.model-card {{ min-height: 17rem }} }}
-@media (min-width: 68rem) {{ .grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)) }} }}
-</style></head><body><header class="top"><h1>Models</h1><nav><a href="/problems">Problems</a> · <a href="/">Refresh status</a></nav></header>
-<p class="selected">Selected coordinator: {text(url)}</p>
-<main><div class="grid">{configured}</div>
-<section class="overview"><h2>Coordinator activity</h2>{overview}</section></main></body></html>'''
+    configured = ''.join(cards) or '<p class="empty">No models configured yet. Add a model to see its status here.</p>'
+    return layout.page('Models',
+                       '<p class="lede">Configured models and worker activity.</p>'
+                       f'<p class="selected">Selected coordinator: {text(url)}</p>'
+                       f'<p><a href="/">Refresh status</a></p><div class="grid">{configured}</div>'
+                       f'<section class="panel overview"><h2>Coordinator activity</h2>{overview}</section>',
+                       section='Models')
 
 
 def make_server(settings, address, timeout=2):
@@ -104,10 +85,10 @@ def make_server(settings, address, timeout=2):
 
         def do_GET(self):
             path = urlsplit(self.path).path
-            if path == '/static/htmx.min.js':
-                body = files('solvenet_homelab').joinpath('static/htmx.min.js').read_bytes()
+            if path in ('/static/htmx.min.js', '/static/site.css'):
+                body = files('solvenet_homelab').joinpath('static', path.rsplit('/', 1)[-1]).read_bytes()
                 self.send_response(200)
-                self.send_header('Content-Type', 'text/javascript; charset=utf-8')
+                self.send_header('Content-Type', 'text/css; charset=utf-8' if path.endswith('.css') else 'text/javascript; charset=utf-8')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -123,7 +104,18 @@ def make_server(settings, address, timeout=2):
                 if parts[0] == 'runs' and len(parts) in (2, 3) and problems.RUN_ID.fullmatch(parts[1]) and (len(parts) == 2 or parts[2] == 'status'):
                     try:
                         run = client.run_status(parts[1]) if len(parts) == 3 else client.run(parts[1])
-                        body = run_pages.summary(run) if len(parts) == 3 else run_pages.detail(run)
+                        if len(parts) == 3:
+                            body = run_pages.summary(run)
+                        else:
+                            title = None
+                            if (run.get('fixture_set_id') and type(run.get('fixture_version')) is int
+                                    and run.get('fixture_problem_id')):
+                                try:
+                                    title = client.problem(run['fixture_set_id'], run['fixture_version'],
+                                                           run['fixture_problem_id'])['title']
+                                except (CoordinatorOffline, CoordinatorInvalid):
+                                    pass  # The run remains inspectable if the catalog is unavailable.
+                            body = run_pages.detail(run, title)
                     except (CoordinatorOffline, CoordinatorInvalid) as exc:
                         message = f'<p role="alert">{escape(str(exc))}. Refresh to retry.</p>'
                         body = (f'<section id="run-status" hx-get="/runs/{parts[1]}/status" '

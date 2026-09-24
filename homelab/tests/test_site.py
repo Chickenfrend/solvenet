@@ -221,16 +221,41 @@ class SiteTests(unittest.TestCase):
         self.assertIn('Unknown — configured; no worker signal', html)
         self.assertLess(html.index('On this device'), html.index('Local network'))
         self.assertIn('name="viewport" content="width=device-width, initial-scale=1"', html)
-        self.assertIn('grid-template-columns: minmax(0, 1fr)', html)
-        self.assertIn('@media (min-width: 42rem)', html)
-        self.assertIn('min-width: 0', html)
-        self.assertIn('overflow-wrap: anywhere', html)
+        self.assertIn('href="/static/site.css"', html)
+        self.assertIn('<a href="/" aria-current="page">Models</a>', html)
+        self.assertIn('<a href="/problems">Problems</a>', html)
+        with urlopen(self.site_url + '/static/site.css') as response:
+            self.assertEqual(response.headers['Content-Type'], 'text/css; charset=utf-8')
+            css = response.read().decode()
+        self.assertIn('@media (min-width: 42rem)', css)
+        self.assertIn('grid-template-columns: minmax(0, 1fr)', css)
+        self.assertIn('overflow-wrap: anywhere', css)
+        self.assertIn(':focus-visible', css)
         stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle'}
         self.assertIn('Idle — worker recently checked in', self.page())
         stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'working', 'job_id': '<job>'}
         html = self.page()
         self.assertIn('Unknown — configured; no worker signal', html)
         self.assertNotIn('Working on job', html)
+
+    def test_shared_navigation_and_empty_states(self):
+        stub, url = self.stub(catalog=b'{"items":[]}', runs=b'{"items":[],"next_cursor":null}')
+        self.settings.select(url)
+        models = self.page()
+        self.assertIn('No models configured yet.', models)
+        self.assertIn('No fixture sets available.', models)
+        self.assertIn('No recent runs.', models)
+        self.assertIn('aria-current="page">Models</a>', models)
+        with urlopen(self.site_url + '/problems') as response:
+            listing = response.read().decode()
+        self.assertIn('No problems available.', listing)
+        self.assertIn('aria-current="page">Problems</a>', listing)
+        self.assertIn('href="/static/site.css"', listing)
+        self.assertNotIn('<style>', listing)
+        stub.shutdown()
+        self.assertIn('role="alert"', self.page())
+        with urlopen(self.site_url + '/problems') as response:
+            self.assertIn('role="alert"', response.read().decode())
 
     def test_refuse_coordinator_database(self):
         other = self.db.parent / 'other.db'
@@ -249,6 +274,8 @@ class SiteTests(unittest.TestCase):
         with urlopen(self.site_url + '/problems') as response:
             listing = response.read().decode()
         self.assertIn('&lt;Lemma&gt;', listing)
+        self.assertIn('<a href="/problems" aria-current="page">Problems</a>', listing)
+        self.assertIn('<a href="/">Models</a>', listing)
         stub.paginated = True
         with urlopen(self.site_url + '/problems') as response:
             self.assertIn('Second', response.read().decode())
@@ -334,6 +361,9 @@ class SiteTests(unittest.TestCase):
                           'verification_status': 'verified', 'diagnostics': '', 'usage': {}}]}
         with urlopen(self.site_url + '/runs/' + 'a' * 32) as response:
             html = response.read().decode()
+        self.assertIn('<h1>&lt;Lemma&gt;</h1>', html)
+        self.assertLess(html.index('<h1>&lt;Lemma&gt;</h1>'), html.index('Run status: solved'))
+        self.assertLess(html.index('Run status: solved'), html.index('Run ID:'))
         self.assertIn('Run status: solved', html)
         self.assertIn('2 jobs · 2 leased assignments · 2 completed candidate attempts', html)
         self.assertIn('Lean verification: verified', html)
@@ -345,11 +375,12 @@ class SiteTests(unittest.TestCase):
         self.assertIn('Input tokens</dt><dd>Unknown', html)
         self.assertIn('Output tokens</dt><dd>12', html)
         self.assertIn('&lt;metric&gt;</dt><dd>Unknown', html)
-        self.assertIn('max-width: 100%', html)
-        self.assertIn('overflow-wrap: anywhere', html)
+        self.assertIn('href="/static/site.css"', html)
+        self.assertIn('<a href="/problems" aria-current="page">Problems</a>', html)
         self.assertIn('name="viewport"', html)
         self.assertNotIn('hx-trigger=', html)
-        self.assertEqual(stub.paths, ['/v1/runs/' + 'a' * 32])
+        self.assertEqual(stub.paths, ['/v1/runs/' + 'a' * 32,
+                                      '/v1/fixture-sets/core/versions/1/problems/lemma-one'])
 
     def test_run_polling_stops_on_terminal_and_manual_refresh_works_without_js(self):
         stub, url = self.stub()
