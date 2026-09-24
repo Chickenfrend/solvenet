@@ -11,6 +11,9 @@ plus `problems` (fixture-order compact rows with `id`, `title`, `category`,
 for its statement and imports, together with set identity and descriptive
 metadata. Optional `limit` (1–100, default 20) and `offset` (nonnegative,
 default 0) paginate problem rows. Missing set/version/problem IDs return 404.
+Use `preview=1` on the paginated listing (at most 10 rows per request) for
+bounded statement/import excerpts without individual requests. The
+`preview_truncated` flag indicates when to open the full problem detail.
 Fixture reference proofs are excluded from every response.
 
 To start a single checked-in fixture while retaining its identity, POST

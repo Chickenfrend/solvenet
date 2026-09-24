@@ -273,17 +273,21 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
         def identifier(self, value):
             return value if IDENTIFIER_RE.fullmatch(value) else None
 
-        def pagination(self, *, offset=False):
+        def pagination(self, *, offset=False, preview=False):
             query = urlsplit(self.path).query
             try:
                 pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True,
-                                  max_num_fields=2, errors='strict')
+                                   max_num_fields=3 if preview else 2, errors='strict')
             except (ValueError, UnicodeDecodeError) as error:
                 raise ValueError('Invalid pagination query') from error
             allowed = {'limit', 'offset' if offset else 'before'}
+            if preview:
+                allowed.add('preview')
             if len({key for key, _ in pairs}) != len(pairs) or any(key not in allowed for key, _ in pairs):
                 raise ValueError('Unknown or repeated pagination parameter')
             values = dict(pairs)
+            if preview and values.get('preview', '0') not in ('0', '1'):
+                raise ValueError('Invalid preview parameter')
             def number(name, default, minimum, maximum):
                 raw = values.get(name)
                 if raw is None:
@@ -291,8 +295,9 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 if not raw.isascii() or not raw.isdecimal() or not minimum <= int(raw) <= maximum:
                     raise ValueError(f'{name} must be an integer between {minimum} and {maximum}')
                 return int(raw)
-            return (number('limit', 20, 1, 100),
-                    number('offset' if offset else 'before', 0 if offset else None, 0 if offset else 1, 2**63 - 1))
+            result = (number('limit', 20, 1, 100),
+                      number('offset' if offset else 'before', 0 if offset else None, 0 if offset else 1, 2**63 - 1))
+            return result + (values.get('preview') == '1',) if preview else result
 
         def read_json(self, limit):
             raw_size = self.headers.get('Content-Length')
@@ -356,9 +361,12 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     if path is not None:
                         fixture = load(path)
                         if len(parts) == 5:
-                            limit, offset = self.pagination(offset=True)
+                            limit, offset, show_preview = self.pagination(offset=True, preview=True)
+                            if show_preview and limit > 10:
+                                raise ValueError('preview limit must be at most 10')
                             return self.respond(200, public_set(fixture) | {
-                                'problems': [public_problem(p) for p in fixture.problems[offset:offset + limit]],
+                                'problems': [public_problem(p, detail=show_preview, preview=show_preview)
+                                             for p in fixture.problems[offset:offset + limit]],
                                 'next_offset': offset + limit if offset + limit < len(fixture.problems) else None})
                         if len(parts) == 7 and parts[5] == 'problems':
                             problem = next((p for p in fixture.problems if p.id == parts[6]), None)

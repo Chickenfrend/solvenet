@@ -133,12 +133,25 @@ def public_set(fixture: ProblemSet) -> dict:
             'problem_count': len(fixture.problems)}
 
 
-def public_problem(problem: Problem, *, detail: bool = False) -> dict:
+def public_problem(problem: Problem, *, detail: bool = False, preview: bool = False) -> dict:
     result = {'id': problem.id, 'title': problem.title,
               'category': problem.category, 'description': problem.description,
               'difficulty': problem.difficulty}
     if detail:
         result.update(statement=problem.statement, imports=list(problem.imports))
+    if preview:
+        # Bound the list response even when a checked-in fixture has long text.
+        limits = {'title': 200, 'category': 100, 'description': 400,
+                  'difficulty': 100, 'statement': 2048}
+        truncated = False
+        for key, maximum in limits.items():
+            if result.get(key) is not None and len(result[key]) > maximum:
+                result[key] = result[key][:maximum]
+                truncated = True
+        imports = result['imports']
+        result['imports'] = [module[:128] for module in imports[:8]]
+        result['preview_truncated'] = (truncated or len(imports) > 8 or
+                                       any(len(module) > 128 for module in imports[:8]))
     return result
 
 

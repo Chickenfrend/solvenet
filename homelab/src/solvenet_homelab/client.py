@@ -83,15 +83,20 @@ class Client:
         problems = []
         offset = 0
         while True:
-            result = self.get(path + f'?limit=100&offset={offset}',
-                              ('problems', 'sha256', 'environment', 'next_offset'))
+            result = self.get(path + f'?limit=10&offset={offset}&preview=1',
+                               ('problems', 'sha256', 'environment', 'next_offset'))
             page = result['problems']
             next_offset = result['next_offset']
-            if (not isinstance(page, list) or len(page) > 100
-                    or any(not isinstance(p, dict) or not isinstance(p.get('id'), str)
-                           or not isinstance(p.get('title'), str) for p in page)
+            if (not isinstance(page, list) or len(page) > 10
+                     or any(not isinstance(p, dict) or not isinstance(p.get('id'), str)
+                            or not isinstance(p.get('title'), str)
+                            or not isinstance(p.get('statement'), str)
+                            or not isinstance(p.get('imports'), list)
+                            or any(not isinstance(item, str) for item in p['imports'])
+                            or any(p.get(key) is not None and not isinstance(p[key], str)
+                                   for key in ('category', 'description')) for p in page)
                     or (next_offset is not None and (type(next_offset) is not int
-                        or next_offset != offset + 100 or next_offset > 10000))):
+                        or next_offset != offset + 10 or next_offset > 10000))):
                 raise CoordinatorInvalid('Coordinator returned an invalid response')
             problems.extend(page)
             if next_offset is None:

@@ -27,12 +27,16 @@ class Stub(BaseHTTPRequestHandler):
             models = parse_qs(urlsplit(self.path).query).get('model', [])
             body = json.dumps({'items': [self.server.activity.get(model, {'model': model, 'status': 'unknown'})
                                          for model in models]}).encode()
-        elif self.path.startswith('/v1/fixture-sets/core/versions/1?limit=100&offset='):
-            offset = int(self.path.rsplit('=', 1)[-1])
-            body = json.dumps({'problems': [{'id': 'lemma-one', 'title': '<Lemma>'}]
-                               if offset == 0 else [{'id': 'lemma-two', 'title': 'Second'}],
+        elif self.path.startswith('/v1/fixture-sets/core/versions/1?limit=10&offset='):
+            query = parse_qs(urlsplit(self.path).query)
+            offset = int(query['offset'][0])
+            body = json.dumps({'problems': [{'id': 'lemma-one', 'title': '<Lemma>',
+                                             'category': '<Logic>', 'description': '<script>bad</script>',
+                                             'statement': ': True -- <img src=x>', 'imports': ['Init', '<Import>']}]
+                               if offset == 0 else [{'id': 'lemma-two', 'title': 'Second',
+                                                      'statement': ': True', 'imports': ['Init']}],
                                'sha256': 'a' * 64, 'environment': 'Lean',
-                               'next_offset': 100 if self.server.paginated and offset == 0 else None}).encode()
+                               'next_offset': 10 if self.server.paginated and offset == 0 else None}).encode()
         elif self.path == '/v1/fixture-sets/core/versions/1/problems/lemma-one':
             body = json.dumps({'id': 'lemma-one', 'title': '<Lemma>', 'statement': ': True',
                                'set_id': 'core', 'version': 1,
@@ -274,11 +278,26 @@ class SiteTests(unittest.TestCase):
         with urlopen(self.site_url + '/problems') as response:
             listing = response.read().decode()
         self.assertIn('&lt;Lemma&gt;', listing)
+        self.assertIn('<details><summary><h2 class="problem-heading">', listing)
+        self.assertIn('&lt;Logic&gt; · No recent runs', listing)
+        self.assertIn('&lt;script&gt;bad&lt;/script&gt;', listing)
+        self.assertIn(': True -- &lt;img src=x&gt;', listing)
+        self.assertIn('&lt;Import&gt;', listing)
+        self.assertNotIn('<script>bad</script>', listing)
+        self.assertNotIn('SECRET_PROOF', listing)
+        self.assertIn('<a href="/problems/core/1/lemma-one">View problem / start work</a>', listing)
+        self.assertNotIn('<a ', listing.split('<summary>', 1)[1].split('</summary>', 1)[0])
+        self.assertNotIn('hx-get=', listing)
+        self.assertNotIn('<script ', listing)
+        self.assertEqual(stub.paths, ['/v1/fixture-sets', '/v1/runs?limit=10',
+                                       '/v1/fixture-sets/core/versions/1?limit=10&offset=0&preview=1'])
         self.assertIn('<a href="/problems" aria-current="page">Problems</a>', listing)
         self.assertIn('<a href="/">Models</a>', listing)
         stub.paginated = True
         with urlopen(self.site_url + '/problems') as response:
             self.assertIn('Second', response.read().decode())
+        self.assertEqual(stub.paths[-2:], ['/v1/fixture-sets/core/versions/1?limit=10&offset=0&preview=1',
+                                            '/v1/fixture-sets/core/versions/1?limit=10&offset=10&preview=1'])
         path = '/problems/core/1/lemma-one'
         with urlopen(self.site_url + path) as response:
             detail = response.read().decode()
@@ -333,6 +352,19 @@ class SiteTests(unittest.TestCase):
         status, html = post(values)
         self.assertEqual(status, 503)
         self.assertIn('Check the coordinator and retry', html)
+
+    def test_problem_preview_recent_run_link(self):
+        run_id = 'a' * 32
+        stub, url = self.stub(runs=json.dumps({'items': [
+            {'run_id': run_id, 'status': '<solved>', 'fixture_set_id': 'core',
+             'fixture_version': 1, 'fixture_problem_id': 'lemma-one'}],
+            'next_cursor': None}).encode())
+        self.settings.select(url)
+        with urlopen(self.site_url + '/problems') as response:
+            listing = response.read().decode()
+        self.assertIn('Recent activity: &lt;solved&gt; · <a href="/runs/' + run_id + '">View recent run</a>', listing)
+        self.assertIn('&lt;Logic&gt; · &lt;solved&gt;', listing)
+        self.assertEqual(len(stub.paths), 3)
 
     def test_run_detail_solved_repairs_usage_and_escaped_large_text(self):
         stub, url = self.stub()

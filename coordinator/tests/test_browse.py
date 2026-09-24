@@ -7,12 +7,21 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 from urllib.request import Request
 
-from solvenet.problem_set import EXPERIMENT_SETS, load
+from solvenet.problem_set import EXPERIMENT_SETS, Problem, load, public_problem
 from solvenet.server import Coordinator, make_server
 from solvenet.store import Store
 
 
 class BrowseTests(unittest.TestCase):
+    def test_long_problem_previews_fit_bounded_page(self):
+        problem = Problem('long', 'T' * 100000, ': ' + 'x' * 100000,
+                          ('I' * 1000,) * 100, 'secret-reference',
+                          description='D' * 100000)
+        preview = public_problem(problem, detail=True, preview=True)
+        self.assertTrue(preview['preview_truncated'])
+        self.assertLess(len(json.dumps({'problems': [preview] * 10}).encode()), 256 * 1024)
+        self.assertNotIn('secret-reference', json.dumps(preview))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -95,6 +104,12 @@ class BrowseTests(unittest.TestCase):
             self.assertEqual(first['sha256'], fixture.sha256)
             self.assertEqual(first['problem_count'], len(fixture.problems))
             self.assertNotIn('statement', first['problems'][0])
+            preview = self.get(base + '?limit=2&offset=0&preview=1')[1]
+            self.assertEqual(preview['problems'][0]['statement'], fixture.problems[0].statement)
+            self.assertEqual(preview['problems'][0]['imports'], list(fixture.problems[0].imports))
+            self.assertEqual(preview['next_offset'], first['next_offset'])
+            self.assertEqual(self.get(base + '?preview=2')[0], 400)
+            self.assertEqual(self.get(base + '?preview=1&limit=11')[0], 400)
             self.assertEqual(self.get(base + '?offset=999')[1]['problems'], [])
             self.assertIsNone(self.get(base + '?offset=999')[1]['next_offset'])
             for problem in fixture.problems:
@@ -102,7 +117,7 @@ class BrowseTests(unittest.TestCase):
                 self.assertEqual(detail['title'], problem.title)
                 self.assertEqual(detail['statement'], problem.statement)
                 self.assertEqual(detail['imports'], list(problem.imports))
-                for response in (catalog, first, second, detail):
+                for response in (catalog, first, second, preview, detail):
                     encoded = json.dumps(response)
                     self.assertNotIn('reference_proof', encoded)
                     self.assertNotIn(problem.reference_proof, encoded)

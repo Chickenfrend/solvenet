@@ -29,6 +29,15 @@ p { margin: .6rem 0 1rem }
 .overview h2 { margin-top: 0 }
 .problem-card h2 { margin: 0 }
 .problem-card p { margin-bottom: 0 }
+.problem-card { padding: 0; margin: .65rem 0 }
+.problem-card summary { cursor: pointer; padding: .85rem 1.25rem; min-height: 3.25rem; display: list-item; list-style-position: inside }
+.problem-card summary::marker { color: #ffc183 }
+.problem-heading { display: inline; font-weight: 700; font-size: 1.12rem; color: #fff; margin: 0 0 0 .3rem }
+.problem-meta { display: block; color: #c5beb3; margin-left: 1.3rem }
+.expand-label { display: inline-block; margin-left: 1.3rem; font-size: .85rem; color: #ffc183 }
+.problem-card details[open] .expand-label { display: none }
+.problem-preview { padding: .2rem 1.25rem 1.25rem; border-top: 1px solid #393632; min-width: 0 }
+.problem-preview pre { margin: .35rem 0 1rem }
 .run-card { border-left: 3px solid #a86839 }
 .empty, [role="alert"] { border-left: 3px solid #e6a461; padding: .8rem 1rem; background: #302820; border-radius: .25rem }
 [role="status"] { padding: .75rem 1rem; background: #292825; border-radius: .4rem }

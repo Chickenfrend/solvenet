@@ -26,11 +26,27 @@ def list_page(sets, rows, runs, error=None):
     for fixture, problem in rows:
         path = url(fixture['set_id'], fixture['version'], problem['id'])
         matches = [r for r in runs if r.get('fixture_set_id') == fixture['set_id']
-                   and r.get('fixture_version') == fixture['version']
-                   and r.get('fixture_problem_id') == problem['id']]
-        state = escape(str(matches[0]['status'])) if matches else 'No recent runs'
-        items.append(f'<article class="problem-card"><h2><a href="{escape(path, quote=True)}">{escape(problem["title"])}</a></h2>'
-                      f'<p>{escape(fixture["set_id"])} v{fixture["version"]} · {state}</p></article>')
+                    and r.get('fixture_version') == fixture['version']
+                    and r.get('fixture_problem_id') == problem['id']]
+        e = lambda value: escape(str(value), quote=True)
+        category = problem.get('category') or fixture['set_id']
+        state = e(matches[0]['status']) if matches else 'No recent runs'
+        description = problem.get('description')
+        recent = matches[0] if matches else None
+        run_id = recent.get('run_id') if recent else None
+        run_link = (f' · <a href="/runs/{e(run_id)}">View recent run</a>'
+                    if isinstance(run_id, str) and RUN_ID.fullmatch(run_id) else '')
+        activity = (f'<p>Recent activity: {state}{run_link}</p>'
+                    if matches else '<p>Recent activity: No recent runs.</p>')
+        items.append(f'''<article class="problem-card"><details><summary><h2 class="problem-heading">
+<span>{e(problem['title'])}</span>
+<span class="problem-meta">{e(category)} · {state}</span>
+<span class="expand-label" aria-hidden="true">Preview</span></h2></summary>
+<div class="problem-preview">{f'<p>{e(description)}</p>' if description else ''}
+<h3>Imports</h3><pre>{e(chr(10).join(problem['imports']))}</pre>
+<h3>Lean statement</h3><pre>{e(problem['statement'])}</pre>
+{('<p class="muted">Preview shortened; open the problem for full details.</p>' if problem.get('preview_truncated') else '')}
+{activity}<a href="{e(path)}">View problem / start work</a></div></details></article>''')
     return page('Problems', '<p class="lede">Browse Lean problems and start a proof run.</p>'
                 + (''.join(items) or '<p class="empty">No problems available. Refresh to check for new fixture sets.</p>'))
 
