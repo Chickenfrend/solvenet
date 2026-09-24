@@ -64,6 +64,9 @@ python3 experiments/challenge-v1-cross-chain-failure-map-2026-09-24/report.py ex
 
 ## Archived result (2026-09-24)
 
+The standalone architecture decision and next local-test boundary are in
+[`DECISION.md`](DECISION.md).
+
 The run completed all **60 paired blocks** (12 fixtures × five base seeds), with
 no abort. The full **redacted aggregate** is in [`RESULTS.json`](RESULTS.json),
 including per-fixture paired outcomes and the per-block cumulative solved/cost
