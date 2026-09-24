@@ -16,15 +16,16 @@ The project will likely have two major components:
 Keep these concepts separate, but do not over-engineer their interface before it is needed.
 
 A worker daemon is a machine/process-level component; an agent is a logical
-reasoning process, not yet a first-class scheduled object. A run currently
-requests one model and may start multiple search chains, but these do not imply
-distinct agents or worker daemons. One worker may eventually run multiple
-agents. The [terminology glossary](docs/ticket-18-terminology.md) distinguishes
-jobs, leased assignments, and completed candidate attempts.
+reasoning process. Agents are not yet first-class scheduled objects in v1;
+the next local milestone adds persistent collaborating agents with bounded
+state, delegation and communication. A run can request initial jobs for
+several models, but chains are not agents or worker daemons. One worker may
+eventually serve multiple agents. The [terminology glossary](docs/ticket-18-terminology.md)
+distinguishes jobs, leased assignments, and completed candidate attempts.
 
 For now, the coordinator will be in python, and the worker daemon will be in go.
 
-## First Milestone
+## First Milestone (delivered locally)
 
 Build the smallest end-to-end system that can:
 
@@ -34,6 +35,9 @@ Build the smallest end-to-end system that can:
 4. Report which candidates verify.
 
 Local execution is sufficient for the first version. Distributed execution can come later.
+
+The next milestone is the collaborating agent group described below; independent
+proof candidates and repair chains remain supported v1 behavior.
 
 ## Engineering Guidelines
 
@@ -62,7 +66,12 @@ In particular, do not prematurely build:
 * sophisticated scheduling algorithms
 * large plugin systems
 
-The immediate goal is to determine whether collaborative proof-search strategies can outperform independent initial search chains under comparable compute budgets.
+The immediate goal is a local, coordinated group of persistent agents working
+on a multi-step Lean problem: divide work, delegate according to observed model
+capability and task fit, exchange bounded findings, critique results and
+synthesize a verified proof. Measure compute and verification cost to improve
+the system, without making another simplistic prompt comparison a prerequisite
+to building collaboration. See [collaboration direction](docs/collaboration-direction.md).
 
 ## Working Style
 

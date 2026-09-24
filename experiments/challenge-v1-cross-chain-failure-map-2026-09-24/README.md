@@ -116,12 +116,16 @@ evidence of an efficiency advantage.
 The predeclared condition for a next bounded cross-chain-findings field in a
 local job protocol was not met (net map-only advantage zero, rather than at
 least four; advantage in one seed, rather than three; only one theorem helped,
-rather than two). **Retain independent jobs and refine/replicate this coarse
-failure-map hypothesis before adding protocol state.** This result does not
-justify a first-class agent abstraction or remote allocation. It concerns one
-local model, five seeds and 12 repeated fixtures; seeded outputs may correlate,
+rather than two). Under the original trial criterion, **retain independent
+jobs rather than adding this particular coarse failure-map field**. This result
+alone does not justify a first-class agent abstraction or remote allocation.
+It concerns one local model, five seeds and 12 repeated fixtures; seeded outputs may correlate,
 the tactic labels are coarse, and the map adds prompt tokens. It does not rule
-out other forms of collaboration.
+out other forms of collaboration. **Roadmap update:** The
+[collaboration direction](../../docs/collaboration-direction.md) now prioritizes
+building persistent, communicating agent groups with capability-aware delegation.
+The trial's proposed follow-up comparison is retired as a prerequisite to
+agents; the result remains a record of this specific intervention.
 
 Integrity: the fixture, pinned provider, runner (`main.go`, `main_test.go`) and
 verifier bridge SHA-256 hashes in the run configuration match the hashes frozen

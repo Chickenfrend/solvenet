@@ -12,7 +12,8 @@
 | Candidate attempt | A completed assignment's proof body, stored in the `attempts` table and exposed as `attempts[]` in run inspection. Lean verification determines whether it is verified, rejected, timed out, or an infrastructure error; a claim or provider failure alone is not a candidate attempt. |
 | Worker daemon | A Go process advertising available models and claiming assignments; the current implementation has one execution slot. Several chains can pass through the same worker, and separate assignments of one job can reach different workers. |
 | Provider | The worker's model-specific execution adapter (currently scripted or Ollama). The run's requested model identifier determines which workers can claim a job; `generation.model` is provider-reported metadata, not an agent identity. |
-| Logical agent | A reasoning process/strategy in the project's longer-term multi-agent goal. It has no first-class identity, scheduling, or persistence in v1; neither `attempts` nor a worker count denotes distinct agents. |
+| Logical agent | A persistent reasoning actor planned for the next local collaboration milestone: it has a bounded goal/state, group role, task and communication history across jobs, and may delegate or review work. It has no first-class identity, scheduling, or persistence in v1; neither `attempts` nor a worker count denotes distinct agents. |
+| Agent group / hierarchy (planned) | A team of logical agents with scoped tasks and delegation/review relationships, potentially matching stronger or specialist models to appropriate work. Agent membership and authority are distinct from worker availability and leased assignments; v1 has no such group. |
 
 ## Bounds and compatibility decision
 

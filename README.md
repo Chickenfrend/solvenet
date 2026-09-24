@@ -16,8 +16,12 @@ a scripted fixture. The coordinator checks the proof with Lean and persists the
 result, original model response, and reported usage. The worker currently has one
 execution slot. A run can select multiple initial models; multiple
 initial search chains may be served by the same worker daemon. Logical agents
-are a research goal, not separately identified or scheduled objects today. See
-[the terminology glossary](docs/ticket-18-terminology.md).
+are the next local development milestone, not separately identified or
+scheduled objects in v1 today. The goal is a persistent group that delegates
+work according to task fit and model capability, shares findings, critiques
+approaches, and synthesizes Lean-checked proofs. See the
+[collaboration direction](docs/collaboration-direction.md) and
+[terminology glossary](docs/ticket-18-terminology.md).
 
 ### Run it locally
 

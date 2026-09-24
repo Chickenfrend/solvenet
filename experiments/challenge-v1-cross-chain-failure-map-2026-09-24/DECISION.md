@@ -1,4 +1,13 @@
-# Decision: keep independent local jobs
+# Historical decision: keep independent local jobs for the failure-map trial
+
+**Roadmap update (2026-09-24):** This document records the decision reached
+under the trial's original, narrow protocol-change criterion. The project's
+subsequent [collaboration direction](../../docs/collaboration-direction.md)
+replaces its proposed *next* verified-lemma comparison as a roadmap step. The
+trial never evaluated a persistent agent group. Build and observe a
+persistent, communicating local agent group with capability-aware delegation.
+Keep the trial and its frozen plan as historical evidence; its result still
+does not justify adding the particular coarse failure-map field to v1.
 
 **Decision (2026-09-24):** Retain protocol v1's independent initial jobs and
 per-chain repairs. Do not add a cross-chain-findings field on the strength of
@@ -22,30 +31,7 @@ also failed: zero net map-only successes, advantage in one seed, and one theorem
 helped. This is evidence about this coarse failure map with one local model and
 repeated fixtures, **not** a finding that collaboration in general fails.
 
-**One next local test that could reopen the decision:** Separately freeze a plan
-*before any model calls* for a verified shared-lemma handoff on a fixed set of
-multi-step Lean theorems, with fixed fixture IDs, seeds, prompts, model/version,
-Lean environment, verification and stopping rules. In each paired block, the
-handoff arm asks for a useful auxiliary lemma, verifies that lemma in Lean in
-the same environment, and gives only its verified statement/proof to a fresh
-final-proof chain; an unverified lemma is never shared or scored as progress.
-The control arm uses independent whole-theorem chains under the same declared
-request/output caps and stopping policy. Lean must verify the complete target
-proof in both arms. This tests reusable *verified content*, rather than a map
-of failed approaches; it does not require a protocol change to run locally.
-
-Predeclare a **total** per-arm budget and report actual calls (including failed
-ones), input and output tokens, provider time, all lemma and target Lean checks,
-and Lean time; charge lemma generation and verification to the handoff arm and
-do not compare only the final-proof call. The separate plan should fix the
-number of task/seed pairs and require at least four more handoff-only than
-control-only verified targets across at least two distinct theorems and three
-seeds, with total input-token, output-token and Lean-time differences each
-within 15%, no unknown token usage or provider failures, and actual Lean-check
-counts differing by at most one. Report per-task
-and per-seed pairs, failures and unknown usage; no post hoc subset selection or
-free lemma preparation. Only a cost-comparable, predeclared positive local result
-would warrant considering a bounded local lemma-handoff mechanism, followed by
-separately predeclared replication before a general collaboration claim. It
-would not by itself establish distinct agent identities or a reason to allocate
-work remotely.
+**Retired follow-up:** The previously proposed isolated verified-lemma handoff
+comparison and its pass/fail protocol gate are no longer the next step. The
+next milestone is the communicating local agent group described above; its
+costs and verified outcomes should still be recorded honestly.
