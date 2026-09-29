@@ -16,11 +16,11 @@ The project will likely have two major components:
 Keep these concepts separate, but do not over-engineer their interface before it is needed.
 
 A worker daemon is a machine/process-level component; an agent is a logical
-reasoning process. Agents are not yet first-class scheduled objects in v1;
-the next local milestone adds persistent collaborating agents with bounded
-state, delegation and communication. A run can request initial jobs for
-several models, but chains are not agents or worker daemons. One worker may
-eventually serve multiple agents. The [terminology glossary](docs/ticket-18-terminology.md)
+reasoning process. The local group loop now persists collaborating agents with
+bounded state, tasks and communication, while independent/repair v1 runs can
+still request initial jobs for several models. Chains are not agents or worker
+daemons. A worker can serve jobs for multiple agents. The
+[terminology glossary](docs/ticket-18-terminology.md)
 distinguishes jobs, leased assignments, and completed candidate attempts.
 
 For now, the coordinator will be in python, and the worker daemon will be in go.
@@ -36,8 +36,10 @@ Build the smallest end-to-end system that can:
 
 Local execution is sufficient for the first version. Distributed execution can come later.
 
-The next milestone is the collaborating agent group described below; independent
-proof candidates and repair chains remain supported v1 behavior.
+The local collaborating agent group is implemented; independent proof candidates
+and repair chains remain supported v1 behavior. Its scripted-model integration
+test checks the loop with real Lean, while real-model effectiveness and efficiency
+remain to be measured in an optional live operator run.
 
 ## Engineering Guidelines
 
@@ -66,12 +68,11 @@ In particular, do not prematurely build:
 * sophisticated scheduling algorithms
 * large plugin systems
 
-The immediate goal is a local, coordinated group of persistent agents working
-on a multi-step Lean problem: divide work, delegate according to observed model
-capability and task fit, exchange bounded findings, critique results and
-synthesize a verified proof. Measure compute and verification cost to improve
-the system, without making another simplistic prompt comparison a prerequisite
-to building collaboration. See [collaboration direction](docs/collaboration-direction.md).
+The local group loop divides work on a multi-step Lean problem, routes bounded
+tasks by configured capability and availability, exchanges findings, critiques
+results and synthesizes a Lean-checked proof. Continue measuring compute and
+verification cost and test actual model behavior before drawing efficiency
+conclusions. See [collaboration direction](docs/collaboration-direction.md).
 
 ## Working Style
 

@@ -15,13 +15,18 @@ worker claims jobs over HTTP and generates a proof using a local Ollama model or
 a scripted fixture. The coordinator checks the proof with Lean and persists the
 result, original model response, and reported usage. The worker currently has one
 execution slot. A run can select multiple initial models; multiple
-initial search chains may be served by the same worker daemon. Logical agents
-are the next local development milestone, not separately identified or
-scheduled objects in v1 today. The goal is a persistent group that delegates
-work according to task fit and model capability, shares findings, critiques
-approaches, and synthesizes Lean-checked proofs. See the
+initial search chains may be served by the same worker daemon. The local group
+loop now persists distinct logical agents, bounded tasks and findings across
+jobs, routes work by configured model capabilities, reviews and redirects
+findings, and checks proposed artifacts and synthesized target proofs with Lean.
+The independent/repair run path remains supported; its chains are not agents.
+The deterministic two-worker collaboration test uses scripted model responses
+and real Lean, not real-model efficiency evidence. See the
 [collaboration direction](docs/collaboration-direction.md) and
-[terminology glossary](docs/ticket-18-terminology.md).
+[terminology glossary](docs/ticket-18-terminology.md); the
+[group-loop guide](docs/group-loop.md) and
+[A6 integration guide](integration/README.md#A6-collaborating-agents--two-workers--pinned-lean)
+describe the local demonstration and optional live-model operator run.
 
 ### Run it locally
 

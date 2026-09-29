@@ -1,4 +1,10 @@
-# Local coordinator-owned group loop (A3–A5)
+# Local coordinator-owned group loop (A1–A6)
+
+A1–A6 are implemented locally. The A6 process-level test exercises the group
+with two Go workers, scripted fake model responses and real pinned Lean; it
+validates the loop and trust boundary, not actual model efficiency. An optional
+live-model operator run remains the next empirical follow-up (see the
+[integration guide](../integration/README.md#A6-collaborating-agents--two-workers--pinned-lean)).
 
 Use `Store.start_group_loop(request_key, statement, imports, environment, models,
 max_work=12, deadline=None)` to start an idempotent local group. `models` must
