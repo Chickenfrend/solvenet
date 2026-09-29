@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from solvenet.server import Coordinator
+from solvenet.group_routing import choose
 from solvenet.store import Store
 from solvenet.verifier import LeanVerifier, VerificationResult, VerificationStatus
 
@@ -85,6 +86,12 @@ class GroupLoopTests(unittest.TestCase):
         self.assertEqual(self.store.run_status(run_id)['status'], 'solved')
         self.assertEqual(len(self.store.run(run_id)['attempts']), 1)
         self.assertEqual(len(self.store.run(run_id)['assignments']), 7)  # expired lease + six calls
+        cost = self.store.group(self.group)['cost']
+        self.assertEqual(cost['requests'], 6)
+        self.assertEqual(cost['leases'], 7)
+        self.assertEqual(cost['retries'], 1)
+        self.assertEqual(cost['input_tokens']['unknown'], 7)
+        self.assertEqual(cost['lean_checks'], 1)
 
     def test_unverified_auxiliary_and_no_solution(self):
         self.collaboration('exact True.intro')  # proves True, but not True ∧ True
@@ -96,11 +103,30 @@ class GroupLoopTests(unittest.TestCase):
                                  imports=json.loads(attempt['imports']))
         self.assertEqual(result.status, VerificationStatus.REJECTED)
         self.store.verified(attempt['id'], result)
+        with self.store.connect() as db:
+            _, _, trace = choose(db, self.group,
+                {role: [model] for role, model in self.models.items()}, {},
+                'synthesizer', 'proof', 100, 2, now=self.now[0])
+        proof_evidence = json.loads(trace)['candidates'][0]
+        self.assertEqual(proof_evidence['observed_completed_calls'], 1)
+        self.assertEqual(proof_evidence['observed_verified_proofs'], 0)
         self.assertEqual(self.store.run_status(run_id)['status'], 'exhausted')
         self.assertTrue(self.store.advance_group(self.group))
         self.assertEqual(self.store.group_loop(self.group)['reason'], 'no_verified_target')
         self.assertEqual(self.store.group(self.group)['remaining_work'], 0)
         self.assertFalse(self.store.advance_group(self.group))
+
+    def test_coordinator_verifier_exception_keeps_group_lean_time_unknown(self):
+        self.collaboration('trivial')
+        verifier = LeanVerifier(Path(__file__).resolve().parents[2] / 'lean',
+                                command=(str(Path.home() / '.elan/bin/lake'), 'env', 'lean'))
+        with patch.object(verifier, 'verify', side_effect=RuntimeError('test failure')):
+            self.assertTrue(Coordinator(self.store, verifier).tick())
+        cost = self.store.group(self.group)['cost']
+        self.assertEqual(cost['lean_checks'], 1)
+        self.assertEqual(cost['lean_elapsed_ms'], {'known': 0, 'unknown': 1})
+        attempt = self.store.run(self.store.group(self.group)['run']['run_id'])['attempts'][0]
+        self.assertEqual(attempt['elapsed_ms'], 0)  # retained v1 verifier result
 
     def test_artifact_from_finding_waits_for_lean_and_informs_synthesis(self):
         self.drive('plan', json.dumps({'approaches': ['Prove True', 'Find alternate']}))
@@ -141,6 +167,9 @@ class GroupLoopTests(unittest.TestCase):
                 VerificationStatus.TIMEOUT, 'timed out', 10000)):
             Coordinator(self.store, verifier).tick()
         self.assertEqual(self.store.group(self.group)['artifacts'][0]['status'], 'timeout')
+        cost = self.store.group(self.group)['cost']
+        self.assertEqual(cost['lean_checks'], 1)
+        self.assertEqual(cost['lean_elapsed_ms']['known'], 10000)
         lease = self.drive('synthesize', 'constructor <;> trivial')
         self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: []',
                       lease['job']['messages'][0]['content'])

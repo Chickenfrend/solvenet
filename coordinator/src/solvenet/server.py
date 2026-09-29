@@ -215,13 +215,15 @@ class Coordinator:
         attempt = self.store.pending()
         if not attempt:
             return changed
+        elapsed_unknown = False
         try:
             result = self.verifier.verify(attempt['statement'], attempt['candidate'],
                                           imports=json.loads(attempt['imports']))
         except Exception:
             LOG.exception("Verifier failed")
             result = VerificationResult(VerificationStatus.VERIFIER_ERROR, "Verifier raised an internal error; see coordinator logs", 0)
-        self.store.verified(attempt['id'], result)
+            elapsed_unknown = True
+        self.store.verified(attempt['id'], result, elapsed_unknown=elapsed_unknown)
         return True
 
     def _check_artifact(self, artifact, binding):
@@ -236,12 +238,19 @@ class Coordinator:
         target_imports = json.loads(artifact['target_imports'])
         try:
             def check(check_imports):
-                if hasattr(self.verifier, 'verify_artifact'):
-                    return self.verifier.verify_artifact(
-                        artifact['statement'], artifact['proof'], imports=check_imports,
-                        identity=binding[0])
-                return self.verifier.verify(artifact['statement'], artifact['proof'],
-                                            imports=check_imports)
+                try:
+                    if hasattr(self.verifier, 'verify_artifact'):
+                        outcome = self.verifier.verify_artifact(
+                            artifact['statement'], artifact['proof'], imports=check_imports,
+                            identity=binding[0])
+                    else:
+                        outcome = self.verifier.verify(artifact['statement'], artifact['proof'],
+                                                       imports=check_imports)
+                except Exception:
+                    self.store.record_group_lean_check(artifact['id'], 'verifier_error', None)
+                    raise
+                self.store.record_group_lean_check(artifact['id'], outcome.status, outcome.elapsed_ms)
+                return outcome
 
             result = check(imports)
             if result.verified and imports != target_imports:

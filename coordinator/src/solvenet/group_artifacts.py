@@ -109,6 +109,12 @@ def insert_artifact(db, group_id, request_key, agent_id, task_id,
 
 
 class GroupArtifacts:
+    def record_group_lean_check(self, artifact_id, status, elapsed_ms):
+        with self.transaction() as db:
+            db.execute('''INSERT INTO group_lean_checks(group_id,artifact_id,status,elapsed_ms)
+                SELECT group_id,id,?,? FROM group_artifacts WHERE id=?''',
+                (str(status), elapsed_ms, artifact_id))
+
     def propose_group_artifact(self, group_id, request_key, agent_id, task_id,
                                statement, imports, environment, proof, *, job_id=None):
         with self.transaction() as db:

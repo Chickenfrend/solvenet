@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from . import protocol_limits as limits
 from .group_state import MIGRATION_14, GroupState
-from .group_loop import MIGRATION_15, GroupLoop
+from .group_loop import MIGRATION_15, MIGRATION_17, MIGRATION_18, GroupLoop
 from .group_artifacts import MIGRATION_16, GroupArtifacts
 
 
@@ -302,7 +302,13 @@ class Store(GroupLoop, GroupState, GroupArtifacts):
             if version == 15:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_16 + "COMMIT;")
                 version = 16
-            if version != 16:
+            if version == 16:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_17 + "COMMIT;")
+                version = 17
+            if version == 17:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_18 + "COMMIT;")
+                version = 18
+            if version != 18:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -581,10 +587,13 @@ class Store(GroupLoop, GroupState, GroupArtifacts):
             now = self.clock()
             for model in set(models):
                 health = provider_health if provider_health is not None else {'status': 'unobserved'}
-                db.execute("""INSERT INTO worker_presence (worker_id, model, seen_at, health, reason)
-                    VALUES (?, ?, ?, ?, ?) ON CONFLICT(worker_id, model) DO UPDATE SET
-                    seen_at=excluded.seen_at, health=excluded.health, reason=excluded.reason""",
-                           (worker_id, model, now, health['status'], health.get('reason')))
+                db.execute("""INSERT INTO worker_presence
+                    (worker_id, model, seen_at, health, reason, supports_model_respond)
+                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(worker_id, model) DO UPDATE SET
+                    seen_at=excluded.seen_at, health=excluded.health, reason=excluded.reason,
+                    supports_model_respond=excluded.supports_model_respond""",
+                           (worker_id, model, now, health['status'], health.get('reason'),
+                            int(supports_model_respond)))
             if provider_health is not None and provider_health['status'] == 'unavailable':
                 return None
             if not models:
@@ -757,7 +766,7 @@ class Store(GroupLoop, GroupState, GroupArtifacts):
               ORDER BY t.rowid, t.id LIMIT 1""").fetchone()
             return dict(row) if row else None
 
-    def verified(self, attempt, result):
+    def verified(self, attempt, result, *, elapsed_unknown=False):
         with self.transaction() as db:
             inserted = db.execute("""INSERT OR IGNORE INTO verifications
                                    (attempt_id, status, diagnostics, elapsed_ms, verified_at)
@@ -766,6 +775,11 @@ class Store(GroupLoop, GroupState, GroupArtifacts):
                                    self.clock()))
             if inserted.rowcount == 0:
                 return
+            if elapsed_unknown:
+                db.execute('''INSERT INTO group_unknown_lean_time(attempt_id)
+                    SELECT ? WHERE EXISTS (SELECT 1 FROM attempts t JOIN assignments a
+                    ON a.id=t.assignment_id JOIN group_jobs gj ON gj.job_id=a.job_id
+                    WHERE t.id=?)''', (attempt, attempt))
             job = db.execute("""SELECT j.* FROM jobs j JOIN assignments a ON a.job_id=j.id
               JOIN attempts t ON t.assignment_id=a.id WHERE t.id=?""", (attempt,)).fetchone()
             db.execute("UPDATE jobs SET status='done' WHERE id=?", (job['id'],))

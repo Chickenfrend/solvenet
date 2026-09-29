@@ -1,4 +1,4 @@
-# Local coordinator-owned group loop (A3)
+# Local coordinator-owned group loop (A3–A5)
 
 Use `Store.start_group_loop(request_key, statement, imports, environment, models,
 max_work=12, deadline=None)` to start an idempotent local group. `models` must
@@ -84,3 +84,38 @@ show `needs_recheck`. Direct `Store.group(id)` calls without a fresh observed
 identity conservatively show `needs_recheck`. The group inspection endpoint
 fingerprints on demand for verified artifacts, while archived/stopped groups
 do not trigger identity scans on each scheduler tick.
+
+## Local routing and cost (A5)
+
+`start_group_loop` also accepts `model_capabilities={model_id: {"tasks":
+["finding", "plan", "critique", "proof"], "context_bytes": 8192, "cost": 1}}`.
+Each role in `models` can be a model ID or an ordered list of IDs. Configure
+IDs supported by local workers; the coordinator learns recent availability
+through worker claims/heartbeats (`ready` or `unobserved`); non-proof routing
+also requires the worker's declared `model.respond` capability. A recent
+proof-only worker is explicitly ineligible for non-proof work. With explicit
+capabilities an unseen model is ineligible; stale or unavailable workers are
+ineligible. Without capabilities, the original single-model setup can enqueue
+for an unseen worker until the deadline. Capabilities are operator configuration,
+not provider credentials or a universal strength ranking. `tasks` limits task
+fit, `context_bytes` limits target plus prompt bytes, and `cost` reserves
+2 × cost work units (two possible leases). Cheaper eligible investigators are
+preferred; role preference, observed failed jobs, reviewer-accepted findings,
+Lean-verified target proofs and availability inform the
+deterministic choice. A failed investigation gets one scoped follow-up by the
+**same agent**, preferring a different eligible model. If no model fits or
+budget cannot cover it, the group stops with an explicit reason. One-model
+decisions are labeled `single_model_fallback_not_hierarchy_evidence`.
+Completed calls are displayed separately as throughput, never counted as
+proof quality; unverified or invalid outputs do not become successes.
+
+`group(id)['routing']` persists each dispatch explanation (including refusals),
+with candidates, exclusions and selected model. Join `request_key` to `tasks`
+(parent/owner), `jobs` (lease/provenance), `messages` (handoffs), and `calls`
+(each assignment result). `cost` totals all requests, leases, retries, failures,
+reported input/output tokens and provider `total_duration_ns`, plus target and
+artifact Lean checks and elapsed milliseconds. Each reported metric retains
+known values and unknown counts; missing usage, expired leases and elapsed time
+for coordinator-caught verifier exceptions are never
+silently counted as zero. Provider duration is provider-reported generation
+time, not wall time; a queued request has no provider usage.

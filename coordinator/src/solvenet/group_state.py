@@ -360,6 +360,56 @@ class GroupState:
                     'verified' if verifier_identity is not None and
                     artifact['verifier_identity'] == verifier_identity else 'needs_recheck'
                 ) if artifact['status'] == 'verified' else artifact['status']
+            result['routing'] = [dict(row) for row in db.execute(
+                'SELECT * FROM group_route_decisions WHERE group_id=? ORDER BY rowid', (group_id,))]
+            for decision in result['routing']:
+                decision['explanation'] = json.loads(decision['explanation'])
+            calls = [dict(row) for row in db.execute('''SELECT gj.request_key,gj.task_id,gj.agent_id,
+                j.model,j.kind,j.task_type,j.status AS job_status,a.id AS assignment_id,
+                a.worker_id,a.status,a.result FROM group_jobs gj JOIN jobs j ON j.id=gj.job_id
+                LEFT JOIN assignments a ON a.job_id=j.id WHERE gj.group_id=?
+                ORDER BY j.rowid,a.rowid''', (group_id,))]
+            totals = {'requests': len(result['jobs']), 'leases': 0, 'retries': 0,
+                      'failures': 0, 'input_tokens': {'known': 0, 'unknown': 0},
+                      'output_tokens': {'known': 0, 'unknown': 0},
+                      'provider_duration_ns': {'known': 0, 'unknown': 0},
+                      'lean_checks': 0, 'lean_elapsed_ms': {'known': 0, 'unknown': 0}}
+            seen = set()
+            for call in calls:
+                call['result'] = json.loads(call['result']) if call['result'] else None
+                if call['assignment_id'] is None:
+                    continue
+                totals['leases'] += 1
+                totals['retries'] += call['task_id'] in seen
+                seen.add(call['task_id'])
+                payload = call['result'] or {}
+                if call['status'] in ('rejected', 'expired') or payload.get('status') == 'failed':
+                    totals['failures'] += 1
+                for name, value in (('input_tokens', payload.get('usage', {}).get('input_tokens')),
+                                    ('output_tokens', payload.get('usage', {}).get('output_tokens')),
+                                    ('provider_duration_ns', payload.get('generation', {}).get('total_duration_ns'))):
+                    bucket = totals[name]
+                    if value is None:
+                        bucket['unknown'] += 1
+                    else:
+                        bucket['known'] += value
+            result['calls'] = calls
+            for row in db.execute('''SELECT v.elapsed_ms, u.attempt_id AS unknown_time FROM verifications v
+                LEFT JOIN group_unknown_lean_time u ON u.attempt_id=v.attempt_id
+                JOIN attempts t ON t.id=v.attempt_id JOIN assignments a ON a.id=t.assignment_id
+                JOIN group_jobs gj ON gj.job_id=a.job_id WHERE gj.group_id=?''', (group_id,)):
+                totals['lean_checks'] += 1
+                if row['unknown_time']:
+                    totals['lean_elapsed_ms']['unknown'] += 1
+                else:
+                    totals['lean_elapsed_ms']['known'] += row['elapsed_ms']
+            for row in db.execute('SELECT elapsed_ms FROM group_lean_checks WHERE group_id=?', (group_id,)):
+                totals['lean_checks'] += 1
+                if row['elapsed_ms'] is None:
+                    totals['lean_elapsed_ms']['unknown'] += 1
+                else:
+                    totals['lean_elapsed_ms']['known'] += row['elapsed_ms']
+            result['cost'] = totals
             return result
 
 

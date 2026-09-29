@@ -10,6 +10,7 @@ import math
 
 from .group_state import _conflict, _key, _require_group, _text
 from .group_artifacts import artifact_from_finding, insert_artifact
+from .group_routing import validate_routing, choose
 
 
 MIGRATION_15 = """
@@ -21,6 +22,26 @@ PRAGMA user_version = 15;
 """
 
 MAX_GROUP_DURATION_SECONDS = 3600
+
+MIGRATION_17 = """
+ALTER TABLE group_loops ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}';
+CREATE TABLE group_route_decisions (
+ group_id TEXT NOT NULL REFERENCES agent_groups(id), request_key TEXT NOT NULL,
+ job_id TEXT REFERENCES jobs(id), explanation TEXT NOT NULL,
+ PRIMARY KEY(group_id, request_key));
+CREATE TABLE group_lean_checks (
+ id INTEGER PRIMARY KEY, group_id TEXT NOT NULL REFERENCES agent_groups(id),
+ artifact_id TEXT NOT NULL, status TEXT NOT NULL, elapsed_ms INTEGER,
+ FOREIGN KEY(artifact_id) REFERENCES group_artifacts(id));
+PRAGMA user_version = 17;
+"""
+
+MIGRATION_18 = """
+ALTER TABLE worker_presence ADD COLUMN supports_model_respond INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE group_unknown_lean_time (
+ attempt_id TEXT PRIMARY KEY REFERENCES verifications(attempt_id));
+PRAGMA user_version = 18;
+"""
 
 
 def _parse(text, field, length):
@@ -58,7 +79,7 @@ def _unverified_context(findings):
 
 class GroupLoop:
     def start_group_loop(self, request_key, statement, imports, environment, models, *,
-                         max_work=12, deadline=None):
+                         max_work=12, deadline=None, model_capabilities=None):
         """Create a local group. models maps planner, investigator, critic, synthesizer.
 
         A single model may serve several roles, but agents remain distinct.
@@ -66,13 +87,9 @@ class GroupLoop:
         An absent deadline defaults to one hour from creation. A group waiting
         for an unavailable or proof-only worker then terminates as `deadline`.
         """
-        from .store import validate_task_request
         _key(request_key)
-        if not isinstance(models, dict) or set(models) != {
-                'planner', 'investigator', 'critic', 'synthesizer'}:
-            raise ValueError('Explicit planner, investigator, critic and synthesizer models required')
-        for model in models.values():
-            validate_task_request(model, 'plan', [{'role': 'user', 'content': 'plan'}], 512)
+        normalized = validate_routing(models, model_capabilities)
+        capabilities = model_capabilities or {}
         if type(max_work) is not int or not 12 <= max_work <= 256:
             raise ValueError('max_work must be between 12 and 256')
         if deadline is not None and (type(deadline) not in (float, int) or
@@ -95,6 +112,7 @@ class GroupLoop:
                 requested_deadline = (existing['created_at'] + MAX_GROUP_DURATION_SECONDS
                                       if deadline is None else deadline)
                 if (existing['models'] != json.dumps(models, sort_keys=True) or
+                        existing['capabilities'] != json.dumps(capabilities, sort_keys=True) or
                         existing['deadline'] != requested_deadline):
                     _conflict('Loop key reused with different configuration')
                 return group_id
@@ -106,15 +124,19 @@ class GroupLoop:
                 from .store import identifier
                 db.execute('INSERT INTO group_agents(id,group_id,request_key,role) VALUES (?,?,?,?)',
                            (identifier(), group_id, key, role))
-            db.execute('INSERT INTO group_loops VALUES (?,?,?,?,?,?)',
-                       (group_id, json.dumps(models, sort_keys=True), 'plan', None, deadline, now))
+            db.execute('''INSERT INTO group_loops
+                (group_id,models,phase,reason,deadline,created_at,capabilities)
+                VALUES (?,?,?,?,?,?,?)''',
+                       (group_id, json.dumps(models, sort_keys=True), 'plan', None, deadline, now,
+                        json.dumps(capabilities, sort_keys=True)))
         return group_id
 
     def group_loop(self, group_id):
         with self.connect() as db:
-            row = db.execute('SELECT phase,reason,deadline,models FROM group_loops WHERE group_id=?',
-                             (group_id,)).fetchone()
-            return dict(row) | {'models': json.loads(row['models'])} if row else None
+            row = db.execute('SELECT phase,reason,deadline,models,capabilities FROM group_loops WHERE group_id=?',
+                              (group_id,)).fetchone()
+            return dict(row) | {'models': json.loads(row['models']),
+                                'capabilities': json.loads(row['capabilities'])} if row else None
 
     def advance_groups(self):
         with self.connect() as db:
@@ -133,6 +155,8 @@ class GroupLoop:
                 return False
             group = _require_group(db, group_id)
             models = json.loads(loop['models'])
+            models = {role: [value] if isinstance(value, str) else value for role, value in models.items()}
+            capabilities = json.loads(loop['capabilities'])
             agents = {r['request_key']: r['id'] for r in db.execute(
                 'SELECT * FROM group_agents WHERE group_id=?', (group_id,))}
 
@@ -173,14 +197,24 @@ class GroupLoop:
                                     (current['id'],)).fetchone()
                 return json.loads(result[0])['output']['text'] if result else None
 
-            def dispatch(key, creator, owner, description, kind, task_type, context, *, parent=None):
+            def dispatch(key, creator, owner, description, kind, task_type, context, *, parent=None,
+                         avoid=None):
                 """Reserve one call and persist its decision, task and job atomically."""
                 _text(description, 'description', 8192)
                 _text(context, 'context', 8192)
                 if job(key):
                     return False
-                if group['remaining_work'] < 2:
-                    return stop('budget')
+                role = 'investigator' if owner.startswith('investigator') else owner
+                model, cost, explanation = choose(
+                    db, group_id, models, capabilities, role, task_type or 'proof',
+                    len(context.encode()) + len(group['statement'].encode()) + len(group['imports'].encode()),
+                    group['remaining_work'], avoid=avoid, now=self.clock(), lease_seconds=self.lease_seconds)
+                if model is None:
+                    db.execute('INSERT OR IGNORE INTO group_route_decisions VALUES (?,?,NULL,?)',
+                               (group_id, key, explanation))
+                    candidates = json.loads(explanation)['candidates']
+                    return stop('budget' if candidates and all('budget_exceeded' in c['reasons']
+                                                               for c in candidates) else 'model_unavailable_or_unfit')
                 count = db.execute('SELECT count(*) FROM group_tasks WHERE group_id=?', (group_id,)).fetchone()[0]
                 if count >= group['max_tasks']:
                     return stop('task_limit')
@@ -192,10 +226,10 @@ class GroupLoop:
                 task_id = identifier()
                 db.execute('''INSERT INTO group_tasks
                     (id,group_id,request_key,parent_id,creator_id,owner_id,description,budget,remaining,depth)
-                    VALUES (?,?,?,?,?,?,?,2,0,?)''',
+                    VALUES (?,?,?,?,?,?,?,?,0,?)''',
                     (task_id, group_id, key, parent, agents[creator], agents[owner], description,
-                     p['depth'] + 1 if parent else 0))
-                db.execute('UPDATE agent_groups SET remaining_work=remaining_work-2 WHERE id=?', (group_id,))
+                     cost, p['depth'] + 1 if parent else 0))
+                db.execute('UPDATE agent_groups SET remaining_work=remaining_work-? WHERE id=?', (cost, group_id))
                 nonlocal run
                 if not run:
                     problem_id, run_id = identifier(), identifier()
@@ -215,16 +249,22 @@ class GroupLoop:
                     (id,run_id,status,model,max_output_tokens,max_assignments,
                      generation_timeout_seconds,kind,task_type,messages)
                     VALUES (?,?,'queued',?, ?,2,120,?,?,?)''',
-                    (job_id, run_id, models['investigator' if owner.startswith('investigator') else owner],
+                     (job_id, run_id, model,
                      2048 if kind == 'model.generate' else 512, kind, task_type,
                      json.dumps([{'role': 'user', 'content': context}])))
-                db.execute('INSERT INTO group_jobs VALUES (?,?,?,?,?,?,2)',
-                           (job_id, group_id, key, task_id, agents[owner], group['environment']))
+                db.execute('INSERT INTO group_jobs VALUES (?,?,?,?,?,?,?)',
+                           (job_id, group_id, key, task_id, agents[owner], group['environment'], cost))
+                db.execute('INSERT INTO group_route_decisions VALUES (?,?,?,?)',
+                           (group_id, key, job_id, explanation))
                 return True
 
             def task(key):
                 return db.execute('SELECT * FROM group_tasks WHERE group_id=? AND request_key=?',
-                                  (group_id, key)).fetchone()
+                                   (group_id, key)).fetchone()
+
+            def finding_key(index):
+                key = f'investigate-{index}'
+                return key + '-escalate' if job(key + '-escalate') else key
 
             def message(key, agent, kind, text):
                 current = job(key)
@@ -276,22 +316,31 @@ class GroupLoop:
                 return self._loop_phase(db, group_id, 'investigate_wait')
             if phase == 'investigate_wait':
                 for index in (1, 2):
-                    key = f'investigate-{index}'
+                    original = f'investigate-{index}'
+                    key = finding_key(index)
                     text = output(key)
                     if text is None:
                         return False
                     if text is False:
-                        return stop('investigation_failed')
+                        if key != original:
+                            return stop('investigation_failed')
+                        failed_model = job(key)['model']
+                        db.execute("UPDATE group_tasks SET status='blocked' WHERE id=?", (task(key)['id'],))
+                        return dispatch(key + '-escalate', 'planner', f'investigator-{index}',
+                                        'Retry scoped subgoal after failed model call', 'model.respond', 'finding',
+                                        'Retry scoped subgoal: ' + task(key)['description'] +
+                                         '\nReturn a bounded finding.', parent=task(key)['id'],
+                                        avoid=failed_model)
                     message(key, f'investigator-{index}', 'finding', text)
                 return self._loop_phase(db, group_id, 'review')
             if phase == 'review':
-                findings = [output(f'investigate-{i}') for i in (1, 2)]
+                findings = [output(finding_key(i)) for i in (1, 2)]
                 return dispatch('review', 'planner', 'critic', 'Review both findings',
                                 'model.respond', 'critique',
                                  'Review these UNVERIFIED findings and redirect at least one branch. '
                                  'Return JSON {"decisions":["accept","redirect"]} (or reversed).\n'
-                                 + _unverified_context([(f'investigate-{i}', value)
-                                                        for i, value in enumerate(findings, 1)])) \
+                                  + _unverified_context([(finding_key(i), value)
+                                                         for i, value in enumerate(findings, 1)])) \
                     if not job('review') else self._loop_phase(db, group_id, 'review_wait')
             if phase == 'review_wait':
                 text = output('review')
@@ -305,21 +354,24 @@ class GroupLoop:
                     db.execute('''UPDATE group_messages SET review_status=?,reviewer_id=?,review_key=?,review_note=?
                         WHERE group_id=? AND request_key=?''',
                         ('accepted' if decision == 'accept' else 'redirected', agents['critic'],
-                         'review', text[:4096], group_id, f'investigate-{index}'))
+                          'review', text[:4096], group_id, finding_key(index)))
                 return self._loop_phase(db, group_id, 'redirect')
             if phase == 'redirect':
                 redirected = db.execute("SELECT gm.* FROM group_messages gm WHERE gm.group_id=? "
                                         "AND gm.review_status='redirected'", (group_id,)).fetchone()
                 accepted = db.execute("SELECT gm.text FROM group_messages gm WHERE gm.group_id=? "
                                       "AND gm.review_status='accepted'", (group_id,)).fetchone()
-                owner = 'investigator-2' if redirected['request_key'] == 'investigate-1' else 'investigator-1'
+                owner = 'investigator-2' if redirected['request_key'].startswith('investigate-1') else 'investigator-1'
                 return dispatch('redirect', 'critic', owner, 'Revisit redirected branch using other finding',
                                  'model.respond', 'finding',
                                  _unverified_context([('accepted_finding', accepted[0]),
                                                       ('redirected_finding', redirected['text']),
                                                       ('critique', output('review'))])
                                  + '\nProvide a corrected bounded finding.',
-                                parent=redirected['task_id']) if not job('redirect') else self._loop_phase(db, group_id, 'redirect_wait')
+                                 parent=redirected['task_id'],
+                                 avoid=db.execute('''SELECT j.model FROM jobs j JOIN group_jobs gj ON gj.job_id=j.id
+                                     WHERE gj.group_id=? AND gj.request_key=?''',
+                                                  (group_id, redirected['request_key'])).fetchone()[0]) if not job('redirect') else self._loop_phase(db, group_id, 'redirect_wait')
             if phase == 'redirect_wait':
                 text = output('redirect')
                 if text is None:
@@ -341,7 +393,7 @@ class GroupLoop:
                 if db.execute("SELECT 1 FROM group_artifacts WHERE group_id=? AND status='pending'",
                               (group_id,)).fetchone():
                     return False
-                findings = [output('investigate-1'), output('investigate-2'), output('redirect')]
+                findings = [output(finding_key(1)), output(finding_key(2)), output('redirect')]
                 verified = db.execute('''SELECT statement,imports,environment FROM group_artifacts
                     WHERE group_id=? AND status='verified' AND verifier_identity=?
                     ORDER BY rowid LIMIT 3''',
