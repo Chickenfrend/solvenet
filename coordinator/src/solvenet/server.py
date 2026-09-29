@@ -520,7 +520,7 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     return self.respond(201, coordinator.store.submit(**run_options(data)))
                 if parts == ['v1', 'groups']:
                     required = {'request_key', 'statement', 'imports', 'environment', 'models'}
-                    if set(data) - (required | {'max_work', 'deadline'}):
+                    if set(data) - (required | {'max_work', 'deadline', 'model_capabilities'}):
                         raise ValueError('Unknown group field')
                     if required - set(data):
                         raise ValueError('Missing group fields: ' + ', '.join(sorted(required - set(data))))

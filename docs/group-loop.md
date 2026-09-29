@@ -9,8 +9,12 @@ deadline). The deadline defaults to one hour and may be set to a finite time
 within the next hour; a group without a compatible worker stops when it expires.
 The coordinator scheduler calls `advance_groups()` between Lean
 checks; `advance_group(id)` is also available for deterministic local driving.
-The same local coordinator exposes `POST /v1/groups` with the above fields and
+The same local coordinator exposes `POST /v1/groups` with the above fields
+(including optional `model_capabilities`) and
 `GET /v1/groups/{id}` for the combined group/loop snapshot and terminal reason.
+For a process-level demonstration using two compiled Go workers, scripted
+Ollama responses and the pinned Lean verifier, see
+[`integration/README.md`](../integration/README.md#A6-collaborating-agents--two-workers--pinned-lean).
 
 The planner returns a bounded JSON `{"approaches": ["subgoal 1", "subgoal 2"]}`
 in a `model.respond` plan result. Two persistent investigators receive separate

@@ -1,4 +1,4 @@
-# IT1: site → coordinator → worker → Lean
+# Process-level integration: IT1 and A6
 
 From the repository root, with Python 3.11+, Go, and the pinned Lean 4.19.0
 toolchain installed through elan (including `lake` on `PATH`):
@@ -15,3 +15,78 @@ rejects an invalid one. No Docker, Ollama installation, GPU, API key or existing
 SolveNet database is needed. Allow roughly 10 seconds on a warmed machine,
 plus initial Go build/toolchain setup time. A failure reports the run ID,
 bounded run state and worker log.
+
+## A6: collaborating agents → two workers → pinned Lean
+
+Run only the collaboration case with:
+
+```sh
+PATH="$HOME/.elan/bin:$PATH" PYTHONPATH=coordinator/src:homelab/src \
+  python3 -m unittest discover -s integration -p test_group_collaboration.py -v
+```
+
+`fixtures/collaboration-nat-reorder.json` pins the target under `Init` in
+`lean/lean-toolchain` (Lean 4.19.0): for natural numbers `a b c`, prove
+`(a + b) + c = (c + b) + a`. The first investigator proposes reassociation as
+an auxiliary formal lemma; a second explores swapping terms but misses the
+parentheses. A critic accepts the first and redirects the second. The scripted
+synthesizer returns a proof using reassociation and two commutations **only
+after** the verified auxiliary statement appears in the verified-context block;
+this checks delivery and gating, not causal discovery or an efficiency gain.
+The lemma alone does not prove the target. Lean checks both claims independently.
+The fixture's proof is used solely by the fake model server as a deterministic
+response, never submitted as a reference proof in the target problem request.
+
+The test creates one temporary coordinator SQLite database (no site is needed
+for group inspection), an in-process localhost coordinator HTTP server and
+scheduler, two fake localhost Ollama APIs, and **two compiled Go worker
+processes**. Models `ollama/fixture-routine:latest` and
+`ollama/fixture-specialist:latest` are scripted response identities, **not
+downloaded weights**; both advertise availability. Routing config restricts
+the routine model to findings at cost 1, and the specialist to planning,
+findings, critique and proof at cost 2. The coordinator reserves 24 work units
+and uses 20 across six jobs; the redirected branch is reassigned to the first
+investigator, who switches from routine to specialist while retaining that
+agent ID. The run waits up
+to 45 seconds for terminal verification and cleans up subprocesses, threads,
+sockets and its temporary DB. No Docker, Ollama daemon, GPU, hosted credentials,
+site database or existing coordinator database is touched.
+
+The assertions require five persistent agent IDs, six distinct linked jobs,
+parentage and reviewer dispositions, the cross-model handoff, a verified
+provenance-bound artifact, a verified target attempt and a `verified_target`
+group reason. On the scripted success path the coordinator's `cost` reports
+six requests/leases, zero retries/failures, 138 known input tokens, 66 known
+output tokens, 6,000,000 known provider-duration nanoseconds, two real Lean
+checks and their measured milliseconds (machine-dependent, unknown count 0).
+The fake API *supplies* token/duration numbers to test accounting; they are
+not real model consumption or a model-strength benchmark. Missing usage in
+other runs remains explicitly unknown in `cost`; a queued request has no
+reported provider usage. This case does not demonstrate success on a frontier
+problem, autonomous decomposition or accuracy of local models.
+
+For an operator-run group, `GET /v1/groups/<id>` contains agents, task parents,
+job links, route explanations, bounded messages, artifact outcomes, calls and
+cost. `GET /v1/runs/<run_id>` contains the final Lean diagnostics and candidate.
+To print a compact graph and cost from **those existing endpoints**:
+
+```sh
+python3 integration/group_trace.py <group_id> --coordinator http://127.0.0.1:8080
+```
+
+For an optional exploratory run with actual local models, start a coordinator
+on a **new temporary SQLite path** using `--verifier local --project lean` and
+two Go workers using `-provider ollama -model <installed-name> -ollama-url
+http://127.0.0.1:11434` (different `-id` values). Check installed names with
+`ollama list`, and check both IDs with `/v1/model-activity?model=ollama%2F...`.
+Submit `POST /v1/groups` with `request_key`, the fixture's `statement`,
+`imports`, `environment`, `max_work: 24`, role `models` and
+`model_capabilities` as in the test, replacing model IDs and capability/cost
+estimates with the actual installed models. Keep `context_bytes` large enough
+for the bounded group prompts and worker `-ollama-context` greater than 2048
+tokens for synthesis. Inspect with `group_trace.py` and the run endpoint;
+record configured IDs, Ollama `generation.model` / `model_digest` if reported,
+route decisions, all calls and known/unknown usage, Lean checks, failures,
+elapsed time and terminal reason. This is an operator procedure, not a claim
+that a live-model trial was performed or that the scripted identities imply a
+capability hierarchy for real weights.

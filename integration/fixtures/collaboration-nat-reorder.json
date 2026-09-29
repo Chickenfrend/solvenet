@@ -1,0 +1,16 @@
+{
+  "environment": "lean/lean-toolchain:leanprover/lean4:v4.19.0; imports=Init",
+  "imports": ["Init"],
+  "statement": "(a b c : Nat) : (a + b) + c = (c + b) + a",
+  "plan": {"approaches": ["Prove reassociation of the left-hand side", "Find the swaps needed to put c + b before a"]},
+  "artifact": {
+    "statement": "(a b c : Nat) : (a + b) + c = a + (b + c)",
+    "imports": ["Init"],
+    "environment": "lean/lean-toolchain:leanprover/lean4:v4.19.0; imports=Init",
+    "proof": "exact Nat.add_assoc a b c"
+  },
+  "second_finding": "Tentative: swap a and c first; this does not account for the parentheses or the order of b and c.",
+  "review": {"decisions": ["accept", "redirect"]},
+  "redirected_finding": "Use the accepted reassociation first; then Nat.add_comm b c swaps the inner sum, and Nat.add_comm a (c + b) swaps the outer sum.",
+  "target_proof": "calc\n  (a + b) + c = a + (b + c) := Nat.add_assoc a b c\n  _ = a + (c + b) := by rw [Nat.add_comm b c]\n  _ = (c + b) + a := by rw [Nat.add_comm a (c + b)]"
+}
