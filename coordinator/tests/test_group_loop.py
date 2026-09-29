@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from solvenet.server import Coordinator
 from solvenet.group_routing import choose
-from solvenet.store import Store
+from solvenet.store import Conflict, Store
 from solvenet.verifier import LeanVerifier, VerificationResult, VerificationStatus
 
 
@@ -23,6 +23,70 @@ class GroupLoopTests(unittest.TestCase):
                        ('planner', 'investigator', 'critic', 'synthesizer')}
         self.group = self.store.start_group_loop('target', ': True ∧ True', ['Init'],
                                                  'lean-test', self.models)
+
+    def test_start_is_atomic_after_group_and_agents_inserted(self):
+        original = self.store.transaction
+
+        def failing_transaction():
+            context = original()
+
+            class Wrapper:
+                def __enter__(self):
+                    db = context.__enter__()
+                    db.execute('''CREATE TEMP TRIGGER fail_loop BEFORE INSERT ON group_loops
+                        BEGIN SELECT RAISE(ABORT, 'injected loop failure'); END''')
+                    return db
+
+                def __exit__(self, *args):
+                    return context.__exit__(*args)
+
+            return Wrapper()
+
+        with patch.object(self.store, 'transaction', failing_transaction):
+            with self.assertRaisesRegex(Exception, 'injected loop failure'):
+                self.store.start_group_loop('retry', ': True', ['Init'], 'lean-test', self.models)
+        with self.store.connect() as db:
+            self.assertIsNone(db.execute("SELECT id FROM agent_groups WHERE request_key='retry'").fetchone())
+            self.assertEqual(db.execute('SELECT count(*) FROM group_agents').fetchone()[0], 5)
+            self.assertEqual(db.execute('SELECT count(*) FROM group_loops').fetchone()[0], 1)
+        group = self.store.start_group_loop('retry', ': True', ['Init'], 'lean-test', self.models)
+        self.assertEqual(self.store.start_group_loop('retry', ': True', ['Init'], 'lean-test', self.models), group)
+        self.assertEqual(len(self.store.group(group)['agents']), 5)
+        with self.assertRaises(Conflict):
+            self.store.start_group_loop('retry', ': False', ['Init'], 'lean-test', self.models)
+
+    def test_start_reuses_matching_preexisting_agents_and_rejects_wrong_roles(self):
+        group = self.store.create_group('preexisting', ': True', ['Init'], 'lean-test', max_work=12)
+        planner = self.store.add_agent(group, 'planner', 'planner')
+        self.assertEqual(self.store.start_group_loop('preexisting', ': True', ['Init'],
+                                                     'lean-test', self.models), group)
+        self.assertEqual(len(self.store.group(group)['agents']), 5)
+        self.assertEqual(self.store.group(group)['agents'][0]['id'], planner)
+        wrong = self.store.create_group('wrong-role', ': True', ['Init'], 'lean-test', max_work=12)
+        self.store.add_agent(wrong, 'planner', 'investigator')
+        with self.assertRaises(Conflict):
+            self.store.start_group_loop('wrong-role', ': True', ['Init'], 'lean-test', self.models)
+        self.assertIsNone(self.store.group_loop(wrong))
+        self.assertEqual(len(self.store.group(wrong)['agents']), 1)
+
+    def test_stopped_loop_rejects_new_jobs_without_debit_or_run_change(self):
+        planner = next(a['id'] for a in self.store.group(self.group)['agents']
+                       if a['role'] == 'planner')
+        task = self.store.add_group_task(self.group, 'manual', planner, planner, 'Plan', 2)
+        args = (self.group, task, planner, 'first', 'lean-test', 'scripted', 'finding',
+                [{'role': 'user', 'content': 'Plan'}])
+        first = self.store.enqueue_group_job(*args)
+        run_id = self.store.group(self.group)['run']['run_id']
+        with self.store.transaction() as db:
+            db.execute("UPDATE group_loops SET phase='stopped' WHERE group_id=?", (self.group,))
+            db.execute("UPDATE runs SET status='exhausted' WHERE id=?", (run_id,))
+        self.assertEqual(self.store.enqueue_group_job(*args), first)  # idempotent retry
+        with self.assertRaises(Conflict):
+            self.store.enqueue_group_job(*(args[:3] + ('second',) + args[4:]))
+        state = self.store.group(self.group)
+        self.assertEqual(len(state['jobs']), 1)
+        self.assertEqual(state['tasks'][0]['remaining'], 1)
+        self.assertEqual(self.store.run_status(run_id)['status'], 'exhausted')
 
     def drive(self, key, text, *, expires=False):
         for _ in range(12):

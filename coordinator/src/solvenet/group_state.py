@@ -107,7 +107,14 @@ class GroupState:
     def create_group(self, request_key, statement, imports, environment, *, max_work=32,
                      max_tasks=32, max_messages=128):
         """Create an immutable target and a bounded pool of model-call work units."""
-        from .store import identifier
+        serialized = self._validate_group(request_key, statement, imports, environment,
+                                          max_work, max_tasks, max_messages)
+        with self.transaction() as db:
+            return self._create_group(db, request_key, statement, serialized, environment,
+                                      max_work, max_tasks, max_messages)
+
+    def _validate_group(self, request_key, statement, imports, environment,
+                        max_work, max_tasks, max_messages):
         _key(request_key)
         _text(statement, 'statement', limits.MAX_STATEMENT_BYTES)
         if not isinstance(imports, list) or not 1 <= len(imports) <= limits.MAX_IMPORTS or any(
@@ -118,20 +125,23 @@ class GroupState:
         _number(max_work, 'max_work', 256)
         _number(max_tasks, 'max_tasks', 64)
         _number(max_messages, 'max_messages', 256)
-        serialized = json.dumps(imports)
-        with self.transaction() as db:
-            old = db.execute('SELECT * FROM agent_groups WHERE request_key=?', (request_key,)).fetchone()
-            if old:
-                if (old['statement'], old['imports'], old['environment'], old['max_work'],
-                        old['max_tasks'], old['max_messages']) != (
-                        statement, serialized, environment, max_work, max_tasks, max_messages):
-                    _conflict('Group key reused with different target or limits')
-                return old['id']
-            group_id = identifier()
-            db.execute('''INSERT INTO agent_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                       (group_id, request_key, statement, serialized, environment,
-                        max_work, max_work, max_tasks, max_messages, self.clock()))
-            return group_id
+        return json.dumps(imports)
+
+    def _create_group(self, db, request_key, statement, serialized, environment,
+                      max_work, max_tasks, max_messages):
+        from .store import identifier
+        old = db.execute('SELECT * FROM agent_groups WHERE request_key=?', (request_key,)).fetchone()
+        if old:
+            if (old['statement'], old['imports'], old['environment'], old['max_work'],
+                    old['max_tasks'], old['max_messages']) != (
+                    statement, serialized, environment, max_work, max_tasks, max_messages):
+                _conflict('Group key reused with different target or limits')
+            return old['id']
+        group_id = identifier()
+        db.execute('''INSERT INTO agent_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                   (group_id, request_key, statement, serialized, environment,
+                    max_work, max_work, max_tasks, max_messages, self.clock()))
+        return group_id
 
     def add_agent(self, group_id, request_key, role):
         from .store import identifier
@@ -248,6 +258,9 @@ class GroupState:
                         task_id, agent_id, environment, cost, model, task_type, serialized, max_output_tokens):
                     _conflict('Job key reused with different contents')
                 return old['job_id']
+            if db.execute("SELECT 1 FROM group_loops WHERE group_id=? AND phase='stopped'",
+                          (group_id,)).fetchone():
+                _conflict('Group loop is stopped')
             if task['owner_id'] != agent_id:
                 _conflict('Acting agent is not task owner')
             if task['status'] != 'open' or cost > task['remaining']:

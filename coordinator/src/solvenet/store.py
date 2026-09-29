@@ -550,18 +550,30 @@ class Store(GroupLoop, GroupState, GroupArtifacts):
             experiment = self._experiment(db, experiment_id)
             return summary(db, experiment) if experiment else None
 
-    def _refresh(self, db):
+    def _refresh(self, db, run_id=None):
+        if run_id is not None:
+            db.execute("""UPDATE jobs SET status='cancelled' WHERE run_id=? AND status='queued'
+                AND EXISTS (SELECT 1 FROM runs WHERE id=? AND status IN ('solved','error'))""",
+                (run_id, run_id))
+            db.execute("""UPDATE runs SET status='exhausted' WHERE id=? AND status='running'
+                AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.run_id=?
+                    AND jobs.status IN ('queued','assigned','verifying'))""", (run_id, run_id))
+            return
         db.execute("""UPDATE jobs SET status='cancelled' WHERE status='queued'
-          AND run_id IN (SELECT id FROM runs WHERE status IN ('solved','error'))""")
+          AND run_id IN (SELECT id FROM runs WHERE status IN ('solved','error'))
+          """)
         db.execute("""UPDATE runs SET status='exhausted' WHERE status='running' AND NOT EXISTS
           (SELECT 1 FROM jobs WHERE jobs.run_id=runs.id AND status IN ('queued','assigned','verifying'))""")
 
     def _expire(self, db):
-        expired = db.execute("SELECT * FROM assignments WHERE status='active' AND expires<=?", (self.clock(),)).fetchall()
+        expired = db.execute("""SELECT a.*, j.run_id FROM assignments a
+            JOIN jobs j ON j.id=a.job_id WHERE a.status='active' AND a.expires<=?""",
+            (self.clock(),)).fetchall()
         for a in expired:
             db.execute("UPDATE assignments SET status='expired' WHERE id=?", (a['id'],))
             self._retry(db, a['job_id'])
-        self._refresh(db)
+        for run_id in {a['run_id'] for a in expired}:
+            self._refresh(db, run_id)
 
     def _retry(self, db, job_id):
         # Pre-execution protocol rejections did not spend model/provider work and

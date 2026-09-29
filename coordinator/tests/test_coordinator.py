@@ -107,6 +107,39 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(retry['job']['id'], task['job']['id'])
         self.assertEqual(retry['job']['messages'], task['job']['messages'])
 
+    def test_claim_without_expiry_skips_refresh_and_expiry_scopes_runs(self):
+        another = self.store.submit('True', ['Init'], attempts=1)['run_id']
+        first = self.store.claim('worker', ['scripted'])
+        with patch.object(self.store, '_refresh', wraps=self.store._refresh) as refresh:
+            second = self.store.claim('worker-2', ['scripted'])
+            self.assertEqual(second['job']['run_id'], another)
+            self.assertIsNone(self.store.claim('worker-3', ['scripted']))
+            refresh.assert_not_called()
+            self.now += 4
+            retry = self.store.claim('worker-3', ['scripted'])
+            self.assertEqual(retry['job']['id'], first['job']['id'])
+            self.assertEqual({call.args[1] for call in refresh.call_args_list}, {self.run, another})
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM assignments WHERE status='expired'").fetchone()[0], 2)
+        self.assertEqual(self.store.run_status(self.run)['status'], 'running')
+        self.assertEqual(self.store.run_status(another)['status'], 'running')
+
+    def test_expired_final_assignment_exhausts_only_its_run(self):
+        other = self.store.submit('True', ['Init'], attempts=1)['run_id']
+        with self.store.connect() as db:
+            db.execute('UPDATE jobs SET max_assignments=1 WHERE run_id=?', (self.run,))
+            db.commit()
+        lease = self.store.claim('worker', ['scripted'])
+        self.assertEqual(lease['job']['run_id'], self.run)
+        with patch.object(self.store, '_refresh', wraps=self.store._refresh) as refresh:
+            self.now += 4
+            next_lease = self.store.claim('worker-2', ['scripted'])
+            self.assertEqual(next_lease['job']['run_id'], other)
+            refresh.assert_called_once()
+            self.assertEqual(refresh.call_args.args[1], self.run)
+        self.assertEqual(self.store.run_status(self.run)['status'], 'exhausted')
+        self.assertEqual(self.store.run_status(other)['status'], 'running')
+
     def test_restart_and_duplicate_result(self):
         a = self.store.claim('worker', ['scripted'])
         restarted = Store(self.path, clock=lambda: self.now)

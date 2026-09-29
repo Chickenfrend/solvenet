@@ -96,17 +96,18 @@ class GroupLoop:
                                      not math.isfinite(deadline)):
             raise ValueError('deadline must be finite')
         now = self.clock()
-        if deadline is not None and not now < deadline <= now + MAX_GROUP_DURATION_SECONDS:
-            # Allow an exact idempotent retry after an existing loop's deadline.
-            with self.connect() as db:
+        serialized = self._validate_group(request_key, statement, imports, environment,
+                                          max_work, 32, 128)
+        with self.transaction() as db:
+            if deadline is not None and not now < deadline <= now + MAX_GROUP_DURATION_SECONDS:
+                # Allow an exact idempotent retry after an existing loop's deadline.
                 previous = db.execute('''SELECT gl.deadline FROM group_loops gl
                     JOIN agent_groups g ON g.id=gl.group_id WHERE g.request_key=?''',
                     (request_key,)).fetchone()
-            if previous is None or previous['deadline'] != deadline:
-                raise ValueError('deadline must be in the next hour')
-        group_id = self.create_group(request_key, statement, imports, environment,
-                                     max_work=max_work)
-        with self.transaction() as db:
+                if previous is None or previous['deadline'] != deadline:
+                    raise ValueError('deadline must be in the next hour')
+            group_id = self._create_group(db, request_key, statement, serialized, environment,
+                                          max_work, 32, 128)
             existing = db.execute('SELECT * FROM group_loops WHERE group_id=?', (group_id,)).fetchone()
             if existing:
                 requested_deadline = (existing['created_at'] + MAX_GROUP_DURATION_SECONDS
@@ -122,8 +123,14 @@ class GroupLoop:
                               ('investigator-2', 'investigator'), ('critic', 'critic'),
                               ('synthesizer', 'synthesizer')):
                 from .store import identifier
-                db.execute('INSERT INTO group_agents(id,group_id,request_key,role) VALUES (?,?,?,?)',
-                           (identifier(), group_id, key, role))
+                agent = db.execute('SELECT role FROM group_agents WHERE group_id=? AND request_key=?',
+                                   (group_id, key)).fetchone()
+                if agent:
+                    if agent['role'] != role:
+                        _conflict('Loop agent role differs from existing group agent')
+                else:
+                    db.execute('INSERT INTO group_agents(id,group_id,request_key,role) VALUES (?,?,?,?)',
+                               (identifier(), group_id, key, role))
             db.execute('''INSERT INTO group_loops
                 (group_id,models,phase,reason,deadline,created_at,capabilities)
                 VALUES (?,?,?,?,?,?,?)''',
