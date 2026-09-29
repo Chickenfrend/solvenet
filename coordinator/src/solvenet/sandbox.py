@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import re
 import selectors
 import subprocess
 import sys
@@ -212,6 +213,24 @@ class ContainerVerifier:
         self.resources = resources or DockerResourceLimits()
         self.container_config.validate(self.verifier_config)
 
+    def artifact_identity(self):
+        """Resolve the local image tag to its content ID before trusting artifacts."""
+        try:
+            result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', self.image],
+                                    capture_output=True, check=True, timeout=5)
+            image_id = result.stdout.decode().strip()
+            return 'docker:' + image_id if re.fullmatch(r'sha256:[0-9a-f]{64}', image_id) else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+
+    def verify_artifact(self, statement, candidate, *, imports, identity):
+        """Run an artifact under the exact image ID recorded for this check."""
+        image_id = identity.removeprefix('docker:') if isinstance(identity, str) else ''
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id):
+            return VerificationResult(VerificationStatus.VERIFIER_ERROR,
+                                      'Artifact verifier image identity unavailable', 0)
+        return self._verify(statement, candidate, imports=imports, image=image_id)
+
     def _docker_base_command(self, name):
         return [
             'docker', 'run', '--rm', '--pull=never', '--name', name,
@@ -229,6 +248,9 @@ class ContainerVerifier:
         ]
 
     def verify(self, statement, candidate, *, imports=('Init',)):
+        return self._verify(statement, candidate, imports=imports, image=self.image)
+
+    def _verify(self, statement, candidate, *, imports, image):
         started = time.monotonic()
         name = 'solvenet-verify-' + uuid4().hex
         status = VerificationStatus.VERIFIER_ERROR
@@ -254,7 +276,7 @@ class ContainerVerifier:
                     encoding='utf-8',
                 )
                 command = self._docker_base_command(name) + [
-                    '--mount', f'type=bind,src={path},dst=/work', self.image,
+                    '--mount', f'type=bind,src={path},dst=/work', image,
                 ]
                 try:
                     completed = _run_docker(

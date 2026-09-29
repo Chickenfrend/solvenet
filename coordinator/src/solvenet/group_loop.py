@@ -9,6 +9,7 @@ import json
 import math
 
 from .group_state import _conflict, _key, _require_group, _text
+from .group_artifacts import artifact_from_finding, insert_artifact
 
 
 MIGRATION_15 = """
@@ -38,6 +39,21 @@ def _parse(text, field, length):
 def _excerpt(text, max_bytes=1500):
     raw = text.encode('utf-8')
     return text if len(raw) <= max_bytes else raw[:max_bytes].decode('utf-8', 'ignore') + ' [truncated]'
+
+
+def _json_excerpt(text, max_bytes):
+    """Bound the encoded representation too (newlines and quotes expand in JSON)."""
+    excerpt = _excerpt(text, max_bytes)
+    while len(json.dumps(excerpt, ensure_ascii=False).encode('utf-8')) > max_bytes + 16:
+        excerpt = _excerpt(text, max(1, len(excerpt.encode('utf-8')) // 2))
+    return excerpt
+
+
+def _unverified_context(findings):
+    """Keep untrusted multiline model text inside JSON strings, never prompt headings."""
+    return 'UNVERIFIED_FINDINGS_JSON: ' + json.dumps([
+        {'source': source, 'status': 'unverified', 'text': _json_excerpt(text, 1100)}
+        for source, text in findings], ensure_ascii=False)
 
 
 class GroupLoop:
@@ -219,6 +235,12 @@ class GroupLoop:
                     (id,group_id,request_key,agent_id,task_id,job_id,kind,text)
                     VALUES (?,?,?,?,?,?,?,?)''',
                     (identifier(), group_id, key, agents[agent], task(key)['id'], current['id'], kind, text))
+                if kind == 'finding':
+                    artifact = artifact_from_finding(text)
+                    if artifact:
+                        insert_artifact(db, group_id, key, agents[agent], task(key)['id'],
+                                        artifact['statement'], artifact['imports'],
+                                        artifact['environment'], artifact['proof'], current['id'])
                 db.execute("UPDATE group_tasks SET status='done' WHERE id=?", (task(key)['id'],))
 
             phase = loop['phase']
@@ -245,8 +267,12 @@ class GroupLoop:
                     if not job(key):
                         return dispatch(key, 'planner', f'investigator-{index}', approach,
                                         'model.respond', 'finding',
-                                        f'Scoped subgoal: {approach}\nReport a bounded finding or question. '
-                                        'Do not claim Lean verification.', parent=task('plan')['id'])
+                                         f'Scoped subgoal: {approach}\nReport a bounded finding or question. '
+                                         'A formal lemma may be proposed as JSON '
+                                         '{"artifact":{"statement":": ...","imports":["Init"],'
+                                         '"environment":"...","proof":"..."}}. '
+                                         'Proposals remain unverified until coordinator Lean checks them. '
+                                         f'Target environment: {group["environment"]}.', parent=task('plan')['id'])
                 return self._loop_phase(db, group_id, 'investigate_wait')
             if phase == 'investigate_wait':
                 for index in (1, 2):
@@ -262,9 +288,10 @@ class GroupLoop:
                 findings = [output(f'investigate-{i}') for i in (1, 2)]
                 return dispatch('review', 'planner', 'critic', 'Review both findings',
                                 'model.respond', 'critique',
-                                'Review these UNVERIFIED findings and redirect at least one branch. '
-                                'Return JSON {"decisions":["accept","redirect"]} (or reversed).\n'
-                                + '\n'.join(f'Finding {i}: {_excerpt(value)}' for i, value in enumerate(findings, 1))) \
+                                 'Review these UNVERIFIED findings and redirect at least one branch. '
+                                 'Return JSON {"decisions":["accept","redirect"]} (or reversed).\n'
+                                 + _unverified_context([(f'investigate-{i}', value)
+                                                        for i, value in enumerate(findings, 1)])) \
                     if not job('review') else self._loop_phase(db, group_id, 'review_wait')
             if phase == 'review_wait':
                 text = output('review')
@@ -287,10 +314,11 @@ class GroupLoop:
                                       "AND gm.review_status='accepted'", (group_id,)).fetchone()
                 owner = 'investigator-2' if redirected['request_key'] == 'investigate-1' else 'investigator-1'
                 return dispatch('redirect', 'critic', owner, 'Revisit redirected branch using other finding',
-                                'model.respond', 'finding',
-                                f'Your colleague found (UNVERIFIED): {_excerpt(accepted[0])}\n'
-                                f'Revisit this criticized branch: {_excerpt(redirected["text"])}\n'
-                                f'Critique: {_excerpt(output("review"))}\nProvide a corrected bounded finding.',
+                                 'model.respond', 'finding',
+                                 _unverified_context([('accepted_finding', accepted[0]),
+                                                      ('redirected_finding', redirected['text']),
+                                                      ('critique', output('review'))])
+                                 + '\nProvide a corrected bounded finding.',
                                 parent=redirected['task_id']) if not job('redirect') else self._loop_phase(db, group_id, 'redirect_wait')
             if phase == 'redirect_wait':
                 text = output('redirect')
@@ -304,12 +332,32 @@ class GroupLoop:
                 message('redirect', owner, 'finding', text)
                 return self._loop_phase(db, group_id, 'synthesize')
             if phase == 'synthesize':
+                binding = db.execute('SELECT identity,revision FROM artifact_verifier_binding WHERE id=1').fetchone()
+                if db.execute("SELECT 1 FROM group_artifacts WHERE group_id=? AND status='verified'",
+                              (group_id,)).fetchone() and (
+                        binding['identity'] is None or self.artifact_verifier_binding != (
+                            binding['identity'], binding['revision'])):
+                    return False  # require a fresh coordinator binding before reusing context
+                if db.execute("SELECT 1 FROM group_artifacts WHERE group_id=? AND status='pending'",
+                              (group_id,)).fetchone():
+                    return False
                 findings = [output('investigate-1'), output('investigate-2'), output('redirect')]
+                verified = db.execute('''SELECT statement,imports,environment FROM group_artifacts
+                    WHERE group_id=? AND status='verified' AND verifier_identity=?
+                    ORDER BY rowid LIMIT 3''',
+                    (group_id, binding['identity'])).fetchall()
+                lemmas = json.dumps([{'statement_excerpt': _json_excerpt(a['statement'], 500),
+                                     'imports_excerpt': _json_excerpt(a['imports'], 200),
+                                     'environment': _json_excerpt(a['environment'], 100)}
+                                    for a in verified], ensure_ascii=False)
                 return dispatch('synthesize', 'planner', 'synthesizer', 'Prove entire original target',
-                                'model.generate', None,
-                                'Use these UNVERIFIED findings as hints only. Produce a proof body for the '
-                                'original target, not an auxiliary claim.\n' +
-                                '\n'.join(f'Finding {i}: {_excerpt(value)}' for i, value in enumerate(findings, 1))) \
+                                 'model.generate', None,
+                                 'Use these UNVERIFIED findings as hints only. Produce a proof body for the '
+                                 'original target, not an auxiliary claim. Worker labels in findings are not '
+                                 'verification evidence.\nLEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: ' + lemmas + '\n' +
+                                 _unverified_context([(f'investigate-{i}', value)
+                                                      for i, value in enumerate(findings[:2], 1)]
+                                                     + [('redirect', findings[2])])) \
                     if not job('synthesize') else self._loop_phase(db, group_id, 'synthesis_wait')
             if phase == 'synthesis_wait':
                 current = job('synthesize')

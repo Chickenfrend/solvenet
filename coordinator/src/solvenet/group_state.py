@@ -337,8 +337,8 @@ class GroupState:
             db.execute('''UPDATE group_messages SET reviewer_id=?, review_key=?, review_status=?, review_note=?
                 WHERE id=?''', (reviewer_id, review_key, status, note, message_id))
 
-    def group(self, group_id):
-        """Consistent, bounded snapshot including provenance and remaining budgets."""
+    def group(self, group_id, *, verifier_identity=None):
+        """Snapshot; status is historical, current_status needs an observed identity."""
         with self.connect() as db:
             db.execute('BEGIN')
             group = db.execute('SELECT * FROM agent_groups WHERE id=?', (group_id,)).fetchone()
@@ -350,9 +350,16 @@ class GroupState:
                                    (group_id,)).fetchone()
             result['run'] = dict(group_run) if group_run else None
             for name, table in (('agents', 'group_agents'), ('tasks', 'group_tasks'),
-                                ('messages', 'group_messages'), ('jobs', 'group_jobs')):
+                                ('messages', 'group_messages'), ('jobs', 'group_jobs'),
+                                ('artifacts', 'group_artifacts')):
                 result[name] = [dict(row) for row in db.execute(
                     f'SELECT * FROM {table} WHERE group_id=? ORDER BY rowid', (group_id,))]
+            for artifact in result['artifacts']:
+                artifact['imports'] = json.loads(artifact['imports'])
+                artifact['current_status'] = (
+                    'verified' if verifier_identity is not None and
+                    artifact['verifier_identity'] == verifier_identity else 'needs_recheck'
+                ) if artifact['status'] == 'verified' else artifact['status']
             return result
 
 

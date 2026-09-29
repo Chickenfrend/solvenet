@@ -199,7 +199,19 @@ class Coordinator:
 
     def tick(self):
         self.store.expire()
+        binding = None
+        if self.store.needs_artifact_identity():
+            try:
+                identity = self.verifier.artifact_identity()
+            except Exception:
+                LOG.exception('Could not identify artifact verifier')
+                identity = None
+            binding = self.store.bind_group_artifact_verifier(identity)
         changed = self.store.advance_groups()
+        artifact = self.store.pending_group_artifact() if binding and binding[0] else None
+        if artifact:
+            self._check_artifact(artifact, binding)
+            return True
         attempt = self.store.pending()
         if not attempt:
             return changed
@@ -211,6 +223,50 @@ class Coordinator:
             result = VerificationResult(VerificationStatus.VERIFIER_ERROR, "Verifier raised an internal error; see coordinator logs", 0)
         self.store.verified(attempt['id'], result)
         return True
+
+    def _check_artifact(self, artifact, binding):
+        # Environment is an explicit local execution identity. No worker label
+        # determines it; a different identity cannot be replayed by this verifier.
+        if artifact['environment'] != artifact['target_environment']:
+            self.store.checked_group_artifact(artifact['id'], 'incompatible',
+                                               'Artifact environment differs from target environment',
+                                               binding=binding)
+            return
+        imports = json.loads(artifact['imports'])
+        target_imports = json.loads(artifact['target_imports'])
+        try:
+            def check(check_imports):
+                if hasattr(self.verifier, 'verify_artifact'):
+                    return self.verifier.verify_artifact(
+                        artifact['statement'], artifact['proof'], imports=check_imports,
+                        identity=binding[0])
+                return self.verifier.verify(artifact['statement'], artifact['proof'],
+                                            imports=check_imports)
+
+            result = check(imports)
+            if result.verified and imports != target_imports:
+                # Acceptance under broader imports alone does not make a lemma
+                # available to the target. Replay in the target's imports.
+                result = check(target_imports)
+        except Exception:
+            LOG.exception('Artifact verifier failed')
+            result = VerificationResult(VerificationStatus.VERIFIER_ERROR,
+                                        'Verifier raised an internal error; see coordinator logs', 0)
+        if isinstance(self.verifier, LeanVerifier):
+            # Local project/dependencies may have changed during the two Lean
+            # calls. Retry under a fresh identity rather than storing a result
+            # from mixed inputs (the project is locally trusted, not hostile).
+            try:
+                after = self.verifier.artifact_identity()
+            except Exception:
+                LOG.exception('Could not re-identify local artifact verifier')
+                after = None
+            if after != binding[0]:
+                self.store.bind_group_artifact_verifier(after)
+                return
+        self.store.checked_group_artifact(artifact['id'],
+                                          'verified' if result.verified else str(result.status),
+                                          result.diagnostics, binding=binding)
 
     def loop(self, stop):
         while not stop.is_set():
@@ -385,6 +441,16 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 if (len(parts) == 3 and parts[:2] == ['v1', 'groups']
                         and self.identifier(parts[2])):
                     group = coordinator.store.group(parts[2])
+                    if group and any(a['status'] == 'verified' for a in group['artifacts']):
+                        # Archived groups are not fingerprinted on every scheduler
+                        # tick. Only an inspection that needs a current label does
+                        # the potentially expensive verifier identity check.
+                        try:
+                            identity = coordinator.verifier.artifact_identity()
+                        except Exception:
+                            LOG.exception('Could not identify verifier for group inspection')
+                            identity = None
+                        group = coordinator.store.group(parts[2], verifier_identity=identity)
                     loop = coordinator.store.group_loop(parts[2]) if group else None
                     return self.respond(200 if loop else 404,
                                         {'group': group, 'loop': loop} if loop else {'error': 'Unknown group'})

@@ -472,7 +472,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 15)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 16)
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
@@ -603,6 +603,36 @@ class APITests(unittest.TestCase):
             with self.subTest(deadline=deadline):
                 self.assertEqual(self.request('/v1/groups', options | {
                     'request_key': 'bad-' + str(deadline), 'deadline': deadline})[0], 400)
+
+    def test_archived_artifact_inspection_qualifies_historical_verification(self):
+        models = {role: 'scripted' for role in ('planner', 'investigator', 'critic', 'synthesizer')}
+        group = self.store.start_group_loop('archived', ': True ∧ True', ['Init'],
+                                            'lean-test', models)
+        agent = next(a['id'] for a in self.store.group(group)['agents']
+                     if a['role'] == 'investigator')
+        task = self.store.add_group_task(group, 'lemma', agent, agent, 'Auxiliary claim', 1)
+        artifact = self.store.propose_group_artifact(group, 'lemma', agent, task,
+                                                     ': True', ['Init'], 'lean-test', 'trivial')
+        binding = self.store.bind_group_artifact_verifier('local:old')
+        self.store.checked_group_artifact(artifact, 'verified', binding=binding)
+        with self.store.transaction() as db:
+            db.execute("UPDATE group_loops SET phase='stopped',reason='budget' WHERE group_id=?",
+                       (group,))
+        self.assertEqual(self.store.group(group)['artifacts'][0]['status'], 'verified')
+        self.assertEqual(self.store.group(group)['artifacts'][0]['current_status'], 'needs_recheck')
+        with patch.object(self.coordinator.verifier, 'artifact_identity', create=True,
+                          return_value='local:old') as identity:
+            self.assertEqual(self.request(f'/v1/groups/{group}')[1]['group']['artifacts'][0]
+                             ['current_status'], 'verified')
+            self.coordinator.tick()
+            identity.assert_called_once()  # GET only, not an archived-group scheduler scan
+        with patch.object(self.coordinator.verifier, 'artifact_identity', create=True,
+                          return_value='local:new'):
+            snapshot = self.request(f'/v1/groups/{group}')[1]
+        observed = snapshot['group']['artifacts'][0]
+        self.assertEqual(observed['status'], 'verified')  # historical outcome
+        self.assertEqual(observed['verifier_identity'], 'local:old')
+        self.assertEqual(observed['current_status'], 'needs_recheck')
 
     def test_protocol_field_byte_boundaries(self):
         for field, maximum in (('statement', limits.MAX_STATEMENT_BYTES),
