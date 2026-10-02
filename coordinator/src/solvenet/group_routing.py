@@ -25,7 +25,7 @@ def validate_routing(models, capabilities):
     if set(capabilities) - set().union(*map(set, normalized.values())):
         raise ValueError('Capability for unconfigured model')
     for model, config in capabilities.items():
-        if not isinstance(config, dict) or set(config) - {'tasks', 'context_bytes', 'cost'}:
+        if not isinstance(config, dict) or set(config) - {'tasks', 'context_bytes', 'context_tokens', 'cost'}:
             raise ValueError('Invalid model capability')
         tasks = config.get('tasks', ['plan', 'finding', 'critique', 'proof'])
         if (not isinstance(tasks, list) or not tasks or
@@ -33,13 +33,16 @@ def validate_routing(models, capabilities):
             raise ValueError('Invalid task fit')
         if type(config.get('context_bytes', 8192)) is not int or config.get('context_bytes', 8192) < 1:
             raise ValueError('Invalid context capacity')
+        if 'context_tokens' in config and (type(config['context_tokens']) is not int or
+                                          not 1 <= config['context_tokens'] <= 1024 * 1024):
+            raise ValueError('Invalid token context capacity')
         if type(config.get('cost', 1)) is not int or not 1 <= config.get('cost', 1) <= 8:
             raise ValueError('Invalid model cost')
     return normalized
 
 
 def choose(db, group_id, models, capabilities, role, task_type, context_bytes, remaining,
-           *, avoid=None, now=0, lease_seconds=30):
+           *, avoid=None, now=0, lease_seconds=30, context_token_bound=None):
     """Return (model, cost, explanation) or a bounded inability to route."""
     candidates = []
     for order, model in enumerate(models[role]):
@@ -80,6 +83,9 @@ def choose(db, group_id, models, capabilities, role, task_type, context_bytes, r
             reasons.append('task_mismatch')
         if context_bytes > spec.get('context_bytes', 8192):
             reasons.append('context_exceeded')
+        if (context_token_bound is not None and spec.get('context_tokens') is not None and
+                context_token_bound > spec['context_tokens']):
+            reasons.append('context_window_exceeded')
         if 2 * cost > remaining:
             reasons.append('budget_exceeded')
         if availability in ('offline', 'unavailable', 'proof_only') or (
@@ -87,6 +93,7 @@ def choose(db, group_id, models, capabilities, role, task_type, context_bytes, r
             reasons.append(availability)
         candidates.append({'model': model, 'availability': availability, 'task_fit': task_type in spec.get(
             'tasks', ['plan', 'finding', 'critique', 'proof']), 'context_bytes': spec.get('context_bytes', 8192),
+                           'context_tokens': spec.get('context_tokens'),
                            'cost': cost, 'observed_completed_calls': completed,
                            'observed_accepted_findings': accepted, 'observed_verified_proofs': verified,
                            'observed_failed_calls': failed,
@@ -100,7 +107,8 @@ def choose(db, group_id, models, capabilities, role, task_type, context_bytes, r
                                 c['cost'] if role == 'investigator' else 0, c['order']))
     selected = viable[0] if viable else None
     return (selected['model'] if selected else None, 2 * selected['cost'] if selected else None,
-            json.dumps({'role': role, 'task_type': task_type, 'context_bytes': context_bytes,
+             json.dumps({'role': role, 'task_type': task_type, 'context_bytes': context_bytes,
+                         'context_token_upper_bound': context_token_bound,
                         'remaining_work': remaining, 'avoid_after_failure': avoid,
                         'candidates': candidates, 'selected': selected['model'] if selected else None,
                         'evidence': 'single_model_fallback_not_hierarchy_evidence' if len(set(

@@ -95,7 +95,8 @@ class GroupCollaborationTests(unittest.TestCase):
                                 'relationships': [dict(key='edge', **{'from': root, 'to': '$lemma'},
                                                        kind='suggests_using', reason='Try reassociation')]})
                     elif prompt.startswith('Scoped subgoal:'):
-                        if 'reassociation' in prompt:
+                        scoped = json.loads(prompt.split('UNTRUSTED_JSON ', 1)[1].split('\n', 1)[0])
+                        if 'reassociation' in scoped:
                             phase, text = 'investigate-1', json.dumps({'artifact': FIXTURE['artifact'],
                                                                         'status': 'verified'})
                             if graph_mode:
@@ -122,14 +123,18 @@ class GroupCollaborationTests(unittest.TestCase):
                         assert FIXTURE['artifact']['statement'] in prompt
                     elif prompt.startswith('Use these UNVERIFIED'):
                         phase = 'synthesize'
-                        verified_block = prompt.split('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: ', 1)[1].split('\n', 1)[0]
-                        verified = json.loads(verified_block)
-                        assert [claim['statement_excerpt'] for claim in verified] == [FIXTURE['artifact']['statement']]
+                        packet = json.loads(prompt.split('proof facts):\n', 1)[1])
+                        verified = packet['checked_lemmas']
+                        assert [claim['statement'] for claim in verified] == [FIXTURE['artifact']['statement']]
                         text = FIXTURE['target_proof']  # Scripted response conditional on verified context.
-                        assert FIXTURE['redirected_finding'] in prompt
+                        assert (FIXTURE['redirected_finding'] in prompt or packet['omitted']['messages'] > 0)
                     else:
                         raise AssertionError(f'Unexpected prompt: {prompt[:300]}')
                     assert request['model'] == model
+                    # Complete provider messages include the worker's trusted
+                    # system/theorem additions and the doubly encoded packet.
+                    assert (len(json.dumps(request['messages'], ensure_ascii=True).encode()) +
+                            request['options']['num_predict'] + 512 <= request['options']['num_ctx'])
                     assert request['messages'][1]['content'].endswith(FIXTURE['statement'])
                     assert request['format']['required'] == (['proof'] if phase == 'synthesize' else ['text'])
                     assert FIXTURE['target_proof'] not in json.dumps(request)
@@ -169,7 +174,7 @@ class GroupCollaborationTests(unittest.TestCase):
                         logs.append(log)
                         process = subprocess.Popen([
                             self.worker, '-coordinator', url, '-provider', 'ollama',
-                            '-model', model, '-ollama-url', provider_url,
+                             '-model', model, '-ollama-url', provider_url, '-ollama-context', '8192',
                             '-id', model.split(':')[0]], cwd=ROOT / 'worker',
                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                             env={**os.environ, 'OPENAI_API_KEY': '', 'OPENAI_API_KEY_FILE': ''})
@@ -188,9 +193,9 @@ class GroupCollaborationTests(unittest.TestCase):
                         'models': {'planner': SPECIALIST, 'investigator': [CHEAP, SPECIALIST],
                                    'critic': SPECIALIST, 'synthesizer': SPECIALIST},
                         'model_capabilities': {
-                            CHEAP: {'tasks': ['finding'], 'context_bytes': 8192, 'cost': 1},
+                             CHEAP: {'tasks': ['finding'], 'context_bytes': 8192, 'context_tokens': 8192, 'cost': 1},
                             SPECIALIST: {'tasks': ['plan', 'finding', 'critique', 'proof'],
-                                         'context_bytes': 8192, 'cost': 2}}}
+                                          'context_bytes': 8192, 'context_tokens': 8192, 'cost': 2}}}
                     self.assertNotIn(FIXTURE['target_proof'], json.dumps(submission))
                     for invalid in (submission | {'unexpected': True},
                                     submission | {'model_capabilities': {CHEAP: {'cost': -1}}}):

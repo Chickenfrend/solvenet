@@ -246,7 +246,9 @@ class GroupState:
             db.execute('UPDATE group_tasks SET status=? WHERE id=?', (status, task_id))
 
     def enqueue_group_job(self, group_id, task_id, agent_id, request_key, environment,
-                          model, task_type, messages, *, cost=1, max_output_tokens=512):
+                          model, task_type, messages, *, cost=1, max_output_tokens=512,
+                          graph_context=False, context_limit=8192, packet_max_bytes=6144,
+                          kind='model.respond'):
         """Atomically create a job and reserve ``cost`` possible assignments.
 
         Group runs are owned exclusively by this method. The environment is a
@@ -256,18 +258,33 @@ class GroupState:
         _key(request_key)
         _text(environment, 'environment', 1024)
         _number(cost, 'cost', 32)
-        validate_task_request(model, task_type, messages, max_output_tokens)
+        if kind not in ('model.respond', 'model.generate') or (
+                kind == 'model.generate' and (not graph_context or task_type is not None)):
+            raise ValueError('Proof jobs require frozen graph context and no task_type')
+        validation_type = 'finding' if kind == 'model.generate' else task_type
+        validate_task_request(model, validation_type, messages, max_output_tokens)
         serialized = json.dumps(messages)
+        packet_request = dict(messages=messages, context_limit=context_limit,
+                              max_bytes=packet_max_bytes)
         with self.transaction() as db:
             group = _require_group(db, group_id)
             task = _require(db, 'group_tasks', group_id, task_id)
             _require(db, 'group_agents', group_id, agent_id)
             if environment != group['environment']:
                 _conflict('Group environment mismatch')
-            old = db.execute('''SELECT gj.*, j.model, j.task_type, j.messages, j.max_output_tokens
+            old = db.execute('''SELECT gj.*, j.model, j.task_type, j.messages, j.max_output_tokens,j.kind
                 FROM group_jobs gj JOIN jobs j ON j.id=gj.job_id
                 WHERE gj.group_id=? AND gj.request_key=?''', (group_id, request_key)).fetchone()
             if old:
+                if old['kind'] != kind:
+                    _conflict('Job key reused with different kind')
+                if graph_context:
+                    from .composed import encode
+                    frozen = db.execute('SELECT request,messages FROM context_packets WHERE job_id=?',
+                                        (old['job_id'],)).fetchone()
+                    if not frozen or frozen['request'] != encode(packet_request):
+                        _conflict('Packet job key reused with different request')
+                    serialized = frozen['messages']
                 if (old['task_id'], old['agent_id'], old['environment'], old['cost'],
                         old['model'], old['task_type'], old['messages'], old['max_output_tokens']) != (
                         task_id, agent_id, environment, cost, model, task_type, serialized, max_output_tokens):
@@ -280,6 +297,23 @@ class GroupState:
                 _conflict('Acting agent is not task owner')
             if task['status'] != 'open' or cost > task['remaining']:
                 _conflict('Task is closed or work budget exceeded')
+            built = None
+            if graph_context:
+                from .context_packet import build_packet
+                focus = db.execute('SELECT claim_id FROM claim_tasks WHERE group_id=? AND task_id=?',
+                                   (group_id, task_id)).fetchone()
+                if not focus:
+                    _conflict('Task has no focused claim')
+                if kind == 'model.generate' and focus['claim_id'] != db.execute(
+                        'SELECT root_id FROM group_graphs WHERE group_id=?', (group_id,)).fetchone()[0]:
+                    _conflict('model.generate remains target-only')
+                built = build_packet(self, db, group_id, focus['claim_id'], messages,
+                    max_output_tokens=max_output_tokens, context_limit=context_limit,
+                    max_bytes=packet_max_bytes)
+                if kind == 'model.generate' and built['manifest'] is None:
+                    _conflict('Target proof dispatch requires a freshly bound verifier')
+                validate_task_request(model, validation_type, built['messages'], max_output_tokens)
+                serialized = json.dumps(built['messages'])
             group_run = db.execute('SELECT * FROM group_runs WHERE group_id=?', (group_id,)).fetchone()
             if group_run:
                 if group_run['environment'] != environment:
@@ -299,13 +333,16 @@ class GroupState:
             db.execute('''INSERT INTO jobs
                 (id, run_id, status, model, max_output_tokens, max_assignments,
                  generation_timeout_seconds, kind, task_type, messages)
-                 VALUES (?, ?, 'queued', ?, ?, ?, 120, 'model.respond', ?, ?)''',
-                 (job_id, run_id, model, max_output_tokens, cost, task_type, serialized))
+                  VALUES (?, ?, 'queued', ?, ?, ?, 120, ?, ?, ?)''',
+                  (job_id, run_id, model, max_output_tokens, cost, kind, task_type, serialized))
             db.execute('''INSERT INTO group_jobs
                 (job_id, group_id, request_key, task_id, agent_id, environment, cost)
                 VALUES (?, ?, ?, ?, ?, ?, ?)''',
                 (job_id, group_id, request_key, task_id, agent_id, environment, cost))
             db.execute('UPDATE group_tasks SET remaining=remaining-? WHERE id=?', (cost, task_id))
+            if built is not None:
+                from .context_packet import freeze_packet
+                freeze_packet(db, job_id, group_id, task_id, built, packet_request)
             if group_run and run['status'] == 'exhausted':
                 db.execute("UPDATE runs SET status='running' WHERE id=?", (run_id,))
             return job_id

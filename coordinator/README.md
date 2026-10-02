@@ -193,6 +193,11 @@ assumption. It is candidate-writable and cannot attest that checks ran against
 malicious tactic IO in that same process. This also applies to
 [G3 composed-proof use receipts](../docs/ticket-g3-composed-proofs.md).
 
+Focused group tasks can use [G4 frozen context packets](../docs/ticket-g4-context-packets.md),
+with exact checked declaration types, bounded graph evidence, complete-prompt
+admission and durable retry snapshots. Configure model `context_tokens` to match
+the worker/provider window; byte limits and measured token usage remain distinct.
+
 The total wall-clock deadline includes preflight. Output is collected with a
 bounded buffer; exceeding the limit rejects the attempt. Timeouts and excessive
 output terminate the process group, including Lake's children. Abnormal exits

@@ -1,6 +1,7 @@
 """Indexed, snapshot-consistent neighborhood inspection with explicit omissions."""
 
 import json
+from contextlib import nullcontext
 
 from .group_state import _number, _require, _require_group
 
@@ -13,7 +14,7 @@ MAX_READ_BYTES = 256 * 1024
 class ClaimGraphRead:
     def group_claim_neighborhood(self, group_id, claim_id=None, *, depth=1,
                                  max_nodes=16, max_items=32, max_bytes=65536,
-                                 verifier_identity=None):
+                                 verifier_identity=None, _db=None, _outgoing=False, _recent=False):
         """Traverse planning links in both directions; no proof dependency inference.
 
         Query count depends on bounded depth, not on the number of returned nodes.
@@ -24,8 +25,9 @@ class ClaimGraphRead:
         _number(max_bytes, 'max_bytes', MAX_READ_BYTES)
         if type(depth) is not int or not 0 <= depth <= MAX_READ_DEPTH:
             raise ValueError('Invalid graph read depth')
-        with self.connect() as db:
-            db.execute('BEGIN')
+        with (self.connect() if _db is None else nullcontext(_db)) as db:
+            if _db is None:
+                db.execute('BEGIN')
             _require_group(db, group_id)
             graph = dict(db.execute('SELECT * FROM group_graphs WHERE group_id=?',
                                     (group_id,)).fetchone())
@@ -43,18 +45,23 @@ class ClaimGraphRead:
             nodes = [result['focus_id']]
             frontier = nodes[:]
             truncated = False
+            omitted_nodes = 0
             for _ in range(depth):
                 if not frontier:
                     break
                 marks = ','.join('?' * len(frontier))
                 seen = ','.join('?' * len(nodes))
-                rows = db.execute(f'''SELECT id FROM (
-                    SELECT to_id AS id FROM claim_relationships WHERE group_id=? AND from_id IN ({marks})
-                    UNION SELECT from_id AS id FROM claim_relationships WHERE group_id=? AND to_id IN ({marks}))
+                reverse = '' if _outgoing else f'''UNION SELECT from_id AS id FROM claim_relationships
+                    WHERE group_id=? AND to_id IN ({marks})'''
+                rows = db.execute(f'''SELECT id,count(*) OVER () AS total FROM (
+                    SELECT DISTINCT to_id AS id FROM claim_relationships WHERE group_id=? AND from_id IN ({marks})
+                    {reverse})
                     WHERE id NOT IN ({seen}) ORDER BY id LIMIT ?''',
-                    (group_id, *frontier, group_id, *frontier, *nodes, max_nodes - len(nodes) + 1)).fetchall()
+                    (group_id, *frontier, *((group_id, *frontier) if not _outgoing else ()),
+                     *nodes, max_nodes - len(nodes) + 1)).fetchall()
                 room = max_nodes - len(nodes)
                 truncated |= len(rows) > room
+                omitted_nodes += max(0, (rows[0]['total'] if rows else 0) - room)
                 frontier = [r['id'] for r in rows[:room]]
                 nodes.extend(frontier)
                 if truncated:
@@ -64,6 +71,12 @@ class ClaimGraphRead:
             params = (group_id, *nodes)
 
             def collect(name, query, values, cap=max_items):
+                if _recent and name == 'messages':
+                    query = query.replace('ORDER BY cm.rowid', '''ORDER BY
+                        CASE WHEN m.review_status='pending' THEN 1 ELSE 0 END,
+                        m.reviewed_revision IS NULL,m.reviewed_revision DESC,cm.rowid''')
+                if _recent and name in ('messages', 'publications', 'artifacts', 'outcomes'):
+                    query += ' DESC'
                 count = db.execute(f'SELECT count(*) FROM ({query})', values).fetchone()[0]
                 rows = [dict(r) for r in db.execute(query + ' LIMIT ?', (*values, cap))]
                 result['omitted'][name] = count - len(rows)
@@ -71,6 +84,7 @@ class ClaimGraphRead:
 
             collect('claims', f'SELECT * FROM group_claims WHERE group_id=? AND id IN ({marks}) ORDER BY rowid',
                     params, max_nodes)
+            result['omitted']['claims'] += omitted_nodes
             collect('publications', f'SELECT * FROM claim_publications WHERE group_id=? AND claim_id IN ({marks}) ORDER BY rowid', params)
             collect('relationships', f'''SELECT * FROM claim_relationships WHERE group_id=?
                 AND from_id IN ({marks}) AND to_id IN ({marks}) ORDER BY rowid''', (group_id, *nodes, *nodes))
@@ -85,8 +99,12 @@ class ClaimGraphRead:
             edges = [r['id'] for r in result['relationships']]
             if edges:
                 edge_marks = ','.join('?' * len(edges))
+                current = (''' AND v.rowid=(SELECT max(v2.rowid) FROM claim_relationship_reviews v2
+                    WHERE v2.group_id=v.group_id AND v2.relationship_id=v.relationship_id)'''
+                    if _recent else '')
                 result['reviews'] = [dict(r) for r in db.execute(
-                    review_query + f' AND r.id IN ({edge_marks}) ORDER BY v.rowid LIMIT ?',
+                    review_query + f' AND r.id IN ({edge_marks})' + current + ' ORDER BY v.rowid ' +
+                    ('DESC ' if _recent else '') + 'LIMIT ?',
                     (*review_params, *edges, max_items))]
             result['omitted']['reviews'] = review_count - len(result['reviews'])
             collect('tasks', f'''SELECT ct.*,t.owner_id,t.creator_id,t.parent_id,t.status,t.description,t.budget,t.remaining

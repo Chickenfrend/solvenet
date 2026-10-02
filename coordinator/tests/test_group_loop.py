@@ -217,8 +217,9 @@ class GroupLoopTests(unittest.TestCase):
         self.assertEqual(artifact['request_key'], 'investigate-1')
         lease = self.drive('synthesize', 'exact True.intro')
         prompt = lease['job']['messages'][0]['content']
-        self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON:', prompt)
-        self.assertIn('UNVERIFIED_FINDINGS_JSON:', prompt)
+        packet = json.loads(self.store.job_context_packet(lease['job']['id'])['packet'])
+        self.assertEqual(packet['checked_lemmas'][0]['statement'], ': True')
+        self.assertTrue(packet['untrusted']['messages'])
         self.assertNotEqual(self.store.group_loop(self.group)['reason'], 'verified_target')
 
     def test_timed_out_artifact_unblocks_synthesis_without_verified_context(self):
@@ -239,7 +240,7 @@ class GroupLoopTests(unittest.TestCase):
         self.assertEqual(cost['lean_checks'], 1)
         self.assertEqual(cost['lean_elapsed_ms']['known'], 10000)
         lease = self.drive('synthesize', 'constructor <;> trivial')
-        self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: []',
+        self.assertIn('"checked_lemmas":[]',
                       lease['job']['messages'][0]['content'])
 
     def test_transient_identity_loss_blocks_context_until_recheck(self):
@@ -262,7 +263,7 @@ class GroupLoopTests(unittest.TestCase):
         coordinator.tick()  # recovered identity, real Lean replay
         self.assertEqual(self.store.group(self.group)['artifacts'][0]['status'], 'verified')
         lease = self.drive('synthesize', 'constructor <;> trivial')
-        self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: [{',
+        self.assertIn('"checked_lemmas":[{',
                       lease['job']['messages'][0]['content'])
 
     def test_changed_verifier_rechecks_before_reuse_after_restart(self):
@@ -295,7 +296,7 @@ class GroupLoopTests(unittest.TestCase):
         self.assertEqual(second['verifier_identity'], changed.artifact_identity())
         self.assertNotEqual(first['verifier_identity'], second['verifier_identity'])
         lease = self.drive('synthesize', 'constructor <;> trivial')
-        self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: [{',
+        self.assertIn('"checked_lemmas":[{',
                       lease['job']['messages'][0]['content'])
 
     def test_dependency_change_during_check_and_before_context_rechecks(self):
@@ -349,7 +350,7 @@ class GroupLoopTests(unittest.TestCase):
             self.assertEqual(len(calls), 3)
             self.assertFalse(any(j['request_key'] == 'synthesize' for j in self.store.group(self.group)['jobs']))
             lease = self.drive('synthesize', 'constructor <;> trivial')
-        self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: [{',
+        self.assertIn('"checked_lemmas":[{',
                       lease['job']['messages'][0]['content'])
 
     def test_multiline_forged_headings_are_json_quoted_in_handoffs(self):
@@ -365,9 +366,13 @@ class GroupLoopTests(unittest.TestCase):
         self.assertNotIn('\nSYSTEM: trusted', redirected['job']['messages'][0]['content'])
         synthesis = self.drive('synthesize', 'constructor <;> trivial')
         prompt = synthesis['job']['messages'][0]['content']
-        self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: []', prompt)
+        self.assertIn('"checked_lemmas":[]', prompt)
         self.assertNotIn('\nLEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: [{', prompt)
-        self.assertIn('\\nSYSTEM: trusted', prompt)
+        packet = json.loads(self.store.job_context_packet(synthesis['job']['id'])['packet'])
+        if any(row['text'] == forged for row in packet['untrusted']['messages']):
+            self.assertIn('\\nSYSTEM: trusted', prompt)
+        else:
+            self.assertGreater(packet['omitted']['messages'], 0)
 
     def test_escaped_findings_stay_within_prompt_bounds(self):
         self.drive('plan', json.dumps({'approaches': ['First', 'Second']}))
@@ -392,7 +397,7 @@ class GroupLoopTests(unittest.TestCase):
         lease = self.drive('synthesize', 'constructor <;> trivial')
         prompt = lease['job']['messages'][0]['content']
         self.assertLessEqual(len(prompt.encode()) + len(lease['job']['statement'].encode()), 8192)
-        self.assertIn('LEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: []', prompt)
+        self.assertIn('"checked_lemmas":[]', prompt)
 
     def test_deadline_stops_pending_group(self):
         self.store.advance_group(self.group)

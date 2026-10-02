@@ -167,6 +167,24 @@ class RoutingTests(unittest.TestCase):
                                      now=self.now[0], lease_seconds=self.store.lease_seconds)
         self.assertEqual(selected, 'expert')
 
+    def test_byte_capacity_and_known_token_window_are_distinct(self):
+        self.register('expert')
+        self.capabilities['expert']['context_tokens'] = 4096
+        self.start()
+        with self.store.connect() as db:
+            selected, _, trace = choose(db, self.group, self.models, self.capabilities,
+                'planner', 'plan', 3000, 20, context_token_bound=5000,
+                now=self.now[0], lease_seconds=self.store.lease_seconds)
+        self.assertIsNone(selected)
+        self.assertEqual(json.loads(trace)['candidates'][0]['reasons'], ['context_window_exceeded'])
+        del self.capabilities['expert']['context_tokens']
+        with self.store.connect() as db:
+            selected, _, trace = choose(db, self.group, self.models, self.capabilities,
+                'planner', 'plan', 3000, 20, context_token_bound=5000,
+                now=self.now[0], lease_seconds=self.store.lease_seconds)
+        self.assertEqual(selected, 'expert')
+        self.assertIsNone(json.loads(trace)['candidates'][0]['context_tokens'])
+
 
 if __name__ == '__main__':
     unittest.main()

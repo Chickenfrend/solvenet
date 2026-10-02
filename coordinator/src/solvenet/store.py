@@ -20,6 +20,7 @@ from .claim_graph import ClaimGraph
 from .claim_graph_schema import MIGRATION_19
 from .graph_response import MIGRATION_20, GraphResponses
 from .proof_context import MIGRATION_21, ProofContexts
+from .context_packet import MIGRATION_22, ContextPackets
 
 
 class Conflict(Exception):
@@ -234,7 +235,7 @@ def identifier():
     return uuid4().hex
 
 
-class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, ProofContexts):
+class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, ProofContexts, ContextPackets):
     def __init__(self, path: Path, *, lease_seconds=30, clock=time.time):
         self.path = path
         self.artifact_verifier_binding = None
@@ -321,7 +322,10 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, P
             if version == 20:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_21 + "COMMIT;")
                 version = 21
-            if version != 21:
+            if version == 21:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_22 + "COMMIT;")
+                version = 22
+            if version != 22:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager

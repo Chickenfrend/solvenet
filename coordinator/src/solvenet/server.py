@@ -201,6 +201,16 @@ class Coordinator:
         """Coordinator-private replay of a persisted completed graph response."""
         return self.store.ingest_group_graph_response(group_id, job_id)
 
+    def build_group_context_packet(self, group_id, task_id, messages, **limits):
+        return self.store.build_group_context_packet(group_id, task_id, messages, **limits)
+
+    def enqueue_group_context_job(self, *args, **kwargs):
+        """Explicit focused task dispatch, without choosing a scheduling policy."""
+        return self.store.enqueue_group_job(*args, **kwargs, graph_context=True)
+
+    def job_context_packet(self, job_id):
+        return self.store.job_context_packet(job_id)
+
     def tick(self):
         self.store.expire()
         binding = None
