@@ -16,6 +16,8 @@ from . import protocol_limits as limits
 from .group_state import MIGRATION_14, GroupState
 from .group_loop import MIGRATION_15, MIGRATION_17, MIGRATION_18, GroupLoop
 from .group_artifacts import MIGRATION_16, GroupArtifacts
+from .claim_graph import ClaimGraph
+from .claim_graph_schema import MIGRATION_19
 
 
 class Conflict(Exception):
@@ -230,7 +232,7 @@ def identifier():
     return uuid4().hex
 
 
-class Store(GroupLoop, GroupState, GroupArtifacts):
+class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph):
     def __init__(self, path: Path, *, lease_seconds=30, clock=time.time):
         self.path = path
         self.artifact_verifier_binding = None
@@ -308,7 +310,10 @@ class Store(GroupLoop, GroupState, GroupArtifacts):
             if version == 17:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_18 + "COMMIT;")
                 version = 18
-            if version != 18:
+            if version == 18:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_19 + "COMMIT;")
+                version = 19
+            if version != 19:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager

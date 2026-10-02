@@ -105,6 +105,15 @@ def insert_artifact(db, group_id, request_key, agent_id, task_id,
         VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
         (artifact_id, group_id, request_key, agent_id, task_id, job_id,
          statement, serialized, environment, proof, 'job' if job_id else 'coordinator'))
+    # Historical groups remain untouched; new proposals in graph-enabled groups
+    # publish their exact context rather than inheriting a possibly different focus.
+    graph = db.execute('SELECT root_id FROM group_graphs WHERE group_id=?', (group_id,)).fetchone()
+    if graph['root_id'] is not None:
+        from .claim_graph import insert_claim, attach_evidence
+        claim_id, _ = insert_claim(db, group_id, 'artifact:' + artifact_id,
+                                  statement, imports, environment, agent_id=agent_id,
+                                  task_id=task_id, job_id=job_id, reason='Formal artifact proposal')
+        attach_evidence(db, group_id, claim_id, 'artifact', artifact_id)
     return artifact_id
 
 

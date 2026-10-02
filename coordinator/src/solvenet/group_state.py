@@ -141,6 +141,11 @@ class GroupState:
         db.execute('''INSERT INTO agent_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                    (group_id, request_key, statement, serialized, environment,
                     max_work, max_work, max_tasks, max_messages, self.clock()))
+        from .claim_graph import insert_claim
+        db.execute('INSERT INTO group_graphs(group_id) VALUES (?)', (group_id,))
+        root_id, _ = insert_claim(db, group_id, 'target-root', statement,
+                                 json.loads(serialized), environment, reason='Group target')
+        db.execute('UPDATE group_graphs SET root_id=? WHERE group_id=?', (root_id, group_id))
         return group_id
 
     def add_agent(self, group_id, request_key, role):
@@ -186,13 +191,19 @@ class GroupState:
             return revision
 
     def add_group_task(self, group_id, request_key, creator_id, owner_id, description,
-                       budget, *, parent_id=None):
+                       budget, *, parent_id=None, claim_id=None, action='investigate'):
         from .store import identifier
         _key(request_key)
         _text(description, 'description', MAX_TEXT_BYTES)
         _number(budget, 'budget', 32)
+        if action not in ('investigate', 'critique', 'prove', 'synthesize'):
+            raise ValueError('Invalid claim action')
         with self.transaction() as db:
+            from .claim_graph import attach_task
             group = _require_group(db, group_id)
+            if claim_id is None:
+                claim_id = db.execute('SELECT root_id FROM group_graphs WHERE group_id=?',
+                                      (group_id,)).fetchone()[0]
             _require(db, 'group_agents', group_id, creator_id)
             _require(db, 'group_agents', group_id, owner_id)
             parent = _require(db, 'group_tasks', group_id, parent_id) if parent_id else None
@@ -203,6 +214,8 @@ class GroupState:
                 if (old['creator_id'], old['owner_id'], old['parent_id'], old['description'], old['budget']) != (
                         creator_id, owner_id, parent_id, description, budget):
                     _conflict('Task key reused with different contents')
+                if claim_id is not None:
+                    attach_task(db, group_id, old['id'], claim_id, action)
                 return old['id']
             if depth > MAX_DEPTH or (parent and parent['status'] != 'open'):
                 _conflict('Task depth or parent status exceeded')
@@ -217,6 +230,8 @@ class GroupState:
                 (task_id, group_id, request_key, parent_id, creator_id, owner_id,
                  description, budget, budget, depth))
             db.execute('UPDATE agent_groups SET remaining_work=remaining_work-? WHERE id=?', (budget, group_id))
+            if claim_id is not None:
+                attach_task(db, group_id, task_id, claim_id, action)
             return task_id
 
     def set_group_task_status(self, group_id, task_id, status):
@@ -331,6 +346,11 @@ class GroupState:
                 (id, group_id, request_key, agent_id, task_id, job_id, kind, text)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 (message_id, group_id, request_key, agent_id, task_id, job_id, kind, text))
+            from .claim_graph import attach_evidence
+            focus = db.execute('SELECT claim_id FROM claim_tasks WHERE group_id=? AND task_id=?',
+                               (group_id, task_id)).fetchone()
+            if focus:
+                attach_evidence(db, group_id, focus['claim_id'], 'message', message_id)
             return message_id
 
     def review_group_message(self, group_id, message_id, reviewer_id, review_key, status, note=''):
@@ -359,6 +379,8 @@ class GroupState:
                 return None
             result = dict(group)
             result['imports'] = json.loads(result['imports'])
+            result['graph'] = dict(db.execute('SELECT * FROM group_graphs WHERE group_id=?',
+                                              (group_id,)).fetchone())
             group_run = db.execute('SELECT run_id, environment FROM group_runs WHERE group_id=?',
                                    (group_id,)).fetchone()
             result['run'] = dict(group_run) if group_run else None

@@ -236,6 +236,12 @@ class GroupLoop:
                     VALUES (?,?,?,?,?,?,?,?,0,?)''',
                     (task_id, group_id, key, parent, agents[creator], agents[owner], description,
                      cost, p['depth'] + 1 if parent else 0))
+                from .claim_graph import attach_task
+                root = db.execute('SELECT root_id FROM group_graphs WHERE group_id=?', (group_id,)).fetchone()[0]
+                if root is not None:
+                    action = 'synthesize' if kind == 'model.generate' else (
+                        'critique' if task_type == 'critique' else 'investigate')
+                    attach_task(db, group_id, task_id, root, action)
                 db.execute('UPDATE agent_groups SET remaining_work=remaining_work-? WHERE id=?', (cost, group_id))
                 nonlocal run
                 if not run:
@@ -278,10 +284,16 @@ class GroupLoop:
                 if db.execute('SELECT 1 FROM group_messages WHERE group_id=? AND request_key=?',
                               (group_id, key)).fetchone():
                     return
+                message_id = identifier()
                 db.execute('''INSERT INTO group_messages
                     (id,group_id,request_key,agent_id,task_id,job_id,kind,text)
                     VALUES (?,?,?,?,?,?,?,?)''',
-                    (identifier(), group_id, key, agents[agent], task(key)['id'], current['id'], kind, text))
+                    (message_id, group_id, key, agents[agent], task(key)['id'], current['id'], kind, text))
+                from .claim_graph import attach_evidence
+                focus = db.execute('SELECT claim_id FROM claim_tasks WHERE group_id=? AND task_id=?',
+                                   (group_id, task(key)['id'])).fetchone()
+                if focus:
+                    attach_evidence(db, group_id, focus['claim_id'], 'message', message_id)
                 if kind == 'finding':
                     artifact = artifact_from_finding(text)
                     if artifact:
