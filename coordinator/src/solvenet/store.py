@@ -18,6 +18,7 @@ from .group_loop import MIGRATION_15, MIGRATION_17, MIGRATION_18, GroupLoop
 from .group_artifacts import MIGRATION_16, GroupArtifacts
 from .claim_graph import ClaimGraph
 from .claim_graph_schema import MIGRATION_19
+from .graph_response import MIGRATION_20, GraphResponses
 
 
 class Conflict(Exception):
@@ -232,7 +233,7 @@ def identifier():
     return uuid4().hex
 
 
-class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph):
+class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses):
     def __init__(self, path: Path, *, lease_seconds=30, clock=time.time):
         self.path = path
         self.artifact_verifier_binding = None
@@ -313,7 +314,10 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph):
             if version == 18:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_19 + "COMMIT;")
                 version = 19
-            if version != 19:
+            if version == 19:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_20 + "COMMIT;")
+                version = 20
+            if version != 20:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -751,6 +755,7 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph):
                     raise Conflict("Assignment already has a different result")
                 if row['result'] != canonical:
                     db.execute("UPDATE assignments SET result=? WHERE id=?", (canonical, assignment))
+                self._ingest_completed_graph_job(db, job, payload)
                 return {"accepted": True}
             if row['status'] != 'active' or row['expires'] <= self.clock():
                 raise Conflict("Assignment expired")
@@ -764,6 +769,7 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph):
                 db.execute("UPDATE jobs SET status='verifying' WHERE id=?", (row['job_id'],))
             elif payload['status'] == 'completed':
                 db.execute("UPDATE jobs SET status='done' WHERE id=?", (row['job_id'],))
+                self._ingest_completed_graph_job(db, job, payload)
             elif payload['status'] == 'failed':
                 if payload['failure_class'] == 'permanent':
                     db.execute("UPDATE jobs SET status='failed' WHERE id=?", (row['job_id'],))
@@ -773,6 +779,14 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph):
                 self._retry(db, row['job_id'])
             self._refresh(db)
             return {"accepted": True}
+
+    def _ingest_completed_graph_job(self, db, job, payload):
+        if (payload['status'] != 'completed' or job['kind'] != 'model.respond' or
+                job['task_type'] not in ('plan', 'finding', 'critique')):
+            return
+        group = db.execute('SELECT group_id FROM group_jobs WHERE job_id=?', (job['id'],)).fetchone()
+        if group:
+            self._ingest_group_graph_response(db, group['group_id'], job['id'])
 
     def pending(self):
         with self.connect() as db:

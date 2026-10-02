@@ -1,6 +1,7 @@
 """Bounded coordinator-only graph writes; suggestions confer no proof authority."""
 
 import json
+from contextlib import nullcontext
 
 from . import protocol_limits as limits
 from .group_state import _conflict, _key, _require, _require_group, _text
@@ -140,13 +141,13 @@ class ClaimGraph(ClaimGraphRead):
             attach_evidence(db, group_id, claim_id, kind, evidence_id)
 
     def propose_group_relationship(self, group_id, request_key, from_id, to_id, kind,
-                                   *, agent_id=None, task_id=None, job_id=None, reason=''):
+                                   *, agent_id=None, task_id=None, job_id=None, reason='', _db=None):
         from .store import identifier
         _key(request_key)
         _reason(reason)
         if kind not in ('suggests_using', 'alternative_to', 'supersedes'):
             raise ValueError('Invalid planning relationship')
-        with self.transaction() as db:
+        with (nullcontext(_db) if _db is not None else self.transaction()) as db:
             first = _require(db, 'group_claims', group_id, from_id)
             second = _require(db, 'group_claims', group_id, to_id)
             if from_id == to_id or (first['imports'], first['environment']) != (
@@ -168,24 +169,30 @@ class ClaimGraph(ClaimGraphRead):
             return relationship_id
 
     def review_group_relationship(self, group_id, request_key, relationship_id, reviewer_id,
-                                  status, reason=''):
+                                  status, reason='', *, task_id=None, job_id=None, _db=None):
         from .store import identifier
         _key(request_key)
         _reason(reason)
         if status not in ('promising', 'challenged', 'abandoned'):
             raise ValueError('Invalid relationship review status')
-        with self.transaction() as db:
+        with (nullcontext(_db) if _db is not None else self.transaction()) as db:
             _require(db, 'claim_relationships', group_id, relationship_id)
             _require(db, 'group_agents', group_id, reviewer_id)
+            source = _source(db, group_id, reviewer_id if task_id else None, task_id, job_id)
             old = db.execute('SELECT * FROM claim_relationship_reviews WHERE group_id=? AND request_key=?',
                              (group_id, request_key)).fetchone()
             if old:
-                if tuple(old[k] for k in ('relationship_id', 'reviewer_id', 'status', 'reason')) != (
-                        relationship_id, reviewer_id, status, reason):
+                if tuple(old[k] for k in ('relationship_id', 'reviewer_id', 'status', 'reason',
+                                          'source', 'task_id', 'job_id', 'assignment_id')) != (
+                        relationship_id, reviewer_id, status, reason,
+                        source[0], task_id, job_id, source[4]):
                     _conflict('Relationship review key reused')
                 return old['id']
             _capacity(db, 'claim_relationship_reviews', group_id, MAX_REVIEWS)
             review_id = identifier()
-            db.execute('INSERT INTO claim_relationship_reviews VALUES (?,?,?,?,?,?,?)',
-                       (review_id, group_id, request_key, relationship_id, reviewer_id, status, reason))
+            db.execute('''INSERT INTO claim_relationship_reviews
+                (id,group_id,request_key,relationship_id,reviewer_id,status,reason,
+                 source,task_id,job_id,assignment_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                       (review_id, group_id, request_key, relationship_id, reviewer_id, status,
+                        reason, source[0], task_id, job_id, source[4]))
             return review_id

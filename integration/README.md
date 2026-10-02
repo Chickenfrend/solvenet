@@ -65,6 +65,14 @@ other runs remains explicitly unknown in `cost`; a queued request has no
 reported provider usage. This case does not demonstrate success on a frontier
 problem, autonomous decomposition or accuracy of local models.
 
+The collaboration test module also runs a G2 variant through the unchanged Go
+wire protocol: the planner publishes a claim/suggestion, the finding proposes an
+exact-bound artifact on the same claim, and the critic challenges the suggestion.
+Assertions require actual completed agent/task/assignment provenance, rejection
+of forged authority, independent review/Lean status, and the same six-call
+redirect/synthesis behavior and costs. It does not exercise G3 proof composition
+or graph-driven scheduling.
+
 For an operator-run group, `GET /v1/groups/<id>` contains agents, task parents,
 job links, route explanations, bounded messages, artifact outcomes, calls and
 cost. `GET /v1/runs/<run_id>` contains the final Lean diagnostics and candidate.

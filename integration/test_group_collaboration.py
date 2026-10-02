@@ -54,6 +54,12 @@ class GroupCollaborationTests(unittest.TestCase):
         cls.build_dir.cleanup()
 
     def test_collaboration_across_http_workers_and_lean(self):
+        self.collaboration()
+
+    def test_explicit_graph_batches_across_unchanged_workers_and_fixed_loop(self):
+        self.collaboration(graph_mode=True)
+
+    def collaboration(self, graph_mode=False):
         with tempfile.TemporaryDirectory(prefix='solvenet-a6-') as directory:
             directory = Path(directory)
             observed = []
@@ -79,14 +85,35 @@ class GroupCollaborationTests(unittest.TestCase):
                     prompt = request['messages'][-1]['content']
                     if prompt.startswith('Propose two distinct'):
                         phase, text = 'plan', json.dumps(FIXTURE['plan'])
+                        if graph_mode:
+                            with coordinator.store.connect() as db:
+                                root = db.execute('SELECT root_id FROM group_graphs').fetchone()[0]
+                            text = json.dumps(FIXTURE['plan'] | {
+                                'graph_schema': 'solvenet.graph.v1',
+                                'claims': [dict(key='lemma', **{k: FIXTURE['artifact'][k]
+                                    for k in ('statement', 'imports', 'environment')})],
+                                'relationships': [dict(key='edge', **{'from': root, 'to': '$lemma'},
+                                                       kind='suggests_using', reason='Try reassociation')]})
                     elif prompt.startswith('Scoped subgoal:'):
                         if 'reassociation' in prompt:
                             phase, text = 'investigate-1', json.dumps({'artifact': FIXTURE['artifact'],
-                                                                       'status': 'verified'})
+                                                                        'status': 'verified'})
+                            if graph_mode:
+                                text = json.dumps({'graph_schema': 'solvenet.graph.v1',
+                                    'agent_id': 'forged', 'verified': True,
+                                    'claims': [dict(key='lemma', **{k: FIXTURE['artifact'][k]
+                                        for k in ('statement', 'imports', 'environment')})],
+                                    'artifacts': [dict(key='proof', claim='$lemma',
+                                        **FIXTURE['artifact'], status='verified', verifier_identity='forged')]})
                         else:
                             phase, text = 'investigate-2', FIXTURE['second_finding']
                     elif prompt.startswith('Review these UNVERIFIED'):
                         phase, text = 'review', json.dumps(FIXTURE['review'])
+                        if graph_mode:
+                            edge = coordinator.store.group_claim_neighborhood(group_id)['relationships'][0]['id']
+                            text = json.dumps(FIXTURE['review'] | {'graph_schema': 'solvenet.graph.v1',
+                                'reviews': [dict(key='review', relationship=edge, status='challenged',
+                                                 reason='Try another approach', reviewer_id='forged')]})
                         assert FIXTURE['second_finding'] in prompt
                         assert FIXTURE['artifact']['statement'] in prompt
                     elif 'Provide a corrected bounded finding.' in prompt:
@@ -151,7 +178,7 @@ class GroupCollaborationTests(unittest.TestCase):
                     def ready():
                         self.assertTrue(all(p.poll() is None for p, _ in workers), 'worker exited')
                         activity = api(url, '/v1/model-activity?model=' + CHEAP + '&model=' + SPECIALIST)
-                        return all(item['ready'] for item in activity['items'])
+                        return all(item.get('ready', False) for item in activity['items'])
 
                     until('both workers advertised', ready, 12)
                     submission = {
@@ -208,6 +235,21 @@ class GroupCollaborationTests(unittest.TestCase):
                     self.assertEqual(artifact['job_id'], jobs['investigate-1']['job_id'])
                     self.assertEqual(artifact['agent_id'], tasks['investigate-1']['owner_id'])
                     self.assertEqual(artifact['task_id'], tasks['investigate-1']['id'])
+                    if graph_mode:
+                        graph = coordinator.store.group_claim_neighborhood(group_id)
+                        self.assertEqual(len(graph['claims']), 2)
+                        publications = [p for p in graph['publications'] if p['source'] == 'job']
+                        self.assertEqual({p['job_id'] for p in publications},
+                                         {jobs['plan']['job_id'], jobs['investigate-1']['job_id']})
+                        self.assertTrue(all(p['assignment_id'] and p['agent_id'] != 'forged' for p in publications))
+                        review = graph['reviews'][0]
+                        self.assertEqual(review['status'], 'challenged')
+                        self.assertEqual(review['job_id'], jobs['review']['job_id'])
+                        self.assertEqual(review['reviewer_id'], jobs['review']['agent_id'])
+                        self.assertEqual(graph['artifacts'][0]['status'], 'verified')
+                        self.assertNotEqual(graph['artifacts'][0]['verifier_identity'], 'forged')
+                        self.assertEqual(len(group['graph_responses']), 3)
+                        self.assertEqual({r['status'] for r in group['graph_responses']}, {'accepted'})
                     self.assertEqual(len(group['calls']), 6)
                     self.assertEqual({c['status'] for c in group['calls']}, {'completed'})
                     self.assertEqual({c['model'] for c in group['calls']}, {CHEAP, SPECIALIST})

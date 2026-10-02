@@ -90,7 +90,15 @@ func TestNoWork(t *testing.T) {
 }
 
 func TestTypedTaskClaimAndBoundedResult(t *testing.T) {
-	for _, response := range []string{"short finding", strings.Repeat("x", daemon.MaxTaskResultBytes+1)} {
+	// Graph JSON remains opaque text. Count its quotes/escapes and UTF-8 bytes;
+	// the outer result encoding is larger but uses the existing transport limit.
+	graph := `{"graph_schema":"solvenet.graph.v1","padding":"` +
+		strings.Repeat("x", daemon.MaxTaskResultBytes-len(`{"graph_schema":"solvenet.graph.v1","padding":""}`)) + `"}`
+	escapedGraph, err := json.Marshal(map[string]string{"graph_schema": "solvenet.graph.v1", "padding": strings.Repeat(`"`, 5000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, response := range []string{"short finding", graph, graph + " ", string(escapedGraph), strings.Repeat("x", daemon.MaxTaskResultBytes+1)} {
 		t.Run(strings.TrimSpace(response[:1]), func(t *testing.T) {
 			var submitted daemon.Result
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -48,7 +48,8 @@ def artifact_from_finding(text):
         value = json.loads(text)
     except (ValueError, TypeError):
         return None
-    if not isinstance(value, dict) or not isinstance(value.get('artifact'), dict):
+    if (not isinstance(value, dict) or 'graph_schema' in value or
+            not isinstance(value.get('artifact'), dict)):
         return None
     artifact = value['artifact']
     if not {'statement', 'imports', 'environment', 'proof'} <= artifact.keys():
@@ -61,7 +62,7 @@ def artifact_from_finding(text):
 
 
 def insert_artifact(db, group_id, request_key, agent_id, task_id,
-                    statement, imports, environment, proof, job_id=None):
+                    statement, imports, environment, proof, job_id=None, *, graph_proposal_key=None):
     """Insert with checked provenance inside the caller's existing transaction."""
     from .store import identifier
     _key(request_key)
@@ -72,7 +73,7 @@ def insert_artifact(db, group_id, request_key, agent_id, task_id,
     if task['owner_id'] != agent_id:
         _conflict('Artifact agent is not task owner')
     if job_id:
-        source = db.execute('''SELECT j.status, j.kind, j.task_type, a.result FROM group_jobs gj
+        source = db.execute('''SELECT j.status, j.kind, j.task_type, a.result, a.id AS assignment_id FROM group_jobs gj
             JOIN jobs j ON j.id=gj.job_id
             LEFT JOIN assignments a ON a.job_id=j.id AND a.status='completed'
             WHERE gj.job_id=? AND gj.group_id=? AND gj.task_id=? AND gj.agent_id=?
@@ -82,7 +83,13 @@ def insert_artifact(db, group_id, request_key, agent_id, task_id,
                 source['kind'] != 'model.respond' or source['task_type'] != 'finding'):
             _conflict('Artifact source is not a completed finding for this agent and task')
         output = json.loads(source['result']).get('output', {})
-        proposal = artifact_from_finding(output.get('text'))
+        if graph_proposal_key is None:
+            proposal = artifact_from_finding(output.get('text'))
+        else:
+            from .graph_response import graph_batch
+            batch = graph_batch(output.get('text'))
+            proposal = next((item for item in batch.get('artifacts', [])
+                             if item['key'] == graph_proposal_key), None) if batch else None
         if not proposal or any(proposal[k] != value for k, value in (
                 ('statement', statement), ('imports', imports),
                 ('environment', environment), ('proof', proof))):
@@ -101,10 +108,11 @@ def insert_artifact(db, group_id, request_key, agent_id, task_id,
         _conflict('Artifact limit reached')
     artifact_id = identifier()
     db.execute('''INSERT INTO group_artifacts
-        (id,group_id,request_key,agent_id,task_id,job_id,statement,imports,environment,proof,source)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+        (id,group_id,request_key,agent_id,task_id,job_id,statement,imports,environment,proof,source,assignment_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
         (artifact_id, group_id, request_key, agent_id, task_id, job_id,
-         statement, serialized, environment, proof, 'job' if job_id else 'coordinator'))
+          statement, serialized, environment, proof, 'job' if job_id else 'coordinator',
+          source['assignment_id'] if job_id else None))
     # Historical groups remain untouched; new proposals in graph-enabled groups
     # publish their exact context rather than inheriting a possibly different focus.
     graph = db.execute('SELECT root_id FROM group_graphs WHERE group_id=?', (group_id,)).fetchone()

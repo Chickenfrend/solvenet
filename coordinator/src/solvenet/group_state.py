@@ -397,6 +397,10 @@ class GroupState:
                 ) if artifact['status'] == 'verified' else artifact['status']
             result['routing'] = [dict(row) for row in db.execute(
                 'SELECT * FROM group_route_decisions WHERE group_id=? ORDER BY rowid', (group_id,))]
+            result['graph_responses'] = [dict(row) for row in db.execute(
+                'SELECT * FROM graph_response_receipts WHERE group_id=? ORDER BY rowid', (group_id,))]
+            for receipt in result['graph_responses']:
+                receipt['result'] = json.loads(receipt['result'])
             for decision in result['routing']:
                 decision['explanation'] = json.loads(decision['explanation'])
             calls = [dict(row) for row in db.execute('''SELECT gj.request_key,gj.task_id,gj.agent_id,

@@ -197,6 +197,10 @@ class Coordinator:
         self.store = store
         self.verifier = verifier
 
+    def ingest_group_graph_response(self, group_id, job_id):
+        """Coordinator-private replay of a persisted completed graph response."""
+        return self.store.ingest_group_graph_response(group_id, job_id)
+
     def tick(self):
         self.store.expire()
         binding = None

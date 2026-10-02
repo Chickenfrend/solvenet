@@ -32,6 +32,11 @@ synthesizer receives bounded, explicitly **unverified** findings and a
 can solve the run. Malformed plan/review results, exhausted retries, rejected
 proof, work limits, deadline and verifier errors yield explicit group reasons.
 
+Plan/finding/critique JSON may additionally contain the explicit versioned G2
+graph schema documented in [claim-graph.md](claim-graph.md#completed-response-ingestion-g2).
+Its atomic ingestion records proposals with completed-assignment provenance;
+`approaches`/`decisions` and the fixed six-call policy retain their existing meaning.
+
 Each transition and its next task/job are committed together before dispatch.
 Each of the six jobs reserves two possible worker leases (12 work units total),
 so a lost lease retries the *same* job and agent without adding a new task.

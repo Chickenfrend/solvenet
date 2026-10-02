@@ -49,8 +49,12 @@ def _parse(text, field, length):
         value = json.loads(text)
     except (ValueError, TypeError):
         return None
-    if not isinstance(value, dict) or set(value) != {field}:
+    if not isinstance(value, dict) or field not in value:
         return None
+    if set(value) != {field}:
+        from .graph_response import SCHEMA
+        if value.get('graph_schema') != SCHEMA:
+            return None
     items = value[field]
     if not isinstance(items, list) or len(items) != length:
         return None

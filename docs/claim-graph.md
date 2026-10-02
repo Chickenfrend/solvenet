@@ -1,10 +1,11 @@
-# Coordinator claim graph (G1)
+# Coordinator claim graph (G1–G2)
 
 The SQLite claim graph is separate from the work graph. Task `parent_id` still
 means work parentage; a task's additive `claim_tasks` record identifies its focused
 claim and action. Worker assignments still belong to jobs and do not identify
-logical agents. This ticket persists and inspects knowledge; it does not change
-the fixed group-loop scheduling policy or ingest new graph JSON from model text.
+logical agents. The coordinator persists and inspects knowledge and ingests
+explicit graph JSON from completed model responses. The fixed group-loop
+scheduling policy remains A1–A6.
 
 ## Immutable claims and sources
 
@@ -25,7 +26,7 @@ and task; if supplied they must identify a same-group task and its owning agent.
 Job publications additionally resolve the actual completed assignment from the
 job's persisted agent/task association. These are coordinator-private methods,
 not permission for workers to assert identity or verification. Parsing and
-authorizing graph proposals in completed model text is G2.
+authorizing graph proposals in completed model text is described below.
 
 ## Advisory relationships and review
 
@@ -118,3 +119,96 @@ Schema 19 gives preexisting groups an empty graph/revision zero and **no root or
 historical links**. Their v1 and fixed-loop data still load normally. Explicit
 graph methods may add claims/links later; new work in a historical group has no
 inferred focus. Independent v1 runs create no graph records.
+
+## Completed response ingestion (G2)
+
+`Store.ingest_group_graph_response(group_id, job_id)` and the corresponding
+`Coordinator` method read the **persisted completed response**, not caller-supplied
+text or identity. Only `model.respond` jobs of type `plan`, `finding`, or `critique`
+are eligible. New completions and duplicate result deliveries automatically call
+the same method inside the result transaction. Operators can call it explicitly
+after an upgrade/restart to ingest a completion persisted before G2.
+
+The entire `output.text` must be a JSON object with the explicit marker
+`"graph_schema":"solvenet.graph.v1"`. Prose, fenced JSON and objects without the
+marker retain their previous behavior. Unsupported versions and invalid explicit
+batches produce a durable rejection receipt. Invalid JSON is ordinary informal
+text; no heuristic extraction promotes fragments to proposals. Duplicate JSON
+fields are rejected. Existing `approaches` and `decisions` fields can coexist with
+the graph arrays, preserving the fixed six-call path.
+
+Example finding (replace `ROOT_ID` with a same-group claim ID):
+
+```json
+{
+  "graph_schema": "solvenet.graph.v1",
+  "claims": [
+    {"key":"lemma", "statement":": True", "imports":["Init"],
+     "environment":"lean-test", "reason":"Useful intermediate claim"}
+  ],
+  "relationships": [
+    {"key":"use", "from":"ROOT_ID", "to":"$lemma",
+     "kind":"suggests_using", "reason":"Try this approach"}
+  ],
+  "reviews": [
+    {"key":"review", "relationship":"$use", "status":"promising",
+     "reason":"Worth investigating"}
+  ],
+  "findings": [
+    {"key":"note", "claim":"$lemma", "text":"Informal evidence only"}
+  ],
+  "artifacts": [
+    {"key":"proof", "claim":"$lemma", "statement":": True", "imports":["Init"],
+     "environment":"lean-test", "proof":"trivial"}
+  ]
+}
+```
+
+Arrays are optional. Per-response limits are eight claims, eight relationships,
+eight reviews, eight findings, four artifacts, and **16 total items**. Keys must
+be unique across all arrays and match `[A-Za-z0-9_-]{1,32}`. References are either
+persisted same-group IDs or `$key` references to claims/relationships introduced
+in this response. Claims are inserted before relationships, then reviews,
+findings and artifacts; no local reference escapes its job. Findings are capped
+at 2 KiB each, reasons at 2 KiB, and the G1 context and per-group capacity limits
+still apply. Formal proposals are finding-job-only and must repeat the focused
+claim's **exact** statement, ordered imports and environment. A changed statement
+requires a new claim; it cannot mutate an old node or transfer its verification.
+
+The complete UTF-8 JSON text, including syntax, escaped strings and every ignored
+field, is capped at **8192 bytes**, matching Python and Go typed-result limits.
+An oversized typed response fails the existing worker/coordinator formatting
+boundary. The outer result request double-encodes this JSON string and includes
+usage/generation fields; its existing 2 MiB transport limit remains in force.
+These are response limits, not G4 ranked/frozen context packets: existing group
+prompt/context admission and worker message limits remain in force.
+
+Every claim publication, relationship, review, finding and formal proposal uses
+the job's actual agent/task and successful completed assignment. Model-supplied
+agent, task, job, reviewer, assignment, verifier identity and `verified` fields
+are ignored; they never grant authority. Review `status` is independently
+validated as `promising`, `challenged` or `abandoned`. Unknown extra fields are
+ignored but charged to the encoded-byte limit. Findings remain unverified, and
+artifacts enter `pending` for the existing pinned Lean verifier. Auxiliary checks
+never solve the target run. Coordinator-authored writes remain a distinct source;
+historical reviews default to `coordinator` with no invented job provenance.
+
+All writes for one response, including exact-match publications and evidence
+links, share a savepoint and durable job/assignment receipt. A bad reference,
+context, shape or capacity rolls back **all** batch graph writes and their
+revision increments. The successful model call is retained, with a rejected
+graph receipt; rejection does not retry model work. Unexpected coordinator/crash
+errors roll back the enclosing result transaction, allowing the same delivery to
+be retried. Accepted and rejected receipts are idempotent across restart, even
+if graph capacity later changes. The receipt maps proposal keys to persisted
+IDs and is exposed as `group(id)['graph_responses']` through existing inspection.
+Separate jobs publishing an identical lemma retain separate publications and
+evidence. Schema 20 adds receipts and review/evidence assignment provenance;
+historical artifact/message assignment IDs remain unknown (`null`).
+
+G2 supplies proposals and reviews to the coordinator; it does not autonomously
+redirect tasks or schedule a graph frontier. A coordinator can create a new
+focused task after a challenge through the existing task method; the fixed loop
+continues to apply its existing `decisions`-based redirect. Graph relationships
+do not compose Lean declarations or prove dependencies (G3), rank/freeze worker
+packets (G4), or replace scheduling (G5).
