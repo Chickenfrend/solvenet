@@ -486,6 +486,11 @@ class GroupState:
                 else:
                     totals['lean_elapsed_ms']['known'] += row['elapsed_ms']
             result['cost'] = totals
+            loop = db.execute('SELECT mode FROM group_loops WHERE group_id=?', (group_id,)).fetchone()
+            if loop and loop['mode'] == 'graph':
+                from .frontier import lean_cost, model_cost, read_decisions
+                result['frontier'] = dict(lean=lean_cost(db, group_id), model=model_cost(db, group_id),
+                                          decisions=read_decisions(db, group_id))
             return result
 
 

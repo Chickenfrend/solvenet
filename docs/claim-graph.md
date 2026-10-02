@@ -212,3 +212,6 @@ focused task after a challenge through the existing task method; the fixed loop
 continues to apply its existing `decisions`-based redirect. Graph relationships
 do not compose Lean declarations or prove dependencies (G3), rank/freeze worker
 packets (G4), or replace scheduling (G5).
+
+The opt-in [G5 frontier policy](graph-frontier.md) now consumes this graph and
+adds bounded attributed priorities/help requests. The fixed loop remains the default.

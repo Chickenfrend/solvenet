@@ -19,8 +19,9 @@ from .group_artifacts import MIGRATION_16, GroupArtifacts
 from .claim_graph import ClaimGraph
 from .claim_graph_schema import MIGRATION_19
 from .graph_response import MIGRATION_20, GraphResponses
-from .proof_context import MIGRATION_21, ProofContexts
+from .proof_context import MIGRATION_21, MIGRATION_24, ProofContexts
 from .context_packet import MIGRATION_22, ContextPackets
+from .frontier import MIGRATION_23, Frontier
 
 
 class Conflict(Exception):
@@ -235,7 +236,7 @@ def identifier():
     return uuid4().hex
 
 
-class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, ProofContexts, ContextPackets):
+class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, ProofContexts, ContextPackets, Frontier):
     def __init__(self, path: Path, *, lease_seconds=30, clock=time.time):
         self.path = path
         self.artifact_verifier_binding = None
@@ -325,7 +326,13 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, P
             if version == 21:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_22 + "COMMIT;")
                 version = 22
-            if version != 22:
+            if version == 22:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_23 + "COMMIT;")
+                version = 23
+            if version == 23:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_24 + "COMMIT;")
+                version = 24
+            if version != 24:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -803,7 +810,7 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, P
               JOIN assignments a ON a.id=t.assignment_id JOIN jobs j ON j.id=a.job_id
               JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
               LEFT JOIN group_jobs gj ON gj.job_id=j.id LEFT JOIN group_graphs gg ON gg.group_id=gj.group_id
-              LEFT JOIN verifications v ON v.attempt_id=t.id WHERE v.attempt_id IS NULL
+               LEFT JOIN verifications v ON v.attempt_id=t.id WHERE v.attempt_id IS NULL AND j.status!='cancelled'
               ORDER BY t.rowid, t.id LIMIT 1""").fetchone()
             if not row:
                 return None
@@ -824,8 +831,9 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, P
                 WHERE t.id=? AND gg.root_id IS NOT NULL''', (attempt,)).fetchone():
                 raise ValueError('Graph target verification requires its frozen composed context')
             if bundle is not None:
-                from .proof_context import binding_matches, check_inputs_match, record_check
-                current = binding_matches(db, bundle) and check_inputs_match(db, attempt, 'attempt', bundle)
+                from .proof_context import binding_matches, check_inputs_match, record_check, owns_check
+                current = (owns_check(db, attempt, 'attempt', check_id) and binding_matches(db, bundle)
+                           and check_inputs_match(db, attempt, 'attempt', bundle))
                 if not current:
                     record_check(db, attempt, 'attempt', bundle, result, usage, False, check_id)
                     return
@@ -854,10 +862,11 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, P
                 # A deadline may have stopped the group while this candidate
                 # was waiting for Lean. Verification remains authoritative,
                 # including after a coordinator restart.
+                db.execute("""UPDATE group_tasks SET status='done' WHERE id IN
+                  (SELECT task_id FROM group_jobs WHERE job_id=?)""", (job['id'],))
+                db.execute('UPDATE frontier_decisions SET processed=1 WHERE job_id=?', (job['id'],))
                 db.execute("""UPDATE group_loops SET phase='stopped',reason='verified_target'
                   WHERE group_id IN (SELECT group_id FROM group_runs WHERE run_id=?)""", (job['run_id'],))
-                db.execute("""UPDATE group_tasks SET status='done' WHERE request_key='synthesize'
-                  AND group_id IN (SELECT group_id FROM group_runs WHERE run_id=?)""", (job['run_id'],))
             elif result.status == 'verifier_error':
                 # Infrastructure failure terminates only a running run. It
                 # must not overwrite a proof that Lean has already verified.

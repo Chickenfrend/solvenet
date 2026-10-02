@@ -387,7 +387,9 @@ class ClaimGraphTests(unittest.TestCase):
         with patch('solvenet.store.MIGRATION_19', 'PRAGMA user_version=19;'), \
                 patch('solvenet.store.MIGRATION_20', 'PRAGMA user_version=20;'), \
                 patch('solvenet.store.MIGRATION_21', 'PRAGMA user_version=21;'), \
-                patch('solvenet.store.MIGRATION_22', 'PRAGMA user_version=22;'):
+                patch('solvenet.store.MIGRATION_22', 'PRAGMA user_version=22;'), \
+                patch('solvenet.store.MIGRATION_23', 'PRAGMA user_version=23;'), \
+                patch('solvenet.store.MIGRATION_24', 'PRAGMA user_version=24;'):
             Store(old_path)
         with closing(sqlite3.connect(old_path)) as db, db:
             db.execute('PRAGMA user_version=18')

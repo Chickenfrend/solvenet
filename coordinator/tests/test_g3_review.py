@@ -201,12 +201,14 @@ class ComposedWinnerTests(unittest.TestCase):
             ': True', ['Init'], 'pinned', 'trivial', prerequisite_proof_ids=[])
         bundle = self.store.proof_context(artifact)
         first = self.store.begin_composed_check(artifact, 'artifact', bundle)
-        second = self.store.begin_composed_check(artifact, 'artifact', bundle)
-        for result, check_id in ((self.good, first), (self.bad, second), (self.good, None)):
+        from solvenet.proof_context import VerificationBusy
+        with self.assertRaises(VerificationBusy):
+            self.store.begin_composed_check(artifact, 'artifact', bundle)
+        for result, check_id in ((self.good, first), (self.bad, first), (self.good, None)):
             self.store.checked_group_artifact(artifact, str(result.status), result.diagnostics,
                 binding=self.binding, bundle=bundle, result=result, usage=self.usage, check_id=check_id)
         evidence = self.store.composed_evidence(artifact)
-        self.assertEqual([e['committed'] for e in evidence], [1, 0, 0])
+        self.assertEqual([e['committed'] for e in evidence], [1, 0])
         self.assertEqual(self.store.group(self.group)['artifacts'][0]['diagnostics'], 'winner')
         self.assertEqual(self.store.export_proof_bundle(artifact), evidence[0]['bundle'])
 
@@ -223,11 +225,13 @@ class ComposedWinnerTests(unittest.TestCase):
         attempt = self.store.pending()
         bundle = attempt['bundle']
         first = self.store.begin_composed_check(attempt['id'], 'attempt', bundle)
-        second = self.store.begin_composed_check(attempt['id'], 'attempt', bundle)
-        for result, check_id in ((self.bad, first), (self.good, second), (self.bad, None)):
+        from solvenet.proof_context import VerificationBusy
+        with self.assertRaises(VerificationBusy):
+            self.store.begin_composed_check(attempt['id'], 'attempt', bundle)
+        for result, check_id in ((self.bad, first), (self.good, first), (self.bad, None)):
             self.store.verified(attempt['id'], result, bundle=bundle, usage=self.usage, check_id=check_id)
         evidence = self.store.composed_evidence(attempt['id'])
-        self.assertEqual([e['committed'] for e in evidence], [1, 0, 0])
+        self.assertEqual([e['committed'] for e in evidence], [1, 0])
         run = self.store.group(self.group)['run']['run_id']
         self.assertNotEqual(self.store.run_status(run)['status'], 'solved')
         self.assertEqual(self.store.run(run)['attempts'][0]['diagnostics'], 'loser')

@@ -178,7 +178,7 @@ class GroupArtifacts:
                    JOIN attempts t ON t.assignment_id=a.id LEFT JOIN verifications v ON v.attempt_id=t.id
                    WHERE pc.owner_kind='job' AND v.attempt_id IS NULL LIMIT 1''').fetchone() is not None or db.execute('''
                    SELECT 1 FROM group_loops gl JOIN group_graphs gg ON gg.group_id=gl.group_id
-                   WHERE gl.phase='synthesize' AND gg.root_id IS NOT NULL LIMIT 1''').fetchone() is not None
+                    WHERE gl.phase IN ('synthesize','frontier') AND gg.root_id IS NOT NULL LIMIT 1''').fetchone() is not None
 
     def pending_group_artifact(self):
         with self.connect() as db:
@@ -200,8 +200,9 @@ class GroupArtifacts:
         with self.transaction() as db:
             current = True
             if bundle is not None:
-                from .proof_context import binding_matches, check_inputs_match, record_check
-                current = binding_matches(db, bundle) and check_inputs_match(db, artifact_id, 'artifact', bundle)
+                from .proof_context import binding_matches, check_inputs_match, record_check, owns_check
+                current = (owns_check(db, artifact_id, 'artifact', check_id) and binding_matches(db, bundle)
+                           and check_inputs_match(db, artifact_id, 'artifact', bundle))
             accepted = False
             if current:
                 updated = db.execute('''UPDATE group_artifacts SET status=?,diagnostics=?,verifier_identity=?

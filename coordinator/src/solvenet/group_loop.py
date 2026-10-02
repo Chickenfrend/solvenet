@@ -83,7 +83,7 @@ def _unverified_context(findings):
 
 class GroupLoop:
     def start_group_loop(self, request_key, statement, imports, environment, models, *,
-                         max_work=12, deadline=None, model_capabilities=None):
+                         max_work=12, deadline=None, model_capabilities=None, mode='fixed', graph_limits=None):
         """Create a local group. models maps planner, investigator, critic, synthesizer.
 
         A single model may serve several roles, but agents remain distinct.
@@ -92,6 +92,10 @@ class GroupLoop:
         for an unavailable or proof-only worker then terminates as `deadline`.
         """
         _key(request_key)
+        from .frontier import validate_limits
+        if mode not in ('fixed', 'graph') or (mode == 'fixed' and graph_limits is not None):
+            raise ValueError('mode must be fixed or graph; graph_limits require graph mode')
+        limits = validate_limits(graph_limits) if mode == 'graph' else {}
         normalized = validate_routing(models, model_capabilities)
         capabilities = model_capabilities or {}
         if type(max_work) is not int or not 12 <= max_work <= 256:
@@ -118,7 +122,8 @@ class GroupLoop:
                                       if deadline is None else deadline)
                 if (existing['models'] != json.dumps(models, sort_keys=True) or
                         existing['capabilities'] != json.dumps(capabilities, sort_keys=True) or
-                        existing['deadline'] != requested_deadline):
+                         existing['deadline'] != requested_deadline or existing['mode'] != mode or
+                         existing['limits'] != json.dumps(limits, sort_keys=True)):
                     _conflict('Loop key reused with different configuration')
                 return group_id
             if deadline is None:
@@ -136,18 +141,19 @@ class GroupLoop:
                     db.execute('INSERT INTO group_agents(id,group_id,request_key,role) VALUES (?,?,?,?)',
                                (identifier(), group_id, key, role))
             db.execute('''INSERT INTO group_loops
-                (group_id,models,phase,reason,deadline,created_at,capabilities)
-                VALUES (?,?,?,?,?,?,?)''',
-                       (group_id, json.dumps(models, sort_keys=True), 'plan', None, deadline, now,
-                        json.dumps(capabilities, sort_keys=True)))
+                (group_id,models,phase,reason,deadline,created_at,capabilities,mode,limits)
+                VALUES (?,?,?,?,?,?,?,?,?)''',
+                       (group_id, json.dumps(models, sort_keys=True), 'frontier' if mode == 'graph' else 'plan', None, deadline, now,
+                         json.dumps(capabilities, sort_keys=True), mode, json.dumps(limits, sort_keys=True)))
         return group_id
 
     def group_loop(self, group_id):
         with self.connect() as db:
-            row = db.execute('SELECT phase,reason,deadline,models,capabilities FROM group_loops WHERE group_id=?',
+            row = db.execute('SELECT phase,reason,deadline,models,capabilities,mode,limits FROM group_loops WHERE group_id=?',
                               (group_id,)).fetchone()
             return dict(row) | {'models': json.loads(row['models']),
-                                'capabilities': json.loads(row['capabilities'])} if row else None
+                                'capabilities': json.loads(row['capabilities']),
+                                'limits': json.loads(row['limits'])} if row else None
 
     def advance_groups(self):
         with self.connect() as db:
@@ -159,6 +165,10 @@ class GroupLoop:
 
     def advance_group(self, group_id):
         """Perform one durable transition; return whether anything changed."""
+        with self.connect() as db:
+            row = db.execute('SELECT mode FROM group_loops WHERE group_id=?', (group_id,)).fetchone()
+        if row and row['mode'] == 'graph':
+            return self.advance_frontier(group_id)
         from .store import identifier
         with self.transaction() as db:
             loop = db.execute('SELECT * FROM group_loops WHERE group_id=?', (group_id,)).fetchone()

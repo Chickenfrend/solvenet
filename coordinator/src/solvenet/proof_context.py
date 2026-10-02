@@ -21,6 +21,28 @@ CREATE TRIGGER immutable_check_inputs BEFORE UPDATE OF owner_id,owner_kind,bundl
 PRAGMA user_version = 21;
 """
 
+MIGRATION_24 = """
+CREATE TABLE verification_ownership (
+ owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, check_id INTEGER NOT NULL UNIQUE
+ REFERENCES composed_checks(id), expires REAL NOT NULL,
+ PRIMARY KEY(owner_kind,owner_id));
+-- Pre-upgrade executions have no live ownership token; retain their spent slots.
+UPDATE frontier_lean_reservations SET finished=1 WHERE check_id IN
+ (SELECT id FROM composed_checks WHERE status='checking');
+UPDATE composed_checks SET status='abandoned' WHERE status='checking';
+PRAGMA user_version = 24;
+"""
+
+
+class VerificationBusy(Exception):
+    """Another tick owns this input, or its persisted result is already terminal."""
+
+
+def owns_check(db, owner_id, owner_kind, check_id):
+    # Callers that never started a check retain the historical explicit result API.
+    return check_id is None or db.execute('''SELECT 1 FROM verification_ownership
+        WHERE owner_id=? AND owner_kind=? AND check_id=?''', (owner_id, owner_kind, check_id)).fetchone() is not None
+
 
 def selected_bundle(db, group_id, claim_id, proof, proof_ids):
     """Resolve an ordered acyclic closure, retaining exact prior replay bodies."""
@@ -28,7 +50,8 @@ def selected_bundle(db, group_id, claim_id, proof, proof_ids):
             len(set(proof_ids)) != len(proof_ids)):
         raise ValueError('Invalid prerequisite proof IDs')
     claim = _require(db, 'group_claims', group_id, claim_id)
-    binding = db.execute('SELECT * FROM artifact_verifier_binding WHERE id=1').fetchone()
+    binding = db.execute('''SELECT b.*,gl.mode,gl.limits FROM artifact_verifier_binding b
+        LEFT JOIN group_loops gl ON gl.group_id=? WHERE b.id=1''', (group_id,)).fetchone()
     if not binding['identity']:
         _conflict('A current verifier binding is required for composed context')
     declarations, selected, active = [], {}, set()
@@ -75,6 +98,11 @@ def selected_bundle(db, group_id, claim_id, proof, proof_ids):
                   environment=claim['environment'], proof=proof, declarations=declarations,
                   selected_proof_ids=proof_ids,
                   verifier_identity=binding['identity'], verifier_revision=binding['revision'])
+    if binding['mode'] == 'graph':
+        limits = json.loads(binding['limits'])
+        if len(declarations) > limits['included_lemmas']:
+            raise ValueError('Configured composed declaration limit exceeded')
+        bundle['source_byte_limit'] = limits['source_bytes']
     validate_bundle(bundle)
     return bundle
 
@@ -121,11 +149,15 @@ def check_inputs_match(db, owner_id, owner_kind, bundle):
 def record_check(db, owner_id, owner_kind, bundle, result, usage, committed, check_id=None):
     if usage is None:
         usage = {'status': 'usage_unknown'}
+    from .frontier import finish_check
+    finish_check(db, check_id, result, usage)
     if check_id is not None:
         db.execute('''UPDATE composed_checks SET status=?,diagnostics=?,elapsed_ms=?,usage=?,committed=?
             WHERE id=? AND owner_id=? AND owner_kind=? AND bundle=? AND status='checking' ''',
             (str(result.status), result.diagnostics, result.elapsed_ms, json.dumps(usage), int(committed),
              check_id, owner_id, owner_kind, encode(bundle)))
+        db.execute('DELETE FROM verification_ownership WHERE owner_id=? AND owner_kind=? AND check_id=?',
+                   (owner_id, owner_kind, check_id))
         return
     db.execute('''INSERT INTO composed_checks
         (owner_id,owner_kind,bundle,status,diagnostics,elapsed_ms,usage,committed)
@@ -134,13 +166,45 @@ def record_check(db, owner_id, owner_kind, bundle, result, usage, committed, che
 
 
 class ProofContexts:
-    def begin_composed_check(self, owner_id, owner_kind, bundle):
+    def begin_composed_check(self, owner_id, owner_kind, bundle, *, deadline_ms=30000):
+        from .frontier import reserve_check, FrontierLimit
+        refusal = None
         with self.transaction() as db:
+            if owner_kind == 'attempt':
+                terminal = db.execute('''SELECT 1 FROM attempts t JOIN assignments a ON a.id=t.assignment_id
+                    JOIN jobs j ON j.id=a.job_id LEFT JOIN verifications v ON v.attempt_id=t.id
+                    WHERE t.id=? AND (v.attempt_id IS NOT NULL OR j.status='cancelled')''', (owner_id,)).fetchone()
+            else:
+                terminal = db.execute("SELECT 1 FROM group_artifacts WHERE id=? AND status!='pending'", (owner_id,)).fetchone()
+            if terminal:
+                raise VerificationBusy('Verification already completed')
+            ownership = db.execute('SELECT * FROM verification_ownership WHERE owner_id=? AND owner_kind=?',
+                                   (owner_id, owner_kind)).fetchone()
+            if ownership:
+                if ownership['expires'] > self.clock():
+                    raise VerificationBusy('Verification in flight')
+                # Recovery is bounded by the verifier deadline plus a short commit grace.
+                # An abandoned operation keeps its unknown time charge and spent slot.
+                db.execute("UPDATE composed_checks SET status='abandoned' WHERE id=? AND status='checking'", (ownership['check_id'],))
+                db.execute('UPDATE frontier_lean_reservations SET finished=1 WHERE check_id=?', (ownership['check_id'],))
+                db.execute('DELETE FROM verification_ownership WHERE check_id=?', (ownership['check_id'],))
             row = db.execute('''INSERT INTO composed_checks
                 (owner_id,owner_kind,bundle,status,diagnostics,elapsed_ms,usage,committed)
                 VALUES (?,?,?,'checking','',NULL,?,0)''',
                 (owner_id, owner_kind, encode(bundle), json.dumps({'status': 'usage_unknown'})))
-            return row.lastrowid
+            check_id = row.lastrowid
+            try:
+                reserve_check(db, self, check_id, owner_kind, bundle, deadline_ms)
+            except FrontierLimit as error:
+                refusal = error
+                db.execute('DELETE FROM composed_checks WHERE id=?', (check_id,))
+            else:
+                db.execute('INSERT INTO verification_ownership VALUES (?,?,?,?)',
+                           (owner_kind, owner_id, check_id, self.clock() + deadline_ms / 1000 + 5))
+        # Commit abandoned-check accounting even if recovery cannot afford a new slot.
+        if refusal:
+            raise refusal
+        return check_id
 
     def proof_context(self, owner_id):
         with self.connect() as db:

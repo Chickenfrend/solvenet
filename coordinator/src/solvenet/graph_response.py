@@ -10,7 +10,8 @@ from .group_state import _require, _require_group, _text, _conflict
 SCHEMA = 'solvenet.graph.v1'
 MAX_BATCH_BYTES = 8192
 MAX_BATCH_ITEMS = 16
-ARRAY_LIMITS = {'claims': 8, 'relationships': 8, 'reviews': 8, 'findings': 8, 'artifacts': 4}
+ARRAY_LIMITS = {'claims': 8, 'relationships': 8, 'reviews': 8, 'findings': 8, 'artifacts': 4,
+                'priorities': 4, 'help_requests': 4}
 
 MIGRATION_20 = """
 ALTER TABLE claim_relationship_reviews ADD COLUMN source TEXT NOT NULL DEFAULT 'coordinator';
@@ -188,4 +189,22 @@ class GraphResponses:
                 freeze_context(db, artifact, 'artifact', selected_bundle(
                     db, group_id, claim, item['proof'], item['prerequisite_proof_ids']))
             result['artifacts'][item['key']] = artifact
+        for name in ('priorities', 'help_requests'):
+            result[name] = {}
+            for item in batch.get(name, []):
+                claim = ref(item['claim'], 'group_claims', local_claims)
+                priority = item.get('priority', 0)
+                if type(priority) is not int or not 0 <= priority <= 3:
+                    raise ValueError('Priority must be between 0 and 3')
+                action = item.get('action', 'investigate' if name == 'priorities' else 'critique')
+                if action not in ('investigate', 'critique', 'prove'):
+                    raise ValueError('Invalid proposed frontier action')
+                reason = item.get('reason', '')
+                if not isinstance(reason, str) or len(reason.encode()) > 512:
+                    raise ValueError('Invalid frontier proposal reason')
+                proposal_id = key(item)
+                db.execute('INSERT INTO graph_action_proposals VALUES (?,?,?,?,?,?,?)',
+                           (proposal_id, group_id, job_id, claim, action, priority, reason))
+                db.execute('UPDATE group_graphs SET revision=revision+1 WHERE group_id=?', (group_id,))
+                result[name][item['key']] = proposal_id
         return result

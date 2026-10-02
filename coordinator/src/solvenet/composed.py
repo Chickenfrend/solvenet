@@ -46,7 +46,7 @@ def validate_bundle(bundle):
     selection = bundle['selected_proof_ids']
     if len(set(selection)) != len(selection) or not set(selection) <= seen:
         raise ValueError('Invalid selected proof IDs')
-    if len(encode(bundle).encode()) > MAX_SOURCE_BYTES:
+    if len(encode(bundle).encode()) > min(MAX_SOURCE_BYTES, bundle.get('source_byte_limit', MAX_SOURCE_BYTES)):
         raise ValueError('Composed aggregate source limit exceeded')
 
 
@@ -98,14 +98,14 @@ run_cmd do
 
 def verify_composed(verifier, bundle):
     started = time.monotonic()
-    usage = {'status': 'usage_unknown'}
+    usage = {'status': 'usage_unknown', 'subprocesses': 0}
     try:
         validate_bundle(bundle)
         with tempfile.TemporaryDirectory(prefix='solvenet-composed-') as directory:
             receipt = Path(directory) / 'receipt.json'
             source = Path(directory) / 'Candidate.lean'
             text = build_source(verifier, bundle, receipt)
-            if len(text.encode()) > MAX_SOURCE_BYTES:
+            if len(text.encode()) > min(MAX_SOURCE_BYTES, bundle.get('source_byte_limit', MAX_SOURCE_BYTES)):
                 raise ValueError('Generated composed source limit exceeded')
             source.write_text(text, encoding='utf-8')
             # Diagnose missing toolchains/imports as infrastructure failures.
@@ -114,17 +114,19 @@ def verify_composed(verifier, bundle):
             preflight = Path(directory) / 'Preflight.lean'
             preflight.write_text(verifier._build_source(': True', None, bundle['imports']), encoding='utf-8')
             status, diagnostics = verifier._run(preflight, started)
+            usage['subprocesses'] += 1
             if status is not VerificationStatus.VERIFIED:
                 return verifier._result(VerificationStatus.TIMEOUT if status is VerificationStatus.TIMEOUT
                     else VerificationStatus.VERIFIER_ERROR,
                     'Composed environment preflight failed: ' + diagnostics, started), usage
             status, diagnostics = verifier._run(source, started)
+            usage['subprocesses'] += 1
             if status == VerificationStatus.VERIFIED:
                 if not receipt.is_file() or receipt.stat().st_size > 8192:
                     status = VerificationStatus.VERIFIER_ERROR
                     diagnostics = 'Composed checks did not produce a bounded completion receipt'
                 else:
-                    usage = json.loads(receipt.read_text())
+                    usage = json.loads(receipt.read_text()) | {'subprocesses': usage['subprocesses']}
                     names = {item['name'] for item in bundle['declarations']}
                     if (usage.get('status') != 'known' or any(
                             not isinstance(usage.get(k), list) or

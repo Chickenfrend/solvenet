@@ -505,7 +505,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
         self.assertEqual(run['attempts'][0]['generation'], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 22)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 24)
         self.assertEqual(run['generation_timeout_seconds'], 120)
         self.assertEqual(run['max_assignments'], 3)
         self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
@@ -627,6 +627,16 @@ class APITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(snapshot['loop']['phase'], 'plan')
         self.assertEqual(len(snapshot['group']['agents']), 5)
+        graph_options = options | {'request_key': 'graph-group', 'mode': 'graph',
+                                   'graph_limits': {'verification_operations': 3}}
+        status, graph = self.request('/v1/groups', graph_options)
+        self.assertEqual(status, 201)
+        self.assertEqual(graph['loop']['mode'], 'graph')
+        self.assertEqual(graph['loop']['phase'], 'frontier')
+        self.assertEqual(graph['loop']['limits']['verification_operations'], 3)
+        self.assertEqual(self.request('/v1/groups', graph_options)[1]['id'], graph['id'])
+        self.assertEqual(self.request('/v1/groups', graph_options | {'mode': 'fixed'})[0], 400)
+        self.assertIn('frontier', self.request('/v1/groups/' + graph['id'])[1]['group'])
         self.assertEqual(self.request('/v1/groups/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')[0], 404)
         for key in ('request_key', 'statement', 'imports', 'environment', 'models'):
             with self.subTest(missing=key):

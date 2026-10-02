@@ -42,6 +42,8 @@ from .verifier import (
     VerificationResult,
     VerificationStatus,
 )
+from .frontier import FrontierLimit
+from .proof_context import VerificationBusy
 
 LOG = logging.getLogger(__name__)
 IDENTIFIER_RE = re.compile(r'^[0-9a-f]{32}$')
@@ -224,8 +226,8 @@ class Coordinator:
         changed = self.store.advance_groups()
         artifact = self.store.pending_group_artifact() if binding and binding[0] else None
         if artifact:
-            self._check_artifact(artifact, binding)
-            return True
+            checked = self._check_artifact(artifact, binding)
+            return changed if checked is False else True
         attempt = self.store.pending()
         if not attempt:
             return changed
@@ -238,7 +240,8 @@ class Coordinator:
                 if not binding or not binding[0]:
                     return changed
                 bundle = bundle | {'verifier_identity': binding[0], 'verifier_revision': binding[1]}
-                check_id = self.store.begin_composed_check(attempt['id'], 'attempt', bundle)
+                check_id = self.store.begin_composed_check(attempt['id'], 'attempt', bundle,
+                    deadline_ms=int(getattr(self.verifier, 'timeout_seconds', DEFAULT_LEAN_TIMEOUT_SECONDS) * 1000))
                 result, usage = self.verifier.verify_composed(bundle)
                 after = self.verifier.artifact_identity()
                 self.store.bind_group_artifact_verifier(after)
@@ -248,10 +251,15 @@ class Coordinator:
             else:
                 result = self.verifier.verify(attempt['statement'], attempt['candidate'],
                                               imports=json.loads(attempt['imports']))
+        except VerificationBusy:
+            return changed
+        except FrontierLimit as error:
+            return self.store.stop_unchecked_target(attempt['id'], bundle['group_id'], str(error)) or changed
         except Exception:
             LOG.exception("Verifier failed")
             result = VerificationResult(VerificationStatus.VERIFIER_ERROR, "Verifier raised an internal error; see coordinator logs", 0)
             elapsed_unknown = True
+            usage = usage | {'elapsed_unknown': True}
         self.store.verified(attempt['id'], result, elapsed_unknown=elapsed_unknown,
                             bundle=bundle, usage=usage, check_id=check_id)
         return True
@@ -272,17 +280,29 @@ class Coordinator:
         except (ValueError, Conflict) as error:
             self.store.checked_group_artifact(artifact['id'], 'rejected', str(error), binding=binding)
             return
-        check_id = self.store.begin_composed_check(artifact['id'], 'artifact', bundle) if bundle else None
-        if bundle is not None and bundle['declarations']:
+        try:
+            check_id = self.store.begin_composed_check(artifact['id'], 'artifact', bundle,
+                deadline_ms=int(getattr(self.verifier, 'timeout_seconds', DEFAULT_LEAN_TIMEOUT_SECONDS) * 1000)) if bundle else None
+        except VerificationBusy:
+            return False
+        except FrontierLimit as error:
+            self.store.stop_frontier(artifact['group_id'], str(error))
+            return
+        graph_mode = self.store.group_loop(artifact['group_id'])
+        if bundle is not None and (bundle['declarations'] or (graph_mode and graph_mode['mode'] == 'graph')):
             try:
                 result, usage = self.verifier.verify_composed(bundle)
             except Exception:
                 LOG.exception('Composed artifact verifier failed')
                 result = VerificationResult(VerificationStatus.VERIFIER_ERROR,
                                             'Composed artifact verifier failed', 0)
-                usage = {'status': 'usage_unknown'}
-            self.store.record_group_lean_check(artifact['id'], result.status, result.elapsed_ms)
-            self.store.bind_group_artifact_verifier(self.verifier.artifact_identity())
+                usage = {'status': 'usage_unknown', 'elapsed_unknown': True}
+            self.store.record_group_lean_check(artifact['id'], result.status,
+                                             None if usage.get('elapsed_unknown') else result.elapsed_ms)
+            try:
+                self.store.bind_group_artifact_verifier(self.verifier.artifact_identity())
+            except Exception:
+                self.store.bind_group_artifact_verifier(None)
             self.store.checked_group_artifact(artifact['id'], str(result.status), result.diagnostics,
                 binding=binding, bundle=bundle, result=result, usage=usage, check_id=check_id)
             return
@@ -571,7 +591,7 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                     return self.respond(201, coordinator.store.submit(**run_options(data)))
                 if parts == ['v1', 'groups']:
                     required = {'request_key', 'statement', 'imports', 'environment', 'models'}
-                    if set(data) - (required | {'max_work', 'deadline', 'model_capabilities'}):
+                    if set(data) - (required | {'max_work', 'deadline', 'model_capabilities', 'mode', 'graph_limits'}):
                         raise ValueError('Unknown group field')
                     if required - set(data):
                         raise ValueError('Missing group fields: ' + ', '.join(sorted(required - set(data))))
