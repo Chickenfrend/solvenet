@@ -385,7 +385,8 @@ class ClaimGraphTests(unittest.TestCase):
         old_path = self.path.parent / 'old.db'
         # Build an actual v18 database using the shipped migration chain.
         with patch('solvenet.store.MIGRATION_19', 'PRAGMA user_version=19;'), \
-                patch('solvenet.store.MIGRATION_20', 'PRAGMA user_version=20;'):
+                patch('solvenet.store.MIGRATION_20', 'PRAGMA user_version=20;'), \
+                patch('solvenet.store.MIGRATION_21', 'PRAGMA user_version=21;'):
             Store(old_path)
         with closing(sqlite3.connect(old_path)) as db, db:
             db.execute('PRAGMA user_version=18')

@@ -194,11 +194,15 @@ class GroupArtifactTests(unittest.TestCase):
         dependency.write_text('theorem example : True := by trivial\n')
         # A synthetic package may make Lake reject the fixture manifest. Keep
         # its version response fixed to isolate fingerprinting of project files.
-        selected = project / 'selected-lean'
+        prefix = self.path.parent / 'toolchain'
+        (prefix / 'bin').mkdir(parents=True)
+        (prefix / 'lib/lean').mkdir(parents=True)
+        selected = prefix / 'bin/lean'
         selected.write_bytes(b'local Lean binary')
 
         def runtime(command, **kwargs):
-            output = str(selected).encode() if 'command -v lean' in command else b'Lean version 4.19.0\n'
+            output = (str(prefix).encode() if '--print-prefix' in command else
+                      json.dumps({'_LEAN_EXECUTABLE': str(selected)}).encode() if '-c' in command else b'Lean version 4.19.0\n')
             return subprocess.CompletedProcess(command, 0, stdout=output)
 
         with patch('solvenet.verifier.subprocess.run', side_effect=runtime):
@@ -218,7 +222,10 @@ class GroupArtifactTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[2] / 'lean'
         for name in ('lean-toolchain', 'lakefile.toml', 'lake-manifest.json'):
             shutil.copyfile(source / name, project / name)
-        selected = project / 'selected-lean'
+        prefix = self.path.parent / 'toolchain'
+        (prefix / 'bin').mkdir(parents=True)
+        (prefix / 'lib/lean').mkdir(parents=True)
+        selected = prefix / 'bin/lean'
         selected.write_bytes(b'lean-binary-A')
         verifier = LeanVerifier(project, command=(str(Path.home() / '.elan/bin/lake'),
                                                   'env', 'lean'))
@@ -226,7 +233,8 @@ class GroupArtifactTests(unittest.TestCase):
 
         def runtime(command, **kwargs):
             calls.append(command)
-            output = str(selected).encode() if 'command -v lean' in command else b'Lean version unchanged\n'
+            output = (str(prefix).encode() if '--print-prefix' in command else
+                      json.dumps({'_LEAN_EXECUTABLE': str(selected)}).encode() if '-c' in command else b'Lean version unchanged\n')
             return subprocess.CompletedProcess(command, 0, stdout=output)
 
         with patch('solvenet.verifier.subprocess.run', side_effect=runtime):
@@ -238,7 +246,7 @@ class GroupArtifactTests(unittest.TestCase):
             os.utime(replacement, ns=(stamp, stamp))
             replacement.replace(selected)
             self.assertNotEqual(verifier.artifact_identity(), before)
-        self.assertTrue(any('command -v lean' in command for command in calls))
+        self.assertTrue(any('--print-prefix' in command for command in calls))
 
     def test_container_artifact_pins_image_across_retag_and_import_replay(self):
         self.propose('docker-lemma', ': True', 'trivial', imports=['Init', 'Lean'])

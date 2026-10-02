@@ -220,14 +220,30 @@ class Coordinator:
         if not attempt:
             return changed
         elapsed_unknown = False
+        bundle = attempt.get('bundle')
+        usage = {'status': 'usage_unknown'}
+        check_id = None
         try:
-            result = self.verifier.verify(attempt['statement'], attempt['candidate'],
-                                          imports=json.loads(attempt['imports']))
+            if bundle is not None:
+                if not binding or not binding[0]:
+                    return changed
+                bundle = bundle | {'verifier_identity': binding[0], 'verifier_revision': binding[1]}
+                check_id = self.store.begin_composed_check(attempt['id'], 'attempt', bundle)
+                result, usage = self.verifier.verify_composed(bundle)
+                after = self.verifier.artifact_identity()
+                self.store.bind_group_artifact_verifier(after)
+            elif attempt['requires_composed']:
+                result = VerificationResult(VerificationStatus.VERIFIER_ERROR,
+                    'Graph target has no immutable composed proof context', 0)
+            else:
+                result = self.verifier.verify(attempt['statement'], attempt['candidate'],
+                                              imports=json.loads(attempt['imports']))
         except Exception:
             LOG.exception("Verifier failed")
             result = VerificationResult(VerificationStatus.VERIFIER_ERROR, "Verifier raised an internal error; see coordinator logs", 0)
             elapsed_unknown = True
-        self.store.verified(attempt['id'], result, elapsed_unknown=elapsed_unknown)
+        self.store.verified(attempt['id'], result, elapsed_unknown=elapsed_unknown,
+                            bundle=bundle, usage=usage, check_id=check_id)
         return True
 
     def _check_artifact(self, artifact, binding):
@@ -240,6 +256,26 @@ class Coordinator:
             return
         imports = json.loads(artifact['imports'])
         target_imports = json.loads(artifact['target_imports'])
+        try:
+            bundle = (self.store.ensure_artifact_context(artifact['id'], binding)
+                      if hasattr(self.verifier, 'verify_composed') else None)
+        except (ValueError, Conflict) as error:
+            self.store.checked_group_artifact(artifact['id'], 'rejected', str(error), binding=binding)
+            return
+        check_id = self.store.begin_composed_check(artifact['id'], 'artifact', bundle) if bundle else None
+        if bundle is not None and bundle['declarations']:
+            try:
+                result, usage = self.verifier.verify_composed(bundle)
+            except Exception:
+                LOG.exception('Composed artifact verifier failed')
+                result = VerificationResult(VerificationStatus.VERIFIER_ERROR,
+                                            'Composed artifact verifier failed', 0)
+                usage = {'status': 'usage_unknown'}
+            self.store.record_group_lean_check(artifact['id'], result.status, result.elapsed_ms)
+            self.store.bind_group_artifact_verifier(self.verifier.artifact_identity())
+            self.store.checked_group_artifact(artifact['id'], str(result.status), result.diagnostics,
+                binding=binding, bundle=bundle, result=result, usage=usage, check_id=check_id)
+            return
         try:
             def check(check_imports):
                 try:
@@ -276,10 +312,11 @@ class Coordinator:
                 after = None
             if after != binding[0]:
                 self.store.bind_group_artifact_verifier(after)
-                return
         self.store.checked_group_artifact(artifact['id'],
-                                          'verified' if result.verified else str(result.status),
-                                          result.diagnostics, binding=binding)
+                                           'verified' if result.verified else str(result.status),
+                                           result.diagnostics, binding=binding, bundle=bundle,
+                                           result=result, usage={'status': 'known', 'direct': [],
+                                                                 'type': [], 'transitive': []}, check_id=check_id)
 
     def loop(self, stop):
         while not stop.is_set():

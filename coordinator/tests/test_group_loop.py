@@ -22,7 +22,10 @@ class GroupLoopTests(unittest.TestCase):
         self.models = {role: 'scripted' for role in
                        ('planner', 'investigator', 'critic', 'synthesizer')}
         self.group = self.store.start_group_loop('target', ': True ∧ True', ['Init'],
-                                                 'lean-test', self.models)
+                                                  'lean-test', self.models)
+        # Direct Store transition tests supply an explicit coordinator binding.
+        # Production obtains the fresh identity through Coordinator.tick().
+        self.store.bind_group_artifact_verifier('test:fixture')
 
     def test_start_is_atomic_after_group_and_agents_inserted(self):
         original = self.store.transaction
@@ -101,6 +104,7 @@ class GroupLoopTests(unittest.TestCase):
         if expires:
             self.now[0] += 6
             self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+            self.store.bind_group_artifact_verifier('test:fixture')
             self.store.expire()
             with self.assertRaises(Exception):
                 self.store.result(lease['assignment_id'], {
@@ -184,7 +188,7 @@ class GroupLoopTests(unittest.TestCase):
         self.collaboration('trivial')
         verifier = LeanVerifier(Path(__file__).resolve().parents[2] / 'lean',
                                 command=(str(Path.home() / '.elan/bin/lake'), 'env', 'lean'))
-        with patch.object(verifier, 'verify', side_effect=RuntimeError('test failure')):
+        with patch.object(verifier, 'verify_composed', side_effect=RuntimeError('test failure')):
             self.assertTrue(Coordinator(self.store, verifier).tick())
         cost = self.store.group(self.group)['cost']
         self.assertEqual(cost['lean_checks'], 1)
@@ -322,11 +326,15 @@ class GroupLoopTests(unittest.TestCase):
             return result
 
         coordinator = Coordinator(self.store, verifier)
-        selected = project / 'selected-lean'
+        prefix = self.path.parent / 'toolchain'
+        (prefix / 'bin').mkdir(parents=True)
+        (prefix / 'lib/lean').mkdir(parents=True)
+        selected = prefix / 'bin/lean'
         selected.write_bytes(b'local Lean binary')
 
         def runtime(command, **kwargs):
-            output = str(selected).encode() if 'command -v lean' in command else b'Lean version 4.19.0\n'
+            output = (str(prefix).encode() if '--print-prefix' in command else
+                      json.dumps({'_LEAN_EXECUTABLE': str(selected)}).encode() if '-c' in command else b'Lean version 4.19.0\n')
             return subprocess.CompletedProcess(command, 0, stdout=output)
 
         with patch('solvenet.verifier.subprocess.run', side_effect=runtime), \
@@ -437,15 +445,16 @@ class GroupLoopTests(unittest.TestCase):
         self.assertEqual(self.store.group(self.group)['tasks'][-1]['status'], 'cancelled')
         verifier = LeanVerifier(Path(__file__).resolve().parents[2] / 'lean',
                                 command=(str(Path.home() / '.elan/bin/lake'), 'env', 'lean'))
-        result = verifier.verify(pending['statement'], pending['candidate'],
-                                 imports=json.loads(pending['imports']))
+        binding = self.store.bind_group_artifact_verifier(verifier.artifact_identity())
+        bundle = pending['bundle'] | {'verifier_identity': binding[0], 'verifier_revision': binding[1]}
+        result, usage = verifier.verify_composed(bundle)
         self.assertTrue(result.verified)
         reopened = Store(self.path, clock=lambda: self.now[0])
-        reopened.verified(pending['id'], result)
+        reopened.verified(pending['id'], result, bundle=bundle, usage=usage)
         self.assertEqual(reopened.run_status(run_id)['status'], 'solved')
         self.assertEqual(reopened.group_loop(self.group)['reason'], 'verified_target')
         self.assertEqual(reopened.group(self.group)['tasks'][-1]['status'], 'done')
-        reopened.verified(pending['id'], result)
+        reopened.verified(pending['id'], result, bundle=bundle, usage=usage)
         self.assertEqual(reopened.group_loop(self.group)['reason'], 'verified_target')
 
     def test_deadline_validation(self):

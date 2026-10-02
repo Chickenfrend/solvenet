@@ -188,7 +188,10 @@ declaration. A Lean harness checks its declaration kind, original type and
 universe parameters, and transitive axiom dependencies. Only `propext`,
 `Classical.choice`, and `Quot.sound` are allowed by default. `sorryAx` and the
 temporary expected-type axiom are rejected. Console text is diagnostic only.
-A completion receipt also guards against an early successful process exit.
+A completion receipt detects missing normal completion under the local execution
+assumption. It is candidate-writable and cannot attest that checks ran against
+malicious tactic IO in that same process. This also applies to
+[G3 composed-proof use receipts](../docs/ticket-g3-composed-proofs.md).
 
 The total wall-clock deadline includes preflight. Output is collected with a
 bounded buffer; exceeding the limit rejects the attempt. Timeouts and excessive

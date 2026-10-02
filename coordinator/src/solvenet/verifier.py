@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
 import re
 import selectors
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -93,6 +91,9 @@ class LeanVerifier:
     This class limits wall-clock time and output size, but a subprocess alone is
     not a security sandbox. Production deployments must also isolate the process
     from the network, credentials, and the host filesystem.
+    Candidate tactics and the checking commands share one Lean process. The
+    candidate-writable completion receipt cannot attest that checks ran against
+    malicious tactic IO; acceptance retains the existing local execution assumption.
     """
 
     DEFAULT_ALLOWED_AXIOMS = frozenset(
@@ -179,77 +180,21 @@ class LeanVerifier:
 
         return self._result(status, diagnostics, started)
 
-    def artifact_identity(self) -> str | None:
-        """Fingerprint runtime and project, including Lake dependency inputs.
+    def verify_composed(self, bundle):
+        from .composed import verify_composed
+        if bundle.get('verifier_identity') != self.artifact_identity():
+            return VerificationResult(VerificationStatus.REJECTED,
+                                      'Composed verifier identity is stale', 0), {'status': 'usage_unknown'}
+        return verify_composed(self, bundle)
 
-        Dependency trees can be large: stat their sources/compiled outputs on
-        each check rather than rereading every file. Local filesystem changes
-        update mtime or ctime, including a same-size rewrite.
+    def artifact_identity(self) -> str | None:
+        """Fingerprint effective imports, selected toolchain and runtime metadata.
+
+        The coordinator calls this only for checks or graph target selection,
+        not idle ticks. Over-budget or unavailable probes fail closed.
         """
-        try:
-            version = subprocess.run([*self.command, '--version'], cwd=self.project_dir,
-                                     capture_output=True, timeout=5, check=True).stdout.decode()
-            executable = shutil.which(self.command[0])
-            if not executable or not version.strip():
-                return None
-            binary = Path(executable).resolve()
-            metadata = binary.stat()
-            # `lake env lean` may select a different Lean executable from the
-            # lake launcher itself. Resolve it inside Lake's effective PATH.
-            if len(self.command) == 3 and tuple(self.command[1:]) == ('env', 'lean'):
-                selected = subprocess.run([self.command[0], 'env', 'sh', '-c', 'command -v lean'],
-                                          cwd=self.project_dir, capture_output=True,
-                                          timeout=5, check=True).stdout.decode().strip()
-                lean_binary = Path(selected).resolve(strict=True)
-            else:
-                lean_binary = binary
-            lean_stat = lean_binary.stat()
-            binary_key = (str(lean_binary), lean_stat.st_dev, lean_stat.st_ino,
-                          lean_stat.st_size, lean_stat.st_mtime_ns, lean_stat.st_ctime_ns)
-            cached = getattr(self, '_artifact_binary_cache', None)
-            if cached is None or cached[0] != binary_key:
-                binary_digest = hashlib.sha256()
-                with lean_binary.open('rb') as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-                        binary_digest.update(chunk)
-                cached = (binary_key, binary_digest.hexdigest())
-                self._artifact_binary_cache = cached
-            digest = hashlib.sha256()
-            digest.update(json.dumps(['local-lean', str(self.project_dir), self.command,
-                                       str(binary), metadata.st_size, metadata.st_mtime_ns, version,
-                                       binary_key, cached[1],
-                                       sorted(self.allowed_axioms)], sort_keys=True).encode())
-            config = [self.project_dir / name for name in
-                      ('lean-toolchain', 'lakefile.toml', 'lake-manifest.json')]
-            for path in config:
-                digest.update(str(path.relative_to(self.project_dir)).encode())
-                digest.update(path.read_bytes() if path.is_file() else b'[missing]')
-            relevant = {'.lean', '.olean', '.ilean', '.so', '.toml', '.json'}
-            roots = [self.project_dir, self.project_dir / '.lake/build/lib']
-            packages = self.project_dir / '.lake/packages'
-            if packages.is_dir():
-                # Package directories may themselves be symlinks; traverse each
-                # as a root so Lake's linked local dependencies are included.
-                roots.extend(path for path in packages.iterdir() if path.is_dir())
-            for root in roots:
-                if not root.is_dir():
-                    continue
-                for directory, dirs, files in os.walk(root):
-                    if root == self.project_dir:
-                        dirs[:] = [name for name in dirs if name != '.lake']
-                    dirs.sort()
-                    for name in sorted(files):
-                        path = Path(directory) / name
-                        if path.suffix not in relevant or not path.is_file():
-                            continue
-                        relative = path.relative_to(self.project_dir)
-                        stat = path.stat()
-                        digest.update(json.dumps([str(relative), str(path.resolve()),
-                                                  stat.st_size, stat.st_mtime_ns,
-                                                  stat.st_ctime_ns]).encode())
-            return 'local:' + digest.hexdigest()
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None
+        from .verifier_identity import local_identity
+        return local_identity(self.project_dir, self.command, self.allowed_axioms)
 
     def readiness(self) -> VerifierReadiness:
         """Check the pinned project and Lean command using only trusted source text."""
@@ -340,40 +285,42 @@ class LeanVerifier:
     def _build_source(
         self, statement: str, candidate: str | None, imports: Sequence[str],
         *, receipt: Path | None = None,
+        expected_name: str = 'SolveNetExpected', candidate_name: str = 'SolveNetCandidate',
+        include_prelude: bool = True,
     ) -> str:
         import_lines = "\n".join(f"import {module}" for module in dict.fromkeys(["Lean", *imports]))
-        source = (
+        prelude = (
             f"{import_lines}\n\n"
             "set_option autoImplicit false\n"
             "set_option Elab.async false\n"
-            f"axiom SolveNetExpected {statement.strip()}\n"
         )
+        source = (prelude if include_prelude else '') + f"axiom {expected_name} {statement.strip()}\n"
         if candidate is None:
             return source
         proof = "\n".join(f"  {line}" for line in candidate.splitlines())
-        declaration = f"theorem SolveNetCandidate {statement.strip()} := by\n{proof}\n"
+        declaration = f"theorem {candidate_name} {statement.strip()} := by\n{proof}\n"
         # JSON string escaping with literal Unicode is also valid Lean escaping.
         quoted = json.dumps(declaration, ensure_ascii=False)
         allowed = ", ".join(json.dumps(n) for n in sorted(self.allowed_axioms))
         return source + f'''
 open Lean Elab Command in
 run_cmd do
-  let expected ← getConstInfo `SolveNetExpected
+  let expected ← getConstInfo `{expected_name}
   let stx ← match Parser.runParserCategory (← getEnv) `command {quoted} with
     | .ok stx => pure stx
     | .error error => throwError "{{error}}"
   elabCommand stx
-  let actual ← getConstInfo `SolveNetCandidate
+  let actual ← getConstInfo `{candidate_name}
   unless actual matches .thmInfo _ do
     throwError "Candidate must be a theorem"
   unless actual.type == expected.type && actual.levelParams == expected.levelParams do
     throwError "Candidate theorem type differs from the original problem"
   let allowed : List String := [{allowed}]
-  for axiomName in (← collectAxioms `SolveNetCandidate) do
-    unless allowed.contains axiomName.toString do
+  for axiomName in (← collectAxioms `{candidate_name}) do
+    unless allowed.contains axiomName.toString && !axiomName.toString.startsWith "SolveNetExpected" && axiomName.toString != "sorryAx" do
       throwError "Candidate uses disallowed axiom: {{axiomName}}"
-  liftIO <| IO.FS.writeFile {json.dumps(str(receipt))} "accepted"
-'''
+''' + (f'  liftIO <| IO.FS.writeFile {json.dumps(str(receipt))} "accepted"\n'
+       if receipt is not None else '')
 
     def _decode_output(self, output: bytes | str | None) -> str:
         if output is None:

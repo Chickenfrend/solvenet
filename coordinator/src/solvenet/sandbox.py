@@ -231,6 +231,18 @@ class ContainerVerifier:
                                       'Artifact verifier image identity unavailable', 0)
         return self._verify(statement, candidate, imports=imports, image=image_id)
 
+    def verify_composed(self, bundle):
+        from .composed import validate_bundle
+        try:
+            validate_bundle(bundle)
+            image_id = bundle['verifier_identity'].removeprefix('docker:')
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id):
+                raise ValueError('Composed verifier image identity unavailable')
+        except (ValueError, KeyError, TypeError) as error:
+            return VerificationResult(VerificationStatus.REJECTED, str(error), 0), {'status': 'usage_unknown'}
+        return self._verify(bundle['statement'], bundle['proof'], imports=bundle['imports'],
+                            image=image_id, bundle=bundle)
+
     def _docker_base_command(self, name):
         return [
             'docker', 'run', '--rm', '--pull=never', '--name', name,
@@ -250,7 +262,7 @@ class ContainerVerifier:
     def verify(self, statement, candidate, *, imports=('Init',)):
         return self._verify(statement, candidate, imports=imports, image=self.image)
 
-    def _verify(self, statement, candidate, *, imports, image):
+    def _verify(self, statement, candidate, *, imports, image, bundle=None):
         started = time.monotonic()
         name = 'solvenet-verify-' + uuid4().hex
         status = VerificationStatus.VERIFIER_ERROR
@@ -258,6 +270,7 @@ class ContainerVerifier:
         elapsed_ms = None
         docker_stderr = b''
         workspace = None
+        usage = {'status': 'usage_unknown'}
         try:
             with tempfile.TemporaryDirectory(prefix='solvenet-container-') as directory:
                 path = Path(directory)
@@ -269,7 +282,8 @@ class ContainerVerifier:
                             'candidate': candidate,
                             'imports': imports,
                             'timeout_seconds': self.verifier_config.timeout_seconds,
-                            'max_diagnostics_bytes': self.verifier_config.max_diagnostics_bytes,
+                             'max_diagnostics_bytes': self.verifier_config.max_diagnostics_bytes,
+                             **({'bundle': bundle} if bundle is not None else {}),
                         },
                         ensure_ascii=False,
                     ),
@@ -308,6 +322,17 @@ class ContainerVerifier:
                     status = result.status
                     diagnostics = result.diagnostics
                     elapsed_ms = result.elapsed_ms
+                    if bundle is not None:
+                        with (path / 'usage.json').open('rb') as output:
+                            raw_usage = output.read(8193)
+                        if len(raw_usage) > 8192:
+                            raise ValueError('Composed use receipt exceeded size limit')
+                        usage = json.loads(raw_usage)
+                        names = {item['name'] for item in bundle['declarations']}
+                        if (result.verified and (not isinstance(usage, dict) or usage.get('status') != 'known' or any(
+                                not isinstance(usage.get(k), list) or not set(usage[k]) <= names
+                                for k in ('direct', 'type', 'transitive')))):
+                            raise ValueError('Invalid composed use receipt')
         except subprocess.TimeoutExpired:
             status = VerificationStatus.TIMEOUT
             diagnostics = 'Container verification deadline exceeded'
@@ -321,7 +346,8 @@ class ContainerVerifier:
             self._remove(name)
         if elapsed_ms is None:
             elapsed_ms = round((time.monotonic() - started) * 1000)
-        return VerificationResult(status, diagnostics, elapsed_ms)
+        result = VerificationResult(status, diagnostics, elapsed_ms)
+        return (result, usage) if bundle is not None else result
 
     def readiness(self):
         """Check Docker, the configured image, and its trusted Lean smoke test."""
@@ -372,7 +398,14 @@ def main():
     verifier = LeanVerifier(
         Path('/opt/solvenet/lean'), command=('lean',), config=config,
     )
-    result = verifier.verify(request['statement'], request['candidate'], imports=request['imports'])
+    if 'bundle' in request:
+        # The host selected an immutable image ID; the in-image local runtime
+        # fingerprint is a different identity namespace.
+        from .composed import verify_composed
+        result, usage = verify_composed(verifier, request['bundle'])
+        Path('/work/usage.json').write_text(json.dumps(usage), encoding='utf-8')
+    else:
+        result = verifier.verify(request['statement'], request['candidate'], imports=request['imports'])
     Path('/work/result.json').write_bytes(
         _encode_result(result, config.max_diagnostics_bytes)
     )

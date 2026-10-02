@@ -133,10 +133,23 @@ class GroupArtifacts:
                 (str(status), elapsed_ms, artifact_id))
 
     def propose_group_artifact(self, group_id, request_key, agent_id, task_id,
-                               statement, imports, environment, proof, *, job_id=None):
+                               statement, imports, environment, proof, *, job_id=None,
+                               prerequisite_proof_ids=None):
         with self.transaction() as db:
-            return insert_artifact(db, group_id, request_key, agent_id, task_id,
-                                   statement, imports, environment, proof, job_id)
+            artifact = insert_artifact(db, group_id, request_key, agent_id, task_id,
+                                       statement, imports, environment, proof, job_id)
+            if prerequisite_proof_ids is not None:
+                from .proof_context import selected_bundle, freeze_context
+                prior = db.execute('SELECT bundle FROM proof_contexts WHERE owner_id=?', (artifact,)).fetchone()
+                if prior:
+                    if json.loads(prior['bundle'])['selected_proof_ids'] != prerequisite_proof_ids:
+                        _conflict('Artifact key reused with different prerequisites')
+                    return artifact
+                claim = db.execute('SELECT claim_id FROM claim_artifacts WHERE artifact_id=?',
+                                   (artifact,)).fetchone()[0]
+                freeze_context(db, artifact, 'artifact', selected_bundle(
+                    db, group_id, claim, proof, prerequisite_proof_ids))
+            return artifact
 
     def bind_group_artifact_verifier(self, identity):
         """Return (identity, revision); invalidate stale claims atomically."""
@@ -160,7 +173,12 @@ class GroupArtifacts:
             return db.execute('''SELECT 1 FROM group_artifacts a
                 LEFT JOIN group_loops gl ON gl.group_id=a.group_id
                 WHERE (a.status='pending' AND (gl.group_id IS NULL OR gl.phase!='stopped'))
-                   OR (a.status='verified' AND gl.phase='synthesize') LIMIT 1''').fetchone() is not None
+                   OR (a.status='verified' AND gl.phase='synthesize') LIMIT 1''').fetchone() is not None or db.execute('''
+                   SELECT 1 FROM proof_contexts pc JOIN assignments a ON a.job_id=pc.owner_id
+                   JOIN attempts t ON t.assignment_id=a.id LEFT JOIN verifications v ON v.attempt_id=t.id
+                   WHERE pc.owner_kind='job' AND v.attempt_id IS NULL LIMIT 1''').fetchone() is not None or db.execute('''
+                   SELECT 1 FROM group_loops gl JOIN group_graphs gg ON gg.group_id=gl.group_id
+                   WHERE gl.phase='synthesize' AND gg.root_id IS NOT NULL LIMIT 1''').fetchone() is not None
 
     def pending_group_artifact(self):
         with self.connect() as db:
@@ -172,14 +190,24 @@ class GroupArtifacts:
                 ORDER BY a.rowid LIMIT 1''').fetchone()
             return dict(row) if row else None
 
-    def checked_group_artifact(self, artifact_id, status, diagnostics='', *, binding=None):
+    def checked_group_artifact(self, artifact_id, status, diagnostics='', *, binding=None,
+                               bundle=None, result=None, usage=None, check_id=None):
         if status not in ('verified', 'rejected', 'incompatible', 'verifier_error', 'timeout'):
             raise ValueError('Invalid artifact verification status')
         if binding is None or (status == 'verified' and not binding[0]):
             raise ValueError('Verifier binding required for artifact result')
         bounded = truncate_diagnostics(diagnostics, MAX_ARTIFACT_DIAGNOSTICS_BYTES)
         with self.transaction() as db:
-            db.execute('''UPDATE group_artifacts SET status=?,diagnostics=?,verifier_identity=?
+            current = True
+            if bundle is not None:
+                from .proof_context import binding_matches, check_inputs_match, record_check
+                current = binding_matches(db, bundle) and check_inputs_match(db, artifact_id, 'artifact', bundle)
+            accepted = False
+            if current:
+                updated = db.execute('''UPDATE group_artifacts SET status=?,diagnostics=?,verifier_identity=?
                 WHERE id=? AND status='pending' AND EXISTS (
                     SELECT 1 FROM artifact_verifier_binding WHERE id=1 AND identity IS ? AND revision=?)''',
                 (status, bounded, binding[0], artifact_id, binding[0], binding[1]))
+                accepted = updated.rowcount == 1
+            if bundle is not None:
+                record_check(db, artifact_id, 'artifact', bundle, result, usage, accepted, check_id)

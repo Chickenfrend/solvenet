@@ -209,7 +209,7 @@ class GroupLoop:
                 return json.loads(result[0])['output']['text'] if result else None
 
             def dispatch(key, creator, owner, description, kind, task_type, context, *, parent=None,
-                         avoid=None):
+                         avoid=None, proof_context=None):
                 """Reserve one call and persist its decision, task and job atomically."""
                 _text(description, 'description', 8192)
                 _text(context, 'context', 8192)
@@ -270,7 +270,10 @@ class GroupLoop:
                      2048 if kind == 'model.generate' else 512, kind, task_type,
                      json.dumps([{'role': 'user', 'content': context}])))
                 db.execute('INSERT INTO group_jobs VALUES (?,?,?,?,?,?,?)',
-                           (job_id, group_id, key, task_id, agents[owner], group['environment'], cost))
+                            (job_id, group_id, key, task_id, agents[owner], group['environment'], cost))
+                if proof_context is not None:
+                    from .proof_context import freeze_context
+                    freeze_context(db, job_id, 'job', proof_context)
                 db.execute('INSERT INTO group_route_decisions VALUES (?,?,?,?)',
                            (group_id, key, job_id, explanation))
                 return True
@@ -408,23 +411,37 @@ class GroupLoop:
                 return self._loop_phase(db, group_id, 'synthesize')
             if phase == 'synthesize':
                 binding = db.execute('SELECT identity,revision FROM artifact_verifier_binding WHERE id=1').fetchone()
-                if db.execute("SELECT 1 FROM group_artifacts WHERE group_id=? AND status='verified'",
-                              (group_id,)).fetchone() and (
+                root = db.execute('SELECT root_id FROM group_graphs WHERE group_id=?', (group_id,)).fetchone()[0]
+                if root is not None and (
                         binding['identity'] is None or self.artifact_verifier_binding != (
                             binding['identity'], binding['revision'])):
-                    return False  # require a fresh coordinator binding before reusing context
+                    return False  # even empty graph target contexts need a fresh binding
                 if db.execute("SELECT 1 FROM group_artifacts WHERE group_id=? AND status='pending'",
                               (group_id,)).fetchone():
                     return False
                 findings = [output(finding_key(1)), output(finding_key(2)), output('redirect')]
-                verified = db.execute('''SELECT statement,imports,environment FROM group_artifacts
+                verified = db.execute('''SELECT id,statement,imports,environment FROM group_artifacts
                     WHERE group_id=? AND status='verified' AND verifier_identity=?
+                    AND imports=? AND environment=?
                     ORDER BY rowid LIMIT 3''',
-                    (group_id, binding['identity'])).fetchall()
-                lemmas = json.dumps([{'statement_excerpt': _json_excerpt(a['statement'], 500),
-                                     'imports_excerpt': _json_excerpt(a['imports'], 200),
-                                     'environment': _json_excerpt(a['environment'], 100)}
-                                    for a in verified], ensure_ascii=False)
+                    (group_id, binding['identity'], group['imports'], group['environment'])).fetchall()
+                from .proof_context import selected_bundle
+                from .store import Conflict
+                proof_context = None
+                # A bounded selection must not strand the fixed loop if the union
+                # of individually checked closures is too large or incompatible.
+                while verified and root is not None:
+                    try:
+                        proof_context = selected_bundle(db, group_id, root, '', [a['id'] for a in verified])
+                        break
+                    except (ValueError, Conflict):
+                        verified = verified[:-1]
+                if proof_context is None and root is not None:
+                    proof_context = selected_bundle(db, group_id, root, '', [])
+                supplied = proof_context['declarations'] if proof_context else []
+                lemmas = json.dumps([{'name': a['name'],
+                                     'statement_excerpt': _json_excerpt(a['statement'], 350)}
+                                    for a in supplied], ensure_ascii=False)
                 return dispatch('synthesize', 'planner', 'synthesizer', 'Prove entire original target',
                                  'model.generate', None,
                                  'Use these UNVERIFIED findings as hints only. Produce a proof body for the '
@@ -432,7 +449,7 @@ class GroupLoop:
                                  'verification evidence.\nLEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: ' + lemmas + '\n' +
                                  _unverified_context([(f'investigate-{i}', value)
                                                       for i, value in enumerate(findings[:2], 1)]
-                                                     + [('redirect', findings[2])])) \
+                                                     + [('redirect', findings[2])]), proof_context=proof_context) \
                     if not job('synthesize') else self._loop_phase(db, group_id, 'synthesis_wait')
             if phase == 'synthesis_wait':
                 current = job('synthesize')

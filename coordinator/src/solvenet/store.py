@@ -19,6 +19,7 @@ from .group_artifacts import MIGRATION_16, GroupArtifacts
 from .claim_graph import ClaimGraph
 from .claim_graph_schema import MIGRATION_19
 from .graph_response import MIGRATION_20, GraphResponses
+from .proof_context import MIGRATION_21, ProofContexts
 
 
 class Conflict(Exception):
@@ -233,7 +234,7 @@ def identifier():
     return uuid4().hex
 
 
-class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses):
+class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, ProofContexts):
     def __init__(self, path: Path, *, lease_seconds=30, clock=time.time):
         self.path = path
         self.artifact_verifier_binding = None
@@ -317,7 +318,10 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses):
             if version == 19:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_20 + "COMMIT;")
                 version = 20
-            if version != 20:
+            if version == 20:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_21 + "COMMIT;")
+                version = 21
+            if version != 21:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
@@ -790,20 +794,44 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses):
 
     def pending(self):
         with self.connect() as db:
-            row = db.execute("""SELECT t.id, t.candidate, p.statement, p.imports FROM attempts t
+            row = db.execute("""SELECT t.id, t.candidate, p.statement, p.imports,
+              gg.root_id IS NOT NULL AS requires_composed FROM attempts t
               JOIN assignments a ON a.id=t.assignment_id JOIN jobs j ON j.id=a.job_id
               JOIN runs r ON r.id=j.run_id JOIN problems p ON p.id=r.problem_id
+              LEFT JOIN group_jobs gj ON gj.job_id=j.id LEFT JOIN group_graphs gg ON gg.group_id=gj.group_id
               LEFT JOIN verifications v ON v.attempt_id=t.id WHERE v.attempt_id IS NULL
               ORDER BY t.rowid, t.id LIMIT 1""").fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            attempt = dict(row)
+            context = db.execute('''SELECT pc.bundle FROM proof_contexts pc
+                JOIN assignments a ON a.job_id=pc.owner_id JOIN attempts t ON t.assignment_id=a.id
+                WHERE t.id=? AND pc.owner_kind='job' ''', (row['id'],)).fetchone()
+            if context:
+                bundle = json.loads(context['bundle'])
+                attempt['bundle'] = bundle | {'proof': row['candidate']}
+            return attempt
 
-    def verified(self, attempt, result, *, elapsed_unknown=False):
+    def verified(self, attempt, result, *, elapsed_unknown=False, bundle=None, usage=None, check_id=None):
         with self.transaction() as db:
+            if bundle is None and result.verified and db.execute('''SELECT 1 FROM attempts t
+                JOIN assignments a ON a.id=t.assignment_id JOIN group_jobs gj ON gj.job_id=a.job_id
+                JOIN group_graphs gg ON gg.group_id=gj.group_id
+                WHERE t.id=? AND gg.root_id IS NOT NULL''', (attempt,)).fetchone():
+                raise ValueError('Graph target verification requires its frozen composed context')
+            if bundle is not None:
+                from .proof_context import binding_matches, check_inputs_match, record_check
+                current = binding_matches(db, bundle) and check_inputs_match(db, attempt, 'attempt', bundle)
+                if not current:
+                    record_check(db, attempt, 'attempt', bundle, result, usage, False, check_id)
+                    return
             inserted = db.execute("""INSERT OR IGNORE INTO verifications
                                    (attempt_id, status, diagnostics, elapsed_ms, verified_at)
                                    VALUES (?, ?, ?, ?, ?)""",
                                   (attempt, result.status, result.diagnostics, result.elapsed_ms,
                                    self.clock()))
+            if bundle is not None:
+                record_check(db, attempt, 'attempt', bundle, result, usage, inserted.rowcount == 1, check_id)
             if inserted.rowcount == 0:
                 return
             if elapsed_unknown:

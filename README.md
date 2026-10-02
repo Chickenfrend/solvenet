@@ -354,7 +354,10 @@ SOLVENET_DOCKER_TEST=1 PYTHONPATH=coordinator/src \
   Only the per-attempt workspace is bind-mounted writable.
 - The container restricts host access; it does not independently authenticate
   proofs against hostile Lean metaprograms that tamper with their own verifier
-  process. Remote untrusted contributors still require further verification work.
+  process. Candidate-writable completion/use receipts can be forged by malicious
+  tactic IO; they are local execution records, not trusted-process attestations.
+  Remote untrusted contributors remain blocked on the separate public checker
+  gate. See [the G3 trust boundary](docs/ticket-g3-composed-proofs.md).
 
 See [the worker protocol](protocol/v1.md) and
 [verifier documentation](coordinator/README.md).

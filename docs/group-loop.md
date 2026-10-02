@@ -66,10 +66,12 @@ different declared environment is incompatible. If its imports differ from the
 target imports, Lean checks it again under the target imports. Only successful
 checks are labeled verified in the synthesizer's bounded context; rejected or
 incompatible proposals remain unverified findings. A lemma never changes the
-group run to solved: the assembled target proof still passes through the
-ordinary Lean verification path. Environment identity is configured locally
+group run to solved: graph-enabled targets use the
+[G3 immutable composed verification path](ticket-g3-composed-proofs.md), even
+with an empty selected context. Environment identity is configured locally
 and is not attested by workers. A verified artifact also records its actual
-verifier identity: the local Lean command/version and project inputs, or the
+verifier identity: the actual selected Lean toolchain, effective import search
+roots, standard-library/runtime metadata and project inputs, or the
 resolved Docker image ID. Restarting with a changed or unavailable identity
 invalidates the old verification; the coordinator rechecks before sharing it
 as verified context. Timeout and verifier errors are terminal artifact
@@ -82,6 +84,10 @@ from being recorded. Local Lean identity is checked again after verification
 and before synthesis consumes verified context. The project and its dependency
 files remain locally trusted; this is not an atomic snapshot against hostile
 concurrent filesystem mutation.
+The candidate and checker also share a Lean process: malicious tactic IO can
+forge a candidate-writable receipt or interrupt checks. Local receipts are not
+trusted-process attestations; the separate public/hostile-worker checker gate
+remains a public-stage blocker. See the G3 trust-boundary section above.
 Prompts carry informal findings as bounded JSON-quoted `unverified` data,
 separate from the JSON list of Lean-verified auxiliary claims.
 Artifact checks execute the resolved Docker image ID even if its configured

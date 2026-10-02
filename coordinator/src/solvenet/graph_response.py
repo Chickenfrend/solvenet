@@ -183,5 +183,9 @@ class GraphResponses:
                 item['statement'], item['imports'], item['environment'], item['proof'], job_id,
                 graph_proposal_key=item['key'])
             attach_evidence(db, group_id, claim, 'artifact', artifact)
+            if 'prerequisite_proof_ids' in item:
+                from .proof_context import selected_bundle, freeze_context
+                freeze_context(db, artifact, 'artifact', selected_bundle(
+                    db, group_id, claim, item['proof'], item['prerequisite_proof_ids']))
             result['artifacts'][item['key']] = artifact
         return result
