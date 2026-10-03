@@ -518,6 +518,20 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                 if parts == ['v1', 'runs']:
                     limit, before = self.pagination()
                     return self.respond(200, coordinator.store.recent_runs(limit, before))
+                if (len(parts) == 4 and parts[:2] == ['v1', 'proofs']
+                        and self.identifier(parts[2]) and parts[3] in ('bundle', 'evidence')):
+                    bundle = coordinator.store.checked_proof_bundle(parts[2])
+                    if bundle is None:
+                        return self.respond(404, {'error': 'Unknown composed proof'})
+                    return self.respond(200, bundle if parts[3] == 'bundle' else
+                        coordinator.store.composed_evidence(parts[2]))
+                if (len(parts) == 4 and parts[:2] == ['v1', 'groups']
+                        and self.identifier(parts[2]) and parts[3] == 'graph'):
+                    if coordinator.store.group_loop(parts[2]) is None:
+                        return self.respond(404, {'error': 'Unknown group'})
+                    # A bounded planning neighborhood; formal reuse eligibility is
+                    # conveyed by frozen packets and committed proof evidence.
+                    return self.respond(200, coordinator.store.group_claim_neighborhood(parts[2]))
                 if (len(parts) == 3 and parts[:2] == ['v1', 'groups']
                         and self.identifier(parts[2])):
                     group = coordinator.store.group(parts[2])

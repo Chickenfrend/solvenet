@@ -226,6 +226,24 @@ class ProofContexts:
                     for row in db.execute('SELECT * FROM composed_checks WHERE owner_id=? ORDER BY id',
                                           (owner_id,))]
 
+    def checked_proof_bundle(self, owner_id):
+        """Public export: actual proof owners with a committed check, never job context.
+
+        A fresh pending proof has no public bundle. Rechecks may be pending while
+        the last committed (possibly rejected) receipt remains inspectable.
+        """
+        with self.connect() as db:
+            row = db.execute('''SELECT c.bundle FROM composed_checks c
+                WHERE c.owner_id=? AND c.committed=1 AND (
+                    (c.owner_kind='artifact' AND EXISTS (
+                        SELECT 1 FROM group_artifacts a WHERE a.id=c.owner_id)) OR
+                    (c.owner_kind='attempt' AND EXISTS (
+                        SELECT 1 FROM attempts t JOIN assignments a ON a.id=t.assignment_id
+                        JOIN jobs j ON j.id=a.job_id JOIN group_jobs gj ON gj.job_id=j.id
+                        WHERE t.id=c.owner_id AND j.kind='model.generate')))
+                ORDER BY c.id DESC LIMIT 1''', (owner_id,)).fetchone()
+            return json.loads(row['bundle']) if row else None
+
     def select_target_proof_context(self, job_id, proof_ids):
         """Private explicit selection; queued target-only jobs, before dispatch."""
         with self.transaction() as db:

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 
@@ -60,15 +61,51 @@ def main():
               f'{message["review_status"]} {message["verification_status"]}: {excerpt}')
     for artifact in group['artifacts']:
         print(f'  artifact {artifact["request_key"]}: {artifact["status"]} '
-              f'current={artifact["current_status"]} {artifact["statement"][:120]}')
+               f'current={artifact["current_status"]} {artifact["statement"][:120]}')
+        if group.get('frontier'):
+            proof_use(base, artifact['id'])
+    frontier = group.get('frontier')
+    if frontier:
+        for decision in frontier['decisions']:
+            print(f'  graph {decision["action"]} claim={decision["claim_id"]} '
+                  f'revision={decision["graph_revision"]}: {decision["reason"]}')
+            print(f'    packet={decision["packet_sha256"]} bytes={decision["packet_bytes"]} '
+                  f'deferred={len(decision["deferred"])}')
+            manifest = decision.get('selected_manifest') or {}
+            print('    supplied:', ', '.join(row['name'] for row in manifest.get('declarations', [])) or '-')
+        print('graph cost:', json.dumps({k: frontier[k] for k in ('model', 'lean')}, sort_keys=True))
+        graph = fetch(f'{base}/v1/groups/{args.group_id}/graph')
+        for edge in graph.get('relationships', []):
+            print(f'  planning {edge["from_id"]} -> {edge["to_id"]}: {edge["kind"]}')
+        for review in graph['reviews']:
+            print(f'    review {review["relationship_id"]}: {review["status"]} '
+                  f'agent={review["reviewer_id"]} job={review["job_id"]}')
+        print('  graph omissions:', json.dumps(graph['omitted'], sort_keys=True))
     if group['run']:
         run_id = group['run']['run_id']
         run = fetch(f'{base}/v1/runs/{run_id}')
         print(f'  run {run_id}: {run["status"]}')
         for attempt in run['attempts']:
             print(f'    target attempt {attempt["id"]}: {attempt["verification_status"]} '
-                  f'Lean elapsed_ms={attempt["elapsed_ms"]}')
+                   f'Lean elapsed_ms={attempt["elapsed_ms"]}')
+            if frontier:
+                proof_use(base, attempt['id'])
     print('cost:', json.dumps(group['cost'], sort_keys=True))
+
+
+def proof_use(base, proof_id):
+    try:
+        evidence_rows = fetch(f'{base}/v1/proofs/{proof_id}/evidence')
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        error.close()
+        print('    proof-use: awaiting composed evidence')
+        return
+    for evidence in evidence_rows:
+        usage = evidence['usage']
+        print(f'    proof-use status={usage.get("status")} direct={usage.get("direct", [])} '
+              f'transitive={usage.get("transitive", [])} check={evidence["status"]}')
 
 
 if __name__ == '__main__':

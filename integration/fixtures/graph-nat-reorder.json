@@ -1,0 +1,12 @@
+{
+  "environment": "lean/lean-toolchain:leanprover/lean4:v4.19.0; imports=Init",
+  "imports": ["Init"],
+  "statement": "(a b c : Nat) : (a + b) + c = (c + b) + a",
+  "a": "(a b c : Nat) : (a + b) + c = a + (b + c)",
+  "b": "(a b c : Nat) : (a + b) + c = a + (c + b)",
+  "c": "(a b c : Nat) : (a + b) + c = (a + c) + b",
+  "proof_a": "exact Nat.add_assoc a b c",
+  "proof_b": "rw [{a_name}, Nat.add_comm b c]",
+  "proof_target": "calc\n  (a + b) + c = a + (c + b) := {b_name} a b c\n  _ = (c + b) + a := Nat.add_comm a (c + b)",
+  "failed_proof": "exact Nat.add_comm a b"
+}

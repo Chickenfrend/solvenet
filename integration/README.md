@@ -1,4 +1,10 @@
-# Process-level integration: IT1 and A6
+# Process-level integration: IT1, A6 and G6
+
+The [G6 graph demonstration](../docs/graph-demonstration.md) adds a deterministic
+graph-mode A → B → target composed proof through compiled independent Go workers,
+paired evidence-driven assignments, a challenged/redirected branch, immutable
+replay and compact operator trace. It also records an actual capped local Ollama
+observation and provides an explicit opt-in reproduction command.
 
 From the repository root, with Python 3.11+, Go, and the pinned Lean 4.19.0
 toolchain installed through elan (including `lake` on `PATH`):

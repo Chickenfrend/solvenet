@@ -10,6 +10,7 @@ from urllib.request import Request
 from solvenet.problem_set import EXPERIMENT_SETS, Problem, load, public_problem
 from solvenet.server import Coordinator, make_server
 from solvenet.store import Store
+from solvenet.verifier import VerificationResult, VerificationStatus
 
 
 class BrowseTests(unittest.TestCase):
@@ -54,6 +55,88 @@ class BrowseTests(unittest.TestCase):
             response = error
         with response:
             return response.status, json.load(response)
+
+    def test_proof_routes_exclude_queued_job_context_and_fresh_pending_attempt(self):
+        models = {r: 'scripted' for r in ('planner', 'investigator', 'critic', 'synthesizer')}
+        group = self.store.start_group_loop('proof-route', ': True', ['Init'], 'lean-test', models, mode='graph')
+        binding = self.store.bind_group_artifact_verifier('test:fixture')
+        self.store.advance_group(group)
+        planner = self.store.group(group)['jobs'][0]['job_id']
+        self.assertIsNotNone(self.store.export_proof_bundle(planner))  # Internal context still works.
+
+        def unavailable(owner):
+            for suffix in ('bundle', 'evidence'):
+                self.assertEqual(self.get(f'/v1/proofs/{owner}/{suffix}')[0], 404)
+
+        unavailable(planner)
+        unavailable('0' * 32)
+        lease = self.store.claim('worker', ['scripted'], supports_model_respond=True)
+        self.store.result(lease['assignment_id'], dict(lease_token=lease['lease_token'], status='completed',
+            output=dict(type='plan', text='No decomposition')))
+        self.store.advance_group(group)
+        target = self.store.group(group)['jobs'][-1]['job_id']
+        self.assertNotEqual(target, planner)
+        self.assertIsNotNone(self.store.export_proof_bundle(target))
+        unavailable(target)
+        lease = self.store.claim('worker', ['scripted'], supports_model_respond=True)
+        self.store.result(lease['assignment_id'], dict(lease_token=lease['lease_token'], status='completed',
+            output=dict(text='exact True.intro')))
+        pending = self.store.pending()
+        self.assertIsNotNone(pending)
+        unavailable(pending['id'])
+        state = self.store.group(group)
+        task = state['tasks'][0]
+        artifact = self.store.propose_group_artifact(group, 'pending-proof', task['owner_id'],
+            task['id'], ': True ∧ True', ['Init'], 'lean-test', 'constructor <;> trivial')
+        self.store.ensure_artifact_context(artifact, binding)
+        self.assertIsNotNone(self.store.export_proof_bundle(artifact))
+        unavailable(artifact)
+
+    def test_proof_routes_export_rejection_and_prior_receipt_during_pending_recheck(self):
+        group = self.store.create_group('checked-route', ': True', ['Init'], 'lean-test')
+        agent = self.store.add_agent(group, 'investigator', 'investigator')
+        task = self.store.add_group_task(group, 'proof-task', agent, agent, 'Prove lemma', 4)
+        binding = self.store.bind_group_artifact_verifier('test:first')
+
+        def checked(key, status, proof, diagnostics):
+            owner = self.store.propose_group_artifact(group, key, agent, task,
+                ': True ∧ True', ['Init'], 'lean-test', proof)
+            bundle = self.store.ensure_artifact_context(owner, binding)
+            check_id = self.store.begin_composed_check(owner, 'artifact', bundle)
+            result = VerificationResult(status, diagnostics, 3)
+            self.store.checked_group_artifact(owner, status.value, diagnostics, binding=binding,
+                bundle=bundle, result=result, usage={'status': 'known', 'direct': [],
+                    'transitive': [], 'subprocesses': 2}, check_id=check_id)
+            return owner, bundle
+
+        rejected, rejected_bundle = checked('rejected', VerificationStatus.REJECTED,
+            'exact True.intro', 'candidate has type True, expected True ∧ True')
+        status, bundle = self.get(f'/v1/proofs/{rejected}/bundle')
+        self.assertEqual((status, bundle), (200, rejected_bundle))
+        status, evidence = self.get(f'/v1/proofs/{rejected}/evidence')
+        self.assertEqual(status, 200)
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]['status'], 'rejected')
+        self.assertEqual(evidence[0]['committed'], 1)
+        self.assertIn('expected True ∧ True', evidence[0]['diagnostics'])
+        self.assertEqual(evidence[0]['bundle']['proof'], 'exact True.intro')
+
+        verified, original = checked('verified', VerificationStatus.VERIFIED,
+            'constructor <;> trivial', '')
+        new_binding = self.store.bind_group_artifact_verifier('test:second')
+        self.assertEqual(next(a for a in self.store.group(group)['artifacts']
+            if a['id'] == verified)['status'], 'pending')
+        recheck_bundle = self.store.ensure_artifact_context(verified, new_binding)
+        self.assertNotEqual(recheck_bundle['verifier_revision'], original['verifier_revision'])
+        self.store.begin_composed_check(verified, 'artifact', recheck_bundle)
+        status, bundle = self.get(f'/v1/proofs/{verified}/bundle')
+        self.assertEqual((status, bundle), (200, original))
+        status, evidence = self.get(f'/v1/proofs/{verified}/evidence')
+        self.assertEqual(status, 200)
+        self.assertEqual([(e['status'], e['committed']) for e in evidence],
+            [('verified', 1), ('checking', 0)])
+        self.assertEqual(evidence[0]['bundle'], original)
+        self.assertEqual(evidence[1]['bundle'], recheck_bundle)
 
     def test_single_fixture_run_identity_and_no_reference_proof(self):
         fixture = load()

@@ -155,5 +155,6 @@ PATH="$HOME/.elan/bin:$PATH" PYTHONPATH=coordinator/src python -m unittest disco
 ```
 
 These deterministic tests validate policy and proof-composition behavior. They
-do not measure real-model effectiveness or compute efficiency. The process-level
-multi-worker graph demonstration and live operator trial belong to G6.
+do not measure real-model effectiveness or compute efficiency. The
+[G6 demonstration](graph-demonstration.md) exercises process-level multi-worker
+composition and documents a capped local-model observation.
