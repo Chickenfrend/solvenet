@@ -59,7 +59,14 @@ func TestOpenAIHealthFailuresSanitized(t *testing.T) {
 			defer s.Close()
 			o, _ := NewOpenAI(s.URL, "gpt-4o-mini", "mock-secret-key")
 			h := o.Check(context.Background(), true)
-			if h.Status != "unavailable" || h.Reason != tc.reason {
+			wantStatus, wantReason := "unavailable", tc.reason
+			if tc.code == 400 {
+				wantStatus, wantReason = "unobserved", "OpenAI compatibility check inconclusive"
+			}
+			if tc.code == 429 || tc.code >= 500 {
+				wantStatus, wantReason = "unobserved", tc.reason+" (recovering via scheduled jobs)"
+			}
+			if h.Status != wantStatus || h.Reason != wantReason {
 				t.Fatal(h)
 			}
 			b, _ := json.Marshal(h)
@@ -92,7 +99,7 @@ func TestResponsesHealthIncompleteIsInconclusive(t *testing.T) {
 			h := o.Check(context.Background(), true)
 			want := "ready"
 			if status == "incomplete" {
-				want = "unavailable"
+				want = "unobserved"
 			}
 			if h.Status != want {
 				t.Fatal(h)
@@ -105,7 +112,7 @@ func TestOpenAIHealthNetworkAndCancellation(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	s.Close()
 	o, _ := NewOpenAI(s.URL, "gpt-4o-mini", "mock-key")
-	if h := o.Check(context.Background(), true); h.Reason != "OpenAI network unavailable" {
+	if h := o.Check(context.Background(), true); h.Reason != "OpenAI network unavailable (recovering via scheduled jobs)" {
 		t.Fatal(h)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -126,7 +133,7 @@ func TestResponsesOperationFailurePublicHealth(t *testing.T) {
 			}))
 			defer s.Close()
 			o, _ := NewOpenAIWithConfig(s.URL, "custom-model", "mock-key", OpenAIConfig{Profile: ResponsesReasoning})
-			if h := o.Check(context.Background(), true); h.Reason != tc.reason {
+			if h := o.Check(context.Background(), true); h.Status != "unobserved" || h.Reason != tc.reason+" (recovering via scheduled jobs)" {
 				t.Fatal(h)
 			}
 		})

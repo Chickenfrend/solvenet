@@ -62,6 +62,9 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 	if o.AuthFailed() {
 		return daemon.Execution{}, daemon.Categorize(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI HTTP 401 (credential rejected; restart required)")), "OpenAI credential rejected"), daemon.ProviderFailure)
 	}
+	if h := o.Health(ctx); h.Status == "unavailable" {
+		return daemon.Execution{}, daemon.Categorize(daemon.Permanent(fmt.Errorf("%s (restart required)", h.Reason)), daemon.ProviderFailure)
+	}
 	generation := rawGeneration("")
 	generation.MaxOutputTokens = job.MaxOutputTokens
 	generation.Temperature, generation.Seed = job.GenerationSettings.Temperature, job.GenerationSettings.Seed
@@ -159,15 +162,23 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 					Code string `json:"code"`
 				} `json:"error"`
 			}
-			if len(data) <= 8192 && json.Unmarshal(data, &failure) == nil && failure.Error.Code == "model_not_found" {
-				return fail(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI unsupported or inaccessible model (HTTP %d)", response.StatusCode)), "OpenAI model unavailable"))
+			if len(data) <= 8192 && json.Unmarshal(data, &failure) == nil {
+				switch failure.Error.Code {
+				case "model_not_found":
+					return fail(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI unsupported or inaccessible model (HTTP %d)", response.StatusCode)), "OpenAI model unavailable"))
+				case "unsupported_parameter", "unsupported_value":
+					return fail(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI unsupported model/profile (HTTP %d)", response.StatusCode)), "OpenAI profile or model access unsupported"))
+				}
 			}
 		}
 		err := fmt.Errorf("OpenAI HTTP %d (check worker credential, model and provider availability)", response.StatusCode)
 		if response.StatusCode == 408 || response.StatusCode == 429 || response.StatusCode >= 500 {
 			return fail(withOpenAIHealth(daemon.Transient(err), openAIHTTPHealth(response.StatusCode).Reason))
 		}
-		return fail(withOpenAIHealth(daemon.Permanent(err), openAIHTTPHealth(response.StatusCode).Reason))
+		if response.StatusCode == 401 || response.StatusCode == 403 || response.StatusCode == 404 {
+			return fail(withOpenAIHealth(daemon.Permanent(err), openAIHTTPHealth(response.StatusCode).Reason))
+		}
+		return fail(daemon.Permanent(err))
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxOpenAIResponse+1))
 	if err != nil {
@@ -214,7 +225,6 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 	choice := reply.Choices[0]
 	// A faulty or compromised upstream must not echo the local credential into
 	// coordinator-visible generation metadata or raw model output.
-	redact := func(value string) string { return strings.ReplaceAll(value, o.Key, "[redacted]") }
 	generation.Model, generation.FinishReason = redactRawString(reply.Model, o.Key, 0), redactRawString(choice.FinishReason, o.Key, 0)
 	if len(generation.Model) > daemon.MaxModelBytes || len(generation.FinishReason) > daemon.MaxFinishReasonBytes {
 		generation.Model, generation.FinishReason = "", ""
@@ -227,7 +237,7 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 	if choice.Message.Content == nil {
 		return fail(daemon.Permanent(fmt.Errorf("OpenAI returned no text choice")))
 	}
-	text := redact(*choice.Message.Content)
+	text := *choice.Message.Content
 	execution.Generation = safeOpenAIRaw(*choice.Message.Content, o.Key)
 	execution.Generation.Model, execution.Generation.FinishReason = generation.Model, generation.FinishReason
 	execution.Generation.MaxOutputTokens = job.MaxOutputTokens
@@ -242,7 +252,7 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 	if execution.Generation.RawResponseTruncated {
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI generated text exceeded %d bytes", daemon.MaxRawResponseBytes)), daemon.FormattingFailure)
 	}
-	proof, err := extractOutput(text, job)
+	proof, err := extractOpenAIOutput(text, job)
 	if err != nil {
 		label := "proof"
 		if job.Kind == "model.respond" {
@@ -250,9 +260,9 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 		}
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI %s format: %w", label, err)), daemon.FormattingFailure)
 	}
-	execution.Text = redact(proof)
-	if job.Kind == "model.respond" {
-		execution.Text = redactRawString(proof, o.Key, 0)
+	execution.Text, err = redactOpenAIContent(proof, o.Key)
+	if err != nil {
+		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI unsafe output content")), daemon.FormattingFailure)
 	}
 	return execution, nil
 }

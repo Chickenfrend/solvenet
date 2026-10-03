@@ -49,8 +49,8 @@ func encodeOpenAIRaw(value any) (string, error) {
 func decodeRawJSON(raw string) (any, error) {
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
+	value, err := decodeOpenAIValue(decoder, 0)
+	if err != nil {
 		return nil, err
 	}
 	var extra any
@@ -58,6 +58,59 @@ func decodeRawJSON(raw string) (any, error) {
 		return nil, fmt.Errorf("expected one JSON value")
 	}
 	return value, nil
+}
+
+// Duplicate fields cannot be inspected safely by decoding into a map: earlier
+// credential-bearing values would disappear while the original bytes survived.
+func decodeOpenAIValue(decoder *json.Decoder, depth int) (any, error) {
+	if depth > 128 {
+		return nil, fmt.Errorf("JSON nesting limit")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delimiter, compound := token.(json.Delim)
+	if !compound {
+		return token, nil
+	}
+	switch delimiter {
+	case '{':
+		value := map[string]any{}
+		for decoder.More() {
+			name, err := decoder.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := name.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid JSON key")
+			}
+			if _, exists := value[key]; exists {
+				return nil, fmt.Errorf("duplicate JSON key")
+			}
+			child, err := decodeOpenAIValue(decoder, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			value[key] = child
+		}
+		_, err := decoder.Token()
+		return value, err
+	case '[':
+		value := []any{}
+		for decoder.More() {
+			child, err := decodeOpenAIValue(decoder, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			value = append(value, child)
+		}
+		_, err := decoder.Token()
+		return value, err
+	default:
+		return nil, fmt.Errorf("unexpected JSON delimiter")
+	}
 }
 
 func redactRawJSON(value any, key string, depth int) any {

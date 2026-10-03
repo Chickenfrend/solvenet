@@ -32,7 +32,13 @@ class GraphCollaborationTests(unittest.TestCase):
     setUpClass = classmethod(fixed.GroupCollaborationTests.setUpClass.__func__)
     tearDownClass = classmethod(fixed.GroupCollaborationTests.tearDownClass.__func__)
 
-    def scenario(self, rejected=False, openai_profile=None):
+    def scenario(self, rejected=False, openai_profile=None, literal_strings=False):
+        fixture = dict(FIXTURE)
+        A, B, C, TARGET = (fixture[k] for k in ('a', 'b', 'c', 'statement'))
+        if literal_strings:
+            A += r' ∧ "\n" = "\n"'
+            fixture['proof_a'] = 'constructor\n· exact Nat.add_assoc a b c\n· exact (show "\\n" = "\\n" from rfl)'
+            fixture['proof_b'] = 'rw [({a_name} a b c).1, Nat.add_comm b c]'
         with tempfile.TemporaryDirectory(prefix='solvenet-g6-') as directory:
             path = Path(directory) / 'state.db'
             verifier = LeanVerifier(ROOT / 'lean')
@@ -92,7 +98,7 @@ class GraphCollaborationTests(unittest.TestCase):
                         test.assertEqual(packet, json.loads(current['packet']))
                         test.assertEqual(request['messages'][-1], current['messages'][-1])
                         if 'b' in proofs:
-                            target_proof = FIXTURE['proof_target'].format(b_name=declaration_name(proofs['b']))
+                            target_proof = fixture['proof_target'].format(b_name=declaration_name(proofs['b']))
                             test.assertTrue(all(target_proof not in m['content'] for m in request['messages']))
                         test.assertLessEqual(len(json.dumps(request['messages']).encode()) +
                             request['options']['num_predict'] + 512, request['options']['num_ctx'])
@@ -118,7 +124,7 @@ class GraphCollaborationTests(unittest.TestCase):
                                 dict(key='redirect', relationship=edge, status='promising',
                                      reason='Use the checked lemma in composition')])
                         elif focus['statement'] == A:
-                            proof = FIXTURE['failed_proof'] if rejected else FIXTURE['proof_a']
+                            proof = fixture['failed_proof'] if rejected else fixture['proof_a']
                             value = artifact(example, proof, [])
                             if not rejected:
                                 edge = next(r['id'] for r in packet['untrusted']['relationships']
@@ -129,17 +135,19 @@ class GraphCollaborationTests(unittest.TestCase):
                             predecessor = lemmas[A]
                             test.assertEqual(predecessor['proof_id'], proofs['a'])
                             test.assertEqual(predecessor['name'], declaration_name(proofs['a']))
-                            value = artifact(example, FIXTURE['proof_b'].format(a_name=predecessor['name']), [predecessor['proof_id']])
+                            value = artifact(example, fixture['proof_b'].format(a_name=predecessor['name']), [predecessor['proof_id']])
                         elif action == 'synthesize':
                             if B in lemmas:
                                 predecessor = lemmas[B]
                                 test.assertEqual(predecessor['proof_id'], proofs['b'])
                                 test.assertEqual(predecessor['name'], declaration_name(proofs['b']))
-                                value = FIXTURE['proof_target'].format(b_name=predecessor['name'])
+                                value = fixture['proof_target'].format(b_name=predecessor['name'])
                             else:
-                                value = FIXTURE['failed_proof']  # Deliberate dead end opens B's frontier.
+                                value = fixture['failed_proof']  # Deliberate dead end opens B's frontier.
                         else:
                             raise AssertionError((action, focus))
+                        if literal_strings and isinstance(value, dict):
+                            value['note'] = r'{"\u006coopback-fixture-key":"safe","nested":"{\"note\":\"\\u006coopback-fixture-key\"}"}'
                         observed.append((action, focus['statement'], request, value))
                         envelope = json.dumps({'proof' if action == 'synthesize' else 'text':
                             value if isinstance(value, str) else json.dumps(value)})
@@ -258,6 +266,23 @@ class GraphCollaborationTests(unittest.TestCase):
                 self.assertEqual(snapshot['loop']['reason'], 'verified_target', snapshot)
                 group = snapshot['group']
                 run = api(url, '/v1/runs/' + group['run']['run_id'])
+                if literal_strings:
+                    def inspect(value):
+                        if isinstance(value, dict):
+                            for key, child in value.items():
+                                inspect(key)
+                                inspect(child)
+                        elif isinstance(value, list):
+                            for child in value:
+                                inspect(child)
+                        elif isinstance(value, str):
+                            self.assertNotIn('loopback-fixture-key', value)
+                            try:
+                                nested = json.loads(value)
+                            except ValueError:
+                                return
+                            inspect(nested)
+                    inspect(run)
                 self.assertEqual(run['status'], 'solved')
                 self.assertIn(('critique', A), [(a, s) for a, s, _, _ in observed])
                 self.assertEqual(len(observed), 7)
@@ -285,6 +310,9 @@ class GraphCollaborationTests(unittest.TestCase):
                 job_keys = {j['job_id']: j['request_key'] for j in group['jobs']}
                 calls = {j: next(c for c in group['calls'] if c['request_key'] == k) for j, k in job_keys.items()}
                 for row in group['artifacts']:
+                    if literal_strings and row['statement'] == A:
+                        self.assertEqual(row['statement'], A)
+                        self.assertEqual(row['proof'], fixture['proof_a'])
                     self.assertEqual(row['agent_id'], calls[row['job_id']]['agent_id'])
                     self.assertEqual(row['task_id'], calls[row['job_id']]['task_id'])
                     self.assertEqual(row['assignment_id'], calls[row['job_id']]['assignment_id'])
@@ -350,6 +378,11 @@ class GraphCollaborationTests(unittest.TestCase):
             with self.subTest(profile=profile):
                 self.scenario(openai_profile=profile)
                 self.scenario(rejected=True, openai_profile=profile)
+
+    def test_openai_profiles_exact_lean_literal_artifacts(self):
+        for profile in ('chat-json', 'responses-reasoning'):
+            with self.subTest(profile=profile):
+                self.scenario(openai_profile=profile, literal_strings=True)
 
     def test_paired_graph_loop_composition_and_redirect(self):
         accepted = self.scenario()

@@ -211,14 +211,22 @@ Actual worker job outcomes supply subsequent public health. API-key access is
 separate from ChatGPT subscriptions and SolveNet user login.
 
 The worker sends theorem/imports and strategy/repair messages with JSON proof
-instructions, maps `max_output_tokens` to Chat Completions `max_tokens`, and
-passes optional temperature/seed. It reports provider input/output tokens when
-returned (otherwise Unknown), model, finish reason, requested settings and
-bounded raw model text. Rate limits, timeouts and server failures are transient;
-authentication and invalid requests are permanent. Incomplete generations,
-refusals and malformed proof responses fail rather than submitting partial
-proofs. Job deadlines cancel HTTP requests; Lean verification remains the
-coordinator's source of truth.
+instructions. `chat-json` maps the job output budget to Chat Completions
+`max_tokens` and passes optional temperature/seed. `responses-reasoning` uses
+Responses `max_output_tokens`, strict `text.format`, `store:false`, and optional
+worker-local reasoning effort; it does not accept temperature/seed. Both report
+provider input/output tokens when returned (otherwise Unknown), model, finish
+reason/status, requested settings and bounded sanitized raw diagnostics.
+Rate limits, network failures and server errors are transient: health reports
+unobserved/recovering and normal scheduled jobs with bounded assignment retries
+can restore readiness, without any paid background probe. Authentication/access
+rejection and recognized model/profile incompatibility latch unavailable until
+restart. Job-local admission/context failures, invalid requests, incomplete
+generations, refusals and malformed outputs fail that job while retaining any
+previously established compatibility. Formal result strings use separate
+credential redaction that preserves unrelated Lean literal escapes; malformed
+structured content fails explicitly. Job deadlines cancel HTTP requests; Lean
+verification remains the coordinator's source of truth.
 
 ### Ollama connectivity
 

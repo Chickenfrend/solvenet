@@ -547,7 +547,7 @@ func TestOpenAITaskTextNestedRedaction(t *testing.T) {
 				defer s.Close()
 				o, _ := NewOpenAIWithConfig(s.URL, "new-model", key, OpenAIConfig{Profile: profile})
 				result, err := o.Execute(context.Background(), daemon.Job{Kind: "model.respond", MaxOutputTokens: 128})
-				failed := mode == "invalid-envelope" || mode == "incomplete"
+				failed := mode == "invalid-envelope" || mode == "incomplete" || mode == "malformed-nested"
 				if failed != (err != nil) {
 					t.Fatalf("result=%+v err=%v", result, err)
 				}

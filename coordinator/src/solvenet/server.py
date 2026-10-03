@@ -643,12 +643,17 @@ def make_server(coordinator, address=('127.0.0.1', 8080)):
                                       'OpenAI credential rejected', 'OpenAI model unavailable',
                                       'OpenAI profile or model access unsupported', 'OpenAI rate limited',
                                       'OpenAI service unavailable', 'OpenAI network unavailable',
-                                      'OpenAI deadline exceeded', 'OpenAI compatibility check inconclusive')
+                                       'OpenAI deadline exceeded', 'OpenAI compatibility check inconclusive')
+                    unobserved_reasons = ('OpenAI deadline exceeded', 'OpenAI compatibility check inconclusive',
+                                          'OpenAI rate limited (recovering via scheduled jobs)',
+                                          'OpenAI service unavailable (recovering via scheduled jobs)',
+                                          'OpenAI network unavailable (recovering via scheduled jobs)')
                     if health is not None and (not isinstance(health, dict)
                             or set(health) - {'status', 'reason'}
                             or health.get('status') not in ('ready', 'unavailable', 'unobserved')
-                            or ('reason' in health and health['reason'] not in health_reasons)
-                            or (health['status'] in ('ready', 'unobserved') and 'reason' in health)):
+                            or ('reason' in health and health['reason'] not in
+                                (unobserved_reasons if health['status'] == 'unobserved' else health_reasons))
+                            or (health['status'] == 'ready' and 'reason' in health)):
                         raise ValueError('Invalid provider health')
                     claim = coordinator.store.claim(
                         worker, models,

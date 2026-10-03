@@ -7,6 +7,13 @@ the real coordinator HTTP protocol and pinned Lean, including a rejected branch.
 See [OpenAI profile contracts](../docs/openai-profiles.md). No paid calls or
 existing key files are used.
 
+The OpenAI recovery regressions keep one compiled daemon alive across a 429
+retry or malformed/local-admission failure and a later unrelated compatible
+run. Exact provider-call counts exclude startup and background paid probes.
+Both profiles also carry Lean literal `"\n"` statements and proof bodies through
+graph publication, artifact binding and pinned Lean, with nested Unicode-escaped
+synthetic secrets redacted independently of formal content.
+
 O3 adds coordinator-owned, provider-neutral `GRAPH_RESPONSE` instructions to
 frozen graph tasks. Plan/finding/critique examples show the accepted graph JSON
 serialized inside the outer `text` string, plus the valid empty graph batch.

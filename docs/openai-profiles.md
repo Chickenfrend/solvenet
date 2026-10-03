@@ -40,6 +40,15 @@ For external key-file setup, native/Compose launch and rotation, and the explici
 [operator setup](homelab-docker.md#optional-openai-hosted-worker). Startup and
 public health reporting perform no OpenAI requests and report unobserved until
 a structured generation succeeds. A standalone check does not persist readiness.
+Authentication/access rejection (401/403), missing models (404 or bounded
+`model_not_found`), and recognized unsupported profile parameters latch unavailable
+until restart; no further generation requests are sent. Job-local admission,
+context, formatting, refusal and truncated-output failures do not revoke an
+already observed valid compatibility result or disable unrelated jobs. Before
+any success their compatibility remains unobserved. Network/408/429/5xx failures
+report `unobserved` with a fixed recovering reason and recover through normal
+scheduled claims and bounded coordinator assignment retries. Health reporting
+never makes a paid background probe; success returns the status to ready.
 
 ## Capacity and routing
 
@@ -85,10 +94,13 @@ time is recorded in `generation.total_duration_ns` (not provider-reported comput
 time). Returned text and metadata redact an exact credential echo, including
 after outer-envelope JSON decoding so Unicode-escaped echoes cannot bypass
 redaction of decoded task text or proof bodies.
-Decoded task text uses the same bounded structural sanitizer for nested graph
-JSON, including its keys and embedded JSON strings, before reaching the
-coordinator. Ordinary prose is preserved; unchecked malformed nested JSON or
-opaque escapes receive diagnostic markers rather than recoverable credentials.
+Result content uses a separate structural redactor for nested graph JSON,
+including its keys and embedded JSON strings. It changes only recoverable
+credential echoes and preserves unrelated formal strings and literal escapes
+(including Lean `"\n"`) exactly. Clean structured output is retained byte-for-byte;
+when redaction requires JSON re-serialization its decoded formal fields remain
+exact. Malformed structured content or excess nesting fails explicitly rather
+than returning a diagnostic marker as successful task text or a proof.
 
 Retained OpenAI `generation.raw_response` is a diagnostic JSON envelope, not an
 exact byte-for-byte archive: complete envelopes are structurally decoded,
@@ -109,10 +121,13 @@ category and elapsed time are preserved.
 Official OpenAI documentation inspected read-only on 2026-10-03:
 
 * [Chat Completions create](https://platform.openai.com/docs/api-reference/chat/create):
-  JSON mode, legacy `max_tokens`, sampling, finish reasons and optional usage.
+  the `chat-json` profile uses JSON mode, legacy `max_tokens`, sampling, finish
+  reasons and optional usage. It does not imply Responses reasoning support.
 * [Responses create](https://platform.openai.com/docs/api-reference/responses/create):
-  `text.format` schema, `max_output_tokens`, output items, completion statuses,
-  refusal and usage fields.
+  the `responses-reasoning` profile uses `text.format` schema,
+  `max_output_tokens` (including hidden reasoning), output items, completion
+  statuses, refusal and usage fields. The two API contracts have separate
+  request/extraction paths and common result-content redaction.
 * [Reasoning guide](https://developers.openai.com/api/docs/guides/reasoning):
   model-dependent effort support and incomplete output when reasoning exhausts
   the output budget.

@@ -96,7 +96,6 @@ func (o *OpenAI) extractResponse(data []byte, job daemon.Job, execution daemon.E
 			execution.Usage[key] = nil
 		}
 	}
-	redact := func(s string) string { return strings.ReplaceAll(s, o.Key, "[redacted]") }
 	execution.Generation.Model, execution.Generation.FinishReason = redactRawString(reply.Model, o.Key, 0), redactRawString(reply.Status, o.Key, 0)
 	if len(execution.Generation.Model) > daemon.MaxModelBytes || len(execution.Generation.FinishReason) > daemon.MaxFinishReasonBytes {
 		execution.Generation.Model, execution.Generation.FinishReason = "", ""
@@ -109,6 +108,15 @@ func (o *OpenAI) extractResponse(data []byte, job daemon.Job, execution daemon.E
 			Code string `json:"code"`
 		}
 		if len(reply.Error) <= 8192 && json.Unmarshal(reply.Error, &bodyError) == nil {
+			switch bodyError.Code {
+			case "invalid_api_key", "permission_denied":
+				o.authFailed.Store(true)
+				return execution, daemon.Categorize(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI credential rejected")), "OpenAI credential rejected"), daemon.ProviderFailure)
+			case "model_not_found":
+				return execution, daemon.Categorize(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI model unavailable")), "OpenAI model unavailable"), daemon.ProviderFailure)
+			case "unsupported_parameter", "unsupported_value":
+				return execution, daemon.Categorize(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI profile unsupported")), "OpenAI profile or model access unsupported"), daemon.ProviderFailure)
+			}
 			if bodyError.Code == "rate_limit_exceeded" || bodyError.Code == "server_error" {
 				reason := "OpenAI service unavailable"
 				if bodyError.Code == "rate_limit_exceeded" {
@@ -155,13 +163,13 @@ func (o *OpenAI) extractResponse(data []byte, job daemon.Job, execution daemon.E
 	if raw.RawResponseTruncated {
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI generated text exceeded size limit")), daemon.FormattingFailure)
 	}
-	output, err := extractOutput(redact(text.String()), job)
+	output, err := extractOpenAIOutput(text.String(), job)
 	if err != nil {
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI output format: %w", err)), daemon.FormattingFailure)
 	}
-	execution.Text = redact(output)
-	if job.Kind == "model.respond" {
-		execution.Text = redactRawString(output, o.Key, 0)
+	execution.Text, err = redactOpenAIContent(output, o.Key)
+	if err != nil {
+		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI unsafe output content")), daemon.FormattingFailure)
 	}
 	return execution, nil
 }

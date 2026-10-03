@@ -321,6 +321,13 @@ class BrowseTests(unittest.TestCase):
         self.assertNotIn('ready', activity())
         self.assertEqual(claim({'status': 'ready'}), 204)
         self.assertTrue(activity()['ready'])
+        for reason in ('OpenAI compatibility check inconclusive', 'OpenAI deadline exceeded',
+                       'OpenAI rate limited (recovering via scheduled jobs)',
+                       'OpenAI service unavailable (recovering via scheduled jobs)',
+                       'OpenAI network unavailable (recovering via scheduled jobs)'):
+            self.assertEqual(claim({'status': 'unobserved', 'reason': reason}), 204)
+            self.assertEqual(activity()['status'], 'idle')
+            self.assertNotIn('ready', activity())
         for reason in ('OpenAI credential rejected', 'OpenAI model unavailable',
                        'OpenAI profile or model access unsupported', 'OpenAI rate limited',
                        'OpenAI service unavailable', 'OpenAI network unavailable',
@@ -333,6 +340,10 @@ class BrowseTests(unittest.TestCase):
         self.assertNotIn('mock-secret-key', caught.exception.read().decode())
         caught.exception.close()
         self.assertNotIn('mock-secret-key', json.dumps(activity()))
+        with self.assertRaises(HTTPError) as caught:
+            claim({'status': 'unobserved', 'reason': 'mock-secret-key'})
+        self.assertEqual(caught.exception.code, 400)
+        caught.exception.close()
 
     def test_provider_health_prevents_claim_and_recovers_with_legacy_worker(self):
         self.store.submit(': True', ['Init'], model='ollama/test', attempts=1)

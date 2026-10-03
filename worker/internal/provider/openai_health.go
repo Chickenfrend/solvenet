@@ -19,7 +19,12 @@ func (e *openAIHealthError) Error() string { return e.err.Error() }
 func (e *openAIHealthError) Unwrap() error { return e.err }
 
 func withOpenAIHealth(err error, reason string) error {
-	return &openAIHealthError{err: err, health: daemon.Health{Status: "unavailable", Reason: reason}}
+	status := "unavailable"
+	if daemon.FailureClassOf(err) == daemon.FailureTransient {
+		status = "unobserved"
+		reason += " (recovering via scheduled jobs)"
+	}
+	return &openAIHealthError{err: err, health: daemon.Health{Status: status, Reason: reason}}
 }
 
 // Fixed public reasons are the entire status boundary; no provider text, URLs,
@@ -55,6 +60,11 @@ func openAIHTTPHealth(code int) daemon.Health {
 }
 
 func (o *OpenAI) observe(err error) {
+	// A provider-global incompatibility is sticky until restart. Ordinary job
+	// failures must not revoke compatibility established by another job.
+	if o.Health(context.Background()).Status == "unavailable" {
+		return
+	}
 	if err == nil {
 		o.setHealth(daemon.Health{Status: "ready"})
 		return
@@ -69,7 +79,9 @@ func (o *OpenAI) observe(err error) {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		reason = "OpenAI deadline exceeded"
 	}
-	o.setHealth(daemon.Health{Status: "unavailable", Reason: reason})
+	if o.Health(context.Background()).Status != "ready" {
+		o.setHealth(daemon.Health{Status: "unobserved", Reason: reason})
+	}
 }
 
 // Check is explicitly operator-invoked. The paid variant tests the configured
