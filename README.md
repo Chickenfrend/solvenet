@@ -11,9 +11,10 @@ The rest of this README after this section is AI generated.
 ## Current prototype
 
 A Python coordinator stores proof-generation jobs and bounded repair chains in SQLite. A Go
-worker claims jobs over HTTP and generates a proof using a local Ollama model or
-a scripted fixture. The coordinator checks the proof with Lean and persists the
-result, original model response, and reported usage. The worker currently has one
+worker claims jobs over HTTP and generates a proof using a local Ollama model,
+a worker-local OpenAI API profile, or a scripted fixture. The coordinator checks
+the proof with Lean and persists the result, original model response, and reported
+usage. The worker currently has one
 execution slot. A run can select multiple initial models; multiple
 initial search chains may be served by the same worker daemon. The local group
 loop now persists distinct logical agents, bounded tasks and findings across
@@ -35,6 +36,19 @@ Real-model collaboration effectiveness and efficiency remain unmeasured. See the
 [group-loop guide](docs/group-loop.md) and
 [A6 integration guide](integration/README.md#A6-collaborating-agents--two-workers--pinned-lean)
 describe the retained fixed-mode A6 demonstration and its optional operator run.
+
+OpenAI milestones O1–O3 are implemented, reviewed and mock-tested: configurable
+model IDs use tested `chat-json` or `responses-reasoning` profiles, local key setup
+and explicit checks expose observed compatibility, and frozen graph tasks include
+bounded schema examples. See [API profiles](docs/openai-profiles.md),
+[operator setup](docs/homelab-docker.md#optional-openai-hosted-worker) and
+[schema/handoff checks](integration/README.md). Startup and the local
+`-openai-check` make no API request and report configured/unobserved; the optional
+paid check requires `-openai-check-paid`. No paid check or real OpenAI run has
+been executed for these milestones. O4 remains unexecuted: the next operator step
+is to choose a model/profile and explicit projected-spend cap before a capped
+live collaboration observation. Mocked contracts and schema acceptance do not
+establish real-model effectiveness.
 
 ### Run it locally
 
@@ -355,8 +369,8 @@ SOLVENET_DOCKER_TEST=1 PYTHONPATH=coordinator/src \
 - One coordinator process per SQLite database; no authentication or public API.
 - Initial search chains and optional repairs with bounded budgeted assignments,
   not dollar/token budgets.
-- Scripted and Ollama execution; hosted-provider adapters can implement the same
-  Go `Executor` interface later.
+- Scripted, Ollama and worker-local OpenAI execution through tested API profiles;
+  real OpenAI access and collaboration remain unobserved for these milestones.
 - The container runs without networking, capabilities, credentials, or a Docker
   socket, with read-only rootfs and memory/CPU/process/file/output/time limits.
   Only the per-attempt workspace is bind-mounted writable.

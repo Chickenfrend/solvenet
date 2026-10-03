@@ -151,10 +151,13 @@ docker compose --profile hosted up -d --force-recreate hosted-worker
 A live worker initially reports **unobserved**, not ready. Startup and health
 claims never call OpenAI. The existing routing policy permits an unobserved
 worker to accept explicitly scheduled jobs; successful structured generation
-changes health to ready on the next claim. Failures mark it unavailable (with a
-fixed public reason); restart after correcting credentials/configuration or
-temporary network/rate/service problems. 401/403 publishes unavailable and
-stops immediately, with no repeated paid calls. Stopped/stale cards become
+changes health to ready on the next claim. Authentication/access and recognized
+model/profile incompatibility latch unavailable until restart after correction.
+Transient network/rate/service failures report unobserved/recovering and recover
+through normal scheduled jobs and bounded assignment retries, without probes.
+Job-local admission or output failures retain any previously observed compatibility.
+401/403 publishes unavailable and stops immediately, with no repeated paid calls.
+Stopped/stale cards become
 Offline; changing a card does not change worker credentials or configuration.
 
 #### Explicit worker-local checks
@@ -189,6 +192,12 @@ hidden read (`read -rs OPENAI_API_KEY; export OPENAI_API_KEY`), unset
 `OPENAI_API_KEY_FILE`, and unset the key after use. Never put its value in command
 arguments, a `.env` file, URLs, site/database settings or logs. Native rotation
 requires stopping the process and starting it again; keys are read once.
+
+O1–O3 were reviewed and verified using mocked providers; this paid check has
+**not been run** for those milestones. O4's real OpenAI graph observation also
+remains unexecuted, pending an operator-selected model/profile and projected-spend
+cap. Launching a worker can serve billable jobs; setup alone is not an observation
+of real API access, proof success or collaboration effectiveness.
 
 Only the following explicit flag authorizes a **paid** check (one call, no
 retries; no coordinator jobs or storage):

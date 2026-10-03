@@ -32,8 +32,13 @@ provider `OpenAI`, and location `Cloud API`; see the
 Credentials are configured only on the worker.
 OpenAI startup reports unobserved and makes no API call. A successful structured
 job generation reports ready; fixed public failures report unavailable. A rejected
-credential stops the worker, and the operator must correct it and restart. The
-site never checks, accepts or stores a provider credential. Worker-local explicit
+credential stops the worker, and the operator must correct it and restart.
+The worker recovers from transient network/rate/service failures through scheduled
+jobs and bounded assignment retries, without background probes; health reports
+unobserved/recovering until a structured generation succeeds. Model/profile
+incompatibility remains unavailable until correction and restart. Job-local
+admission or output failures retain previously observed compatibility.
+The site never checks, accepts or stores a provider credential. Worker-local explicit
 compatibility checks and their paid opt-in flag are documented in the setup link.
 Configured models alone are **not** evidence of worker availability. The Ollama
 worker checks its service and installed model before each claim; failed checks

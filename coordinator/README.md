@@ -198,6 +198,16 @@ with exact checked declaration types, bounded graph evidence, complete-prompt
 admission and durable retry snapshots. Configure model `context_tokens` to match
 the worker/provider window; byte limits and measured token usage remain distinct.
 
+O3 adds provider-neutral graph-schema examples and a valid empty-batch response
+inside the worker's outer `text` string. The full instructions and final received
+packet are frozen and counted in conservative prompt admission. Reviews may name
+only received relationship IDs; suggestions and review opinions remain advisory,
+while checked lemmas require coordinator Lean verification and exact manifest
+names/proof IDs. See the [schema and handoff checks](../integration/README.md).
+These mocked/scripted checks establish formatting and local proof use, not
+real-model collaboration effectiveness; no paid check or real OpenAI observation
+has been executed for O1–O3, and O4 awaits operator model/profile/spend choices.
+
 The total wall-clock deadline includes preflight. Output is collected with a
 bounded buffer; exceeding the limit rejects the attempt. Timeouts and excessive
 output terminate the process group, including Lake's children. Abnormal exits
