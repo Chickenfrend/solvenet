@@ -154,6 +154,11 @@ class GraphResponses:
             local_edges[item['key']] = edge
             result['relationships'][item['key']] = edge
         for item in batch.get('reviews', []):
+            packet = db.execute('SELECT packet FROM context_packets WHERE job_id=?',
+                                (job_id,)).fetchone()
+            if packet is not None and item['relationship'] not in {
+                    edge['id'] for edge in json.loads(packet['packet'])['untrusted']['relationships']}:
+                raise ValueError('Review relationship must be from the received context packet')
             result['reviews'][item['key']] = self.review_group_relationship(group_id, key(item),
                 ref(item['relationship'], 'claim_relationships', local_edges), agent_id,
                 item['status'], item.get('reason', ''), task_id=task_id, job_id=job_id, _db=db)

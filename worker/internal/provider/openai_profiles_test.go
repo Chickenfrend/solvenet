@@ -36,9 +36,9 @@ func profileReply(profile, text, finish string, refusal bool, usage any) map[str
 func TestOpenAIProfilesContracts(t *testing.T) {
 	for _, profile := range []string{ChatJSON, ResponsesReasoning} {
 		for _, kind := range []string{"model.respond", "model.generate"} {
-			for _, outcome := range []string{"valid", "missing-usage", "null-tokens", "zero-tokens", "refusal", "incomplete", "malformed", "raw-bound", "401", "403", "429", "400", "404"} {
+			for _, outcome := range []string{"valid", "missing-usage", "null-tokens", "zero-tokens", "refusal", "incomplete", "malformed", "bad-nesting", "raw-bound", "401", "403", "429", "400", "404"} {
 				t.Run(profile+"/"+kind+"/"+outcome, func(t *testing.T) {
-					graph := `{"graph_schema":"solvenet.graph.v1","claims":[{"key":"a","statement":": True","imports":["Init"]}]}`
+					graph := `{"graph_schema":"solvenet.graph.v1","claims":[{"key":"a","statement":": True","imports":["Init"],"environment":"pinned"}],"findings":[{"key":"f","claim":"$a","text":"No useful decomposition yet."}]}`
 					field, value := "proof", "trivial"
 					if kind == "model.respond" {
 						field, value = "text", graph
@@ -72,6 +72,9 @@ func TestOpenAIProfilesContracts(t *testing.T) {
 					}
 					if outcome == "malformed" {
 						outer = []byte(`{"text":null}`)
+					}
+					if outcome == "bad-nesting" {
+						outer, _ = json.Marshal(map[string]any{field: map[string]any{"graph_schema": "solvenet.graph.v1"}})
 					}
 					if outcome == "raw-bound" {
 						outer = []byte(strings.Repeat("x", daemon.MaxRawResponseBytes+1))
@@ -156,7 +159,7 @@ func TestOpenAIProfilesContracts(t *testing.T) {
 					if outcome == "zero-tokens" && (result.Usage["input_tokens"] == nil || *result.Usage["input_tokens"] != 0) {
 						t.Fatal("actual zero usage lost")
 					}
-					if outcome == "refusal" || outcome == "incomplete" || outcome == "malformed" {
+					if outcome == "refusal" || outcome == "incomplete" || outcome == "malformed" || outcome == "bad-nesting" {
 						if result.Usage["output_tokens"] == nil || *result.Usage["output_tokens"] != 8 {
 							t.Fatal("failure lost usage")
 						}

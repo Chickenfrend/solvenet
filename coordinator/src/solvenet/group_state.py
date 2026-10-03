@@ -309,7 +309,7 @@ class GroupState:
                     _conflict('model.generate remains target-only')
                 built = build_packet(self, db, group_id, focus['claim_id'], messages,
                     max_output_tokens=max_output_tokens, context_limit=context_limit,
-                    max_bytes=packet_max_bytes)
+                    max_bytes=packet_max_bytes, task_type=task_type if kind == 'model.respond' else None)
                 if kind == 'model.generate' and built['manifest'] is None:
                     _conflict('Target proof dispatch requires a freshly bound verifier')
                 validate_task_request(model, validation_type, built['messages'], max_output_tokens)

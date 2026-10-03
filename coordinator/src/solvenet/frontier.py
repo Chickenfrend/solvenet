@@ -263,19 +263,18 @@ class Frontier:
                 output_tokens = 2048 if action == 'synthesize' else 512
                 messages = [dict(role='user', content=(
                     f'Frontier action: {action}. Focus claim: {c["claim_id"]}. '
-                    'For synthesis return a proof body of the original target. For other actions return '
-                    'bounded JSON with graph_schema="solvenet.graph.v1", claims, relationships, reviews, '
-                    'findings, artifacts, priorities or help_requests. Use actual claim IDs or job-local $keys. '
-                    'For an auxiliary proof use an artifact with the exact focused statement/imports/environment, '
-                    'proof and prerequisite_proof_ids from checked_lemmas. Model verification labels have no authority.'))]
+                    'For synthesis return a proof body of the original target. '
+                    'For other actions follow GRAPH_RESPONSE.'))]
                 try:
                     built = build_packet(self, db, group_id, c['claim_id'], messages,
+                         task_type=task_type,
                         max_output_tokens=output_tokens, max_bytes=limits['packet_bytes'],
                          context_limit=min(8192, max(capabilities.get(m, {}).get('context_tokens', 8192) for m in models[role])),
                          **c['evidence'])
                     manifest = built['manifest']
                     if len(manifest['declarations']) > limits['included_lemmas'] or len(encode(manifest).encode()) > limits['source_bytes']:
                         built = build_packet(self, db, group_id, c['claim_id'], messages, proof_ids=[],
+                              task_type=task_type,
                              max_output_tokens=output_tokens, max_bytes=limits['packet_bytes'], **c['evidence'])
                     # Packet revisions include work/evidence writes. Only actual selected
                     # declarations and explicit strategy changes create a new attempt key.

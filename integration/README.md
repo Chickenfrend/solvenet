@@ -7,6 +7,27 @@ the real coordinator HTTP protocol and pinned Lean, including a rejected branch.
 See [OpenAI profile contracts](../docs/openai-profiles.md). No paid calls or
 existing key files are used.
 
+O3 adds coordinator-owned, provider-neutral `GRAPH_RESPONSE` instructions to
+frozen graph tasks. Plan/finding/critique examples show the accepted graph JSON
+serialized inside the outer `text` string, plus the valid empty graph batch.
+Examples copy exact task contexts and select review IDs only from the final
+received packet. Plan examples republish focus to demonstrate local `$key`
+references; finding examples contain an explicit proof-body placeholder, never
+a reference proof. Checked declarations must use their manifest names and
+proof IDs exactly. Suggestions and review opinions confer no proof authority.
+The complete instructions, examples and packet are included in conservative
+G4 byte/token admission and routing. Packet-based graph reviews referring to
+unreceived relationships receive a formatting/ID rejection receipt.
+
+The G6 fake providers derive claim/artifact/review shapes from the actual shown
+examples, supplying fixture mathematics only as model responses. The same
+compiled workers and mocked real adapters still establish checked A → B → target
+use with Lean. Coordinator parser tests submit the exact examples and empty
+response through persisted completions, including malformed arrays/local IDs
+and an edge published after dispatch. Worker contract tests reject an object in
+the outer string slot. These are automated formatting and handoff checks, not
+real-model effectiveness observations; no paid evaluation was performed.
+
 The [G6 graph demonstration](../docs/graph-demonstration.md) adds a deterministic
 graph-mode A → B → target composed proof through compiled independent Go workers,
 paired evidence-driven assignments, a challenged/redirected branch, immutable

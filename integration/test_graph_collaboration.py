@@ -14,6 +14,7 @@ from solvenet.store import Store
 from solvenet.verifier import LeanVerifier
 from solvenet.composed import declaration_name
 from solvenet.context_packet import prompt_cost
+from solvenet.graph_response import graph_batch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import test_group_collaboration as fixed
@@ -78,6 +79,14 @@ class GraphCollaborationTests(unittest.TestCase):
                         prompt = request['messages'][-1]['content']
                         packet = json.loads(prompt.split('\n')[-1])
                         action = prompt.split('Frontier action: ')[1].split('.')[0]
+                        example = None
+                        if action != 'synthesize':
+                            envelope_example = json.loads(prompt.split('solution):\n')[1].split('\n')[0])
+                            test.assertIsInstance(envelope_example['text'], str)
+                            example = graph_batch(envelope_example['text'])
+                            test.assertEqual(example['graph_schema'], 'solvenet.graph.v1')
+                            empty = json.loads(prompt.split('No useful decomposition is valid: ')[1].split('\n')[0])
+                            test.assertEqual(graph_batch(empty['text']), dict(graph_schema='solvenet.graph.v1'))
                         focus = packet['focus']
                         lemmas = {x['statement']: x for x in packet['checked_lemmas']}
                         test.assertEqual(packet, json.loads(current['packet']))
@@ -89,7 +98,7 @@ class GraphCollaborationTests(unittest.TestCase):
                             request['options']['num_predict'] + 512, request['options']['num_ctx'])
                         if action == 'plan':
                             value = dict(graph_schema='solvenet.graph.v1', claims=[
-                                dict(key=k, statement=s, imports=['Init'], environment=ENVIRONMENT)
+                                example['claims'][0] | dict(key=k, statement=s)
                                 for k, s in [('a', A), ('b', B), ('c', C)]],
                                 relationships=[dict(key='edge-' + k, **{'from': focus['id'], 'to': '$' + k},
                                     kind='suggests_using') for k in ('a', 'b', 'c')] +
@@ -103,11 +112,14 @@ class GraphCollaborationTests(unittest.TestCase):
                             edge = next(r['id'] for r in packet['untrusted']['relationships']
                                 if r['id'] == review['relationship_id'] and r['to_id'] == focus['id'])
                             test.assertEqual(current['request']['review_ids'], [review['id']])
-                            value = dict(graph_schema='solvenet.graph.v1', reviews=[dict(key='redirect',
-                                relationship=edge, status='promising', reason='Use the checked lemma in composition')])
+                            test.assertIn(example['reviews'][0]['relationship'],
+                                [r['id'] for r in packet['untrusted']['relationships']])
+                            value = dict(graph_schema='solvenet.graph.v1', reviews=[example['reviews'][0] |
+                                dict(key='redirect', relationship=edge, status='promising',
+                                     reason='Use the checked lemma in composition')])
                         elif focus['statement'] == A:
                             proof = FIXTURE['failed_proof'] if rejected else FIXTURE['proof_a']
-                            value = artifact(focus, proof, [])
+                            value = artifact(example, proof, [])
                             if not rejected:
                                 edge = next(r['id'] for r in packet['untrusted']['relationships']
                                     if r['to_id'] == focus['id'] and r['kind'] == 'suggests_using')
@@ -117,7 +129,7 @@ class GraphCollaborationTests(unittest.TestCase):
                             predecessor = lemmas[A]
                             test.assertEqual(predecessor['proof_id'], proofs['a'])
                             test.assertEqual(predecessor['name'], declaration_name(proofs['a']))
-                            value = artifact(focus, FIXTURE['proof_b'].format(a_name=predecessor['name']), [predecessor['proof_id']])
+                            value = artifact(example, FIXTURE['proof_b'].format(a_name=predecessor['name']), [predecessor['proof_id']])
                         elif action == 'synthesize':
                             if B in lemmas:
                                 predecessor = lemmas[B]
@@ -151,10 +163,9 @@ class GraphCollaborationTests(unittest.TestCase):
                 def log_message(self, *args):
                     pass
 
-            def artifact(focus, proof, prerequisites):
-                return dict(graph_schema='solvenet.graph.v1', artifacts=[dict(key='proof',
-                    claim=focus['id'], statement=focus['statement'], imports=['Init'],
-                    environment=ENVIRONMENT, proof=proof, prerequisite_proof_ids=prerequisites)])
+            def artifact(example, proof, prerequisites):
+                return dict(graph_schema='solvenet.graph.v1', artifacts=[example['artifacts'][0] |
+                    dict(key='proof', proof=proof, prerequisite_proof_ids=prerequisites)])
 
             with serving(make_server(coordinator, ('127.0.0.1', 0))) as url, \
                     serving(ThreadingHTTPServer(('127.0.0.1', 0), Ollama)) as provider:
