@@ -80,7 +80,7 @@ func TestOpenAIFailures(t *testing.T) {
 			if tc.status == 401 && !o.AuthFailed() {
 				t.Fatal("rejected credential must stop future worker claims")
 			}
-			if tc.name == "invalid-proof" && (*result.Usage["output_tokens"] != 3 || result.Generation.RawResponse != "not JSON") {
+			if tc.name == "invalid-proof" && (*result.Usage["output_tokens"] != 3 || result.Generation.RawResponse != unavailableOpenAIRaw) {
 				t.Fatal("lost usage or raw output")
 			}
 		})

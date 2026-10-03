@@ -1,5 +1,12 @@
 # Process-level integration: IT1, A6 and G6
 
+O1 also runs the G6 graph scenario through fake loopback OpenAI `chat-json` and
+`responses-reasoning` profiles using an arbitrary configured model ID. Both
+profiles carry nested graph JSON and target proofs through compiled Go workers,
+the real coordinator HTTP protocol and pinned Lean, including a rejected branch.
+See [OpenAI profile contracts](../docs/openai-profiles.md). No paid calls or
+existing key files are used.
+
 The [G6 graph demonstration](../docs/graph-demonstration.md) adds a deterministic
 graph-mode A → B → target composed proof through compiled independent Go workers,
 paired evidence-driven assignments, a challenged/redirected branch, immutable

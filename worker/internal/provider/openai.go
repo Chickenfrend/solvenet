@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"solvenet/worker/internal/daemon"
 )
@@ -20,18 +22,27 @@ const maxOpenAIResponse = 1024 * 1024
 type OpenAI struct {
 	URL, Model, Key string
 	Client          *http.Client
+	Config          OpenAIConfig
 	authFailed      atomic.Bool
 }
 
 func (o *OpenAI) AuthFailed() bool { return o.authFailed.Load() }
 
 func NewOpenAI(baseURL, model, key string) (*OpenAI, error) {
+	return NewOpenAIWithConfig(baseURL, model, key, OpenAIConfig{})
+}
+
+func NewOpenAIWithConfig(baseURL, model, key string, config OpenAIConfig) (*OpenAI, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"))) {
 		return nil, fmt.Errorf("openai-url must be HTTPS (HTTP is allowed only for loopback testing) without credentials, query or fragment")
 	}
-	if model != "gpt-4o-mini" {
-		return nil, fmt.Errorf("OpenAI adapter currently supports only gpt-4o-mini")
+	if strings.TrimSpace(model) != model || model == "" || len("openai/"+model) > daemon.MaxModelBytes || strings.ContainsAny(model, "\r\n\t ") {
+		return nil, fmt.Errorf("invalid OpenAI model ID")
+	}
+	config, err = resolveOpenAIConfig(model, config)
+	if err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(key) == "" {
 		return nil, fmt.Errorf("OpenAI credential unavailable: set OPENAI_API_KEY or OPENAI_API_KEY_FILE on the worker")
@@ -39,20 +50,40 @@ func NewOpenAI(baseURL, model, key string) (*OpenAI, error) {
 	if strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n") {
 		return nil, fmt.Errorf("invalid OpenAI credential format")
 	}
-	return &OpenAI{URL: strings.TrimRight(baseURL, "/"), Model: model, Key: key,
+	return &OpenAI{URL: strings.TrimRight(baseURL, "/"), Model: model, Key: key, Config: config,
 		Client: &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
-func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution, error) {
+func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Execution, resultErr error) {
 	generation := rawGeneration("")
 	generation.MaxOutputTokens = job.MaxOutputTokens
 	generation.Temperature, generation.Seed = job.GenerationSettings.Temperature, job.GenerationSettings.Seed
 	execution := daemon.Execution{Generation: generation}
+	started := time.Now()
+	defer func() {
+		elapsed := time.Since(started).Nanoseconds()
+		if result.Generation != nil {
+			result.Generation.TotalDurationNS = &elapsed
+			result.Generation.ContextLength = o.Config.ContextTokens
+		}
+	}()
 	fail := func(err error) (daemon.Execution, error) {
 		return execution, daemon.Categorize(err, daemon.ProviderFailure)
 	}
-	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > daemon.MaxOutputTokens {
+	if job.MaxOutputTokens <= 0 || job.MaxOutputTokens > o.Config.MaxOutputTokens {
 		return fail(daemon.Permanent(fmt.Errorf("invalid job output-token limit")))
+	}
+	if job.Kind != "" && job.Kind != "model.respond" && job.Kind != "model.generate" {
+		return fail(daemon.Permanent(fmt.Errorf("unsupported OpenAI job kind")))
+	}
+	if o.Config.Profile == ResponsesReasoning && (job.GenerationSettings.Temperature != nil || job.GenerationSettings.Seed != nil) {
+		return fail(daemon.Permanent(fmt.Errorf("responses-reasoning profile does not support temperature or seed")))
+	}
+	if t := job.GenerationSettings.Temperature; t != nil && (math.IsNaN(*t) || math.IsInf(*t, 0) || *t < 0 || *t > 2) {
+		return fail(daemon.Permanent(fmt.Errorf("invalid temperature")))
+	}
+	if s := job.GenerationSettings.Seed; s != nil && *s < 0 {
+		return fail(daemon.Permanent(fmt.Errorf("invalid seed")))
 	}
 	messages := []daemon.Message{{Role: "system", Content: instructions(job)},
 		{Role: "user", Content: "Lean imports: " + strings.Join(job.Imports, ", ") + "\nTheorem (text after its name):\n" + job.Statement}}
@@ -65,11 +96,36 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if job.GenerationSettings.Seed != nil {
 		body["seed"] = *job.GenerationSettings.Seed
 	}
+	endpoint := "/chat/completions"
+	if o.Config.Profile == ResponsesReasoning {
+		endpoint = "/responses"
+		for i := range messages {
+			if messages[i].Role == "system" {
+				messages[i].Role = "developer"
+			}
+		}
+		field := "proof"
+		if job.Kind == "model.respond" {
+			field = "text"
+		}
+		body = map[string]any{"model": o.Model, "input": messages, "stream": false, "store": false,
+			"max_output_tokens": job.MaxOutputTokens, "text": map[string]any{"format": map[string]any{
+				"type": "json_schema", "name": "solvenet_output", "strict": true,
+				"schema": map[string]any{"type": "object", "properties": map[string]any{field: map[string]string{"type": "string"}}, "required": []string{field}, "additionalProperties": false}}}}
+		if o.Config.ReasoningEffort != "" {
+			body["reasoning"] = map[string]string{"effort": o.Config.ReasoningEffort}
+		}
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fail(daemon.Permanent(fmt.Errorf("invalid OpenAI request")))
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", o.URL+"/chat/completions", bytes.NewReader(payload))
+	// Full provider request bytes upper-bound input tokens; reserve framing too.
+	if len(payload)+512 > o.Config.ContextBytes || len(payload)+512+job.MaxOutputTokens > o.Config.ContextTokens {
+		return fail(daemon.Permanent(fmt.Errorf("OpenAI full prompt exceeds configured context capacity")))
+	}
+	generation.ContextLength = o.Config.ContextTokens
+	req, err := http.NewRequestWithContext(ctx, "POST", o.URL+endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return fail(daemon.Permanent(fmt.Errorf("invalid OpenAI endpoint")))
 	}
@@ -87,6 +143,18 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 			o.authFailed.Store(true)
+		}
+		if response.StatusCode == 400 || response.StatusCode == 404 {
+			// Inspect only a bounded, known code; never forward provider messages.
+			data, _ := io.ReadAll(io.LimitReader(response.Body, 8193))
+			var failure struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if len(data) <= 8192 && json.Unmarshal(data, &failure) == nil && failure.Error.Code == "model_not_found" {
+				return fail(daemon.Permanent(fmt.Errorf("OpenAI unsupported or inaccessible model (HTTP %d)", response.StatusCode)))
+			}
 		}
 		err := fmt.Errorf("OpenAI HTTP %d (check worker credential, model and provider availability)", response.StatusCode)
 		if response.StatusCode == 408 || response.StatusCode == 429 || response.StatusCode >= 500 {
@@ -107,6 +175,9 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if len(data) > maxOpenAIResponse {
 		return fail(daemon.Permanent(fmt.Errorf("OpenAI response exceeded 1 MiB")))
 	}
+	if o.Config.Profile == ResponsesReasoning {
+		return o.extractResponse(data, job, execution)
+	}
 	var reply struct {
 		Model   string `json:"model"`
 		Choices []struct {
@@ -124,6 +195,12 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 	if err := json.Unmarshal(data, &reply); err != nil {
 		return fail(daemon.Permanent(fmt.Errorf("invalid OpenAI response JSON")))
 	}
+	execution.Usage = map[string]*int{"input_tokens": reply.Usage.Prompt, "output_tokens": reply.Usage.Completion}
+	for key, count := range execution.Usage {
+		if count != nil && *count < 0 {
+			execution.Usage[key] = nil
+		}
+	}
 	if len(reply.Choices) != 1 {
 		return fail(daemon.Permanent(fmt.Errorf("OpenAI returned no single text choice")))
 	}
@@ -136,12 +213,6 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		generation.Model, generation.FinishReason = "", ""
 		return fail(daemon.Permanent(fmt.Errorf("OpenAI response metadata exceeded size limit")))
 	}
-	execution.Usage = map[string]*int{"input_tokens": reply.Usage.Prompt, "output_tokens": reply.Usage.Completion}
-	for key, count := range execution.Usage {
-		if count != nil && *count < 0 {
-			execution.Usage[key] = nil
-		}
-	}
 	execution.Generation.Model, execution.Generation.FinishReason = generation.Model, generation.FinishReason
 	if choice.Message.Refusal != "" || choice.FinishReason == "content_filter" {
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI refused the request")), daemon.ProviderFailure)
@@ -150,12 +221,16 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		return fail(daemon.Permanent(fmt.Errorf("OpenAI returned no text choice")))
 	}
 	text := redact(*choice.Message.Content)
-	execution.Generation = rawGeneration(text)
+	execution.Generation = safeOpenAIRaw(*choice.Message.Content, o.Key)
 	execution.Generation.Model, execution.Generation.FinishReason = generation.Model, generation.FinishReason
 	execution.Generation.MaxOutputTokens = job.MaxOutputTokens
 	execution.Generation.Temperature, execution.Generation.Seed = job.GenerationSettings.Temperature, job.GenerationSettings.Seed
 	if choice.FinishReason != "stop" {
-		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI generation ended with finish reason %q", generation.FinishReason)), daemon.ProviderFailure)
+		reason := "unsupported finish reason"
+		if choice.FinishReason == "length" {
+			reason = "output limit (length)"
+		}
+		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI generation ended with %s", reason)), daemon.ProviderFailure)
 	}
 	if execution.Generation.RawResponseTruncated {
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI generated text exceeded %d bytes", daemon.MaxRawResponseBytes)), daemon.FormattingFailure)
@@ -168,6 +243,9 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (daemon.Execution,
 		}
 		return execution, daemon.Categorize(daemon.Permanent(fmt.Errorf("OpenAI %s format: %w", label, err)), daemon.FormattingFailure)
 	}
-	execution.Text = proof
+	execution.Text = redact(proof)
+	if job.Kind == "model.respond" {
+		execution.Text = redactRawString(proof, o.Key, 0)
+	}
 	return execution, nil
 }

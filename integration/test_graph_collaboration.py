@@ -13,6 +13,7 @@ from solvenet.server import Coordinator, make_server
 from solvenet.store import Store
 from solvenet.verifier import LeanVerifier
 from solvenet.composed import declaration_name
+from solvenet.context_packet import prompt_cost
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import test_group_collaboration as fixed
@@ -30,7 +31,7 @@ class GraphCollaborationTests(unittest.TestCase):
     setUpClass = classmethod(fixed.GroupCollaborationTests.setUpClass.__func__)
     tearDownClass = classmethod(fixed.GroupCollaborationTests.tearDownClass.__func__)
 
-    def scenario(self, rejected=False):
+    def scenario(self, rejected=False, openai_profile=None):
         with tempfile.TemporaryDirectory(prefix='solvenet-g6-') as directory:
             path = Path(directory) / 'state.db'
             verifier = LeanVerifier(ROOT / 'lean')
@@ -56,6 +57,24 @@ class GraphCollaborationTests(unittest.TestCase):
                         self.reply({})
                         return
                     try:
+                        if openai_profile:
+                            test.assertEqual(self.headers['Authorization'], 'Bearer loopback-fixture-key')
+                            test.assertEqual(request['model'], 'arbitrary-graph-model')
+                            test.assertEqual(self.path, '/responses' if openai_profile == 'responses-reasoning' else '/chat/completions')
+                            wire_bytes = len(json.dumps(request, separators=(',', ':')).encode())
+                            if openai_profile == 'responses-reasoning':
+                                test.assertFalse(request['store'])
+                                field = request['text']['format']['schema']['required'][0]
+                                test.assertIn(field, ('text', 'proof'))
+                                request['messages'] = request['input']
+                                output_tokens = request['max_output_tokens']
+                            else:
+                                test.assertEqual(request['response_format'], {'type': 'json_object'})
+                                output_tokens = request['max_tokens']
+                            request['options'] = dict(num_predict=output_tokens, num_ctx=8192)
+                            test.assertLessEqual(wire_bytes + output_tokens + 512, 8192)
+                            test.assertLessEqual(wire_bytes + output_tokens + 512,
+                                prompt_cost(TARGET, ['Init'], current['messages'], output_tokens))
                         prompt = request['messages'][-1]['content']
                         packet = json.loads(prompt.split('\n')[-1])
                         action = prompt.split('Frontier action: ')[1].split('.')[0]
@@ -110,7 +129,18 @@ class GraphCollaborationTests(unittest.TestCase):
                         else:
                             raise AssertionError((action, focus))
                         observed.append((action, focus['statement'], request, value))
-                        self.reply({'done': True, 'model': request['model'], 'done_reason': 'stop',
+                        envelope = json.dumps({'proof' if action == 'synthesize' else 'text':
+                            value if isinstance(value, str) else json.dumps(value)})
+                        if openai_profile == 'responses-reasoning':
+                            self.reply(dict(model=request['model'], status='completed', output=[
+                                dict(type='reasoning', summary=[]), dict(type='message', role='assistant',
+                                    status='completed', content=[dict(type='output_text', text=envelope)])],
+                                usage=dict(input_tokens=23, output_tokens=11)))
+                        elif openai_profile:
+                            self.reply(dict(model=request['model'], choices=[dict(finish_reason='stop',
+                                message=dict(content=envelope))], usage=dict(prompt_tokens=23, completion_tokens=11)))
+                        else:
+                            self.reply({'done': True, 'model': request['model'], 'done_reason': 'stop',
                             'message': {'content': json.dumps({'proof' if action == 'synthesize' else 'text':
                                 value if isinstance(value, str) else json.dumps(value)})},
                             'prompt_eval_count': 23, 'eval_count': 11, 'total_duration': 1000000})
@@ -130,7 +160,8 @@ class GraphCollaborationTests(unittest.TestCase):
                     serving(ThreadingHTTPServer(('127.0.0.1', 0), Ollama)) as provider:
                 created = api(url, '/v1/groups', dict(request_key='g6', mode='graph',
                     statement=TARGET, imports=['Init'], environment=ENVIRONMENT, max_work=24,
-                    models={r: MODEL for r in ('planner', 'investigator', 'critic', 'synthesizer')}))
+                    models={r: 'openai/arbitrary-graph-model' if openai_profile else MODEL
+                        for r in ('planner', 'investigator', 'critic', 'synthesizer')}))
                 group_id = created['id']
                 claims = {}
                 next_action = None
@@ -179,11 +210,16 @@ class GraphCollaborationTests(unittest.TestCase):
                         coordinator.store = Store(path)
                         coordinator.tick()  # A queued decision survives fresh verifier binding.
                         self.assertEqual(coordinator.store.job_context_packet(job_id), current)
+                    provider_args = (['-provider', 'openai', '-model', 'arbitrary-graph-model',
+                        '-openai-url', provider, '-openai-profile', openai_profile, '-openai-context', '8192',
+                        '-openai-context-bytes', '8192'] if openai_profile else
+                        ['-provider', 'ollama', '-model', 'graph-fixture:latest', '-ollama-url', provider,
+                         '-ollama-context', '8192'])
                     process = subprocess.Popen([self.worker, '-once', '-coordinator', url,
-                        '-provider', 'ollama', '-model', 'graph-fixture:latest', '-ollama-url', provider,
-                        '-ollama-context', '8192', '-id', 'graph-worker-' + str(int(step > 1))],
+                        *provider_args, '-id', 'graph-worker-' + str(int(step > 1))],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        env={**os.environ, 'OPENAI_API_KEY': '', 'OPENAI_API_KEY_FILE': ''})
+                        env={**os.environ, 'OPENAI_API_KEY': 'loopback-fixture-key' if openai_profile else '',
+                             'OPENAI_API_KEY_FILE': ''})
                     try:
                         output, _ = process.communicate(timeout=15)
                         self.assertEqual(process.returncode, 0, output.decode())
@@ -220,7 +256,12 @@ class GraphCollaborationTests(unittest.TestCase):
                 self.assertEqual(group['cost']['failures'], 0)
                 self.assertEqual(group['cost']['leases'], 7)
                 self.assertEqual(group['cost']['retries'], 0)
-                self.assertEqual(group['cost']['provider_duration_ns'], {'known': 7000000, 'unknown': 0})
+                if openai_profile:
+                    self.assertEqual(group['cost']['provider_duration_ns']['unknown'], 0)
+                    self.assertGreater(group['cost']['provider_duration_ns']['known'], 0)
+                    self.assertNotIn('loopback-fixture-key', json.dumps(group))
+                else:
+                    self.assertEqual(group['cost']['provider_duration_ns'], {'known': 7000000, 'unknown': 0})
                 self.assertEqual(group['cost']['lean_checks'], 5)
                 self.assertEqual(group['cost']['lean_elapsed_ms']['unknown'], 0)
                 self.assertEqual(group['frontier']['model'], dict(reserved_work=14,
@@ -292,6 +333,12 @@ class GraphCollaborationTests(unittest.TestCase):
                 # coordinator checks; neither is silently billed as group model work.
                 self.assertEqual(coordinator.store.frontier_trace(group_id)['lean']['operations'], 5)
                 return next_action
+
+    def test_openai_profiles_graph_composition(self):
+        for profile in ('chat-json', 'responses-reasoning'):
+            with self.subTest(profile=profile):
+                self.scenario(openai_profile=profile)
+                self.scenario(rejected=True, openai_profile=profile)
 
     def test_paired_graph_loop_composition_and_redirect(self):
         accepted = self.scenario()
