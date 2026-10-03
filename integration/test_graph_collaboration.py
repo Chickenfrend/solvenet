@@ -78,15 +78,22 @@ class GraphCollaborationTests(unittest.TestCase):
                                 priorities=[dict(key='priority-' + k, claim='$' + k, priority=p)
                                     for k, p in [('a', 3), ('b', 2), ('c', 1)]])
                         elif action == 'critique':
-                            edge = edges['edge-c' if focus['statement'] == C else 'edge-a']
+                            review = next(r for r in packet['untrusted']['reviews']
+                                if r['status'] == 'challenged' and
+                                r['reason'] == 'This alternative does not advance composition')
+                            edge = next(r['id'] for r in packet['untrusted']['relationships']
+                                if r['id'] == review['relationship_id'] and r['to_id'] == focus['id'])
+                            test.assertEqual(current['request']['review_ids'], [review['id']])
                             value = dict(graph_schema='solvenet.graph.v1', reviews=[dict(key='redirect',
-                                relationship=edge, status='abandoned', reason='Redirect to the composed branch')])
+                                relationship=edge, status='promising', reason='Use the checked lemma in composition')])
                         elif focus['statement'] == A:
                             proof = FIXTURE['failed_proof'] if rejected else FIXTURE['proof_a']
                             value = artifact(focus, proof, [])
-                            edge = edges['edge-c']
-                            value['reviews'] = [dict(key='challenge', relationship=edge, status='challenged',
-                                reason='This alternative does not advance composition')]
+                            if not rejected:
+                                edge = next(r['id'] for r in packet['untrusted']['relationships']
+                                    if r['to_id'] == focus['id'] and r['kind'] == 'suggests_using')
+                                value['reviews'] = [dict(key='challenge', relationship=edge, status='challenged',
+                                    reason='This alternative does not advance composition')]
                         elif focus['statement'] == B:
                             predecessor = lemmas[A]
                             test.assertEqual(predecessor['proof_id'], proofs['a'])
@@ -125,7 +132,7 @@ class GraphCollaborationTests(unittest.TestCase):
                     statement=TARGET, imports=['Init'], environment=ENVIRONMENT, max_work=24,
                     models={r: MODEL for r in ('planner', 'investigator', 'critic', 'synthesizer')}))
                 group_id = created['id']
-                claims, edges = {}, {}
+                claims = {}
                 next_action = None
                 for step in range(12):
                     for _ in range(8):
@@ -143,19 +150,15 @@ class GraphCollaborationTests(unittest.TestCase):
                         next_action = (decision['action'], decision['reason'])
                         self.assertTrue(decision['deferred'])
                         if not rejected:
-                            self.assertEqual(decision['action'], 'synthesize')
-                            self.assertEqual(decision['claim_id'], snapshot['group']['graph']['root_id'])
-                            self.assertIn('newly checked relevant context', decision['reason'])
-                            self.assertTrue(any(d['claim_id'] == claims['c'] and d['action'] == 'critique'
-                                and d['reason'] == 'lower_rank_than_selected' for d in decision['deferred']))
+                            self.assertEqual(decision['action'], 'critique')
+                            self.assertEqual(decision['claim_id'], claims['a'])
+                            self.assertIn('reviewed challenge', decision['reason'])
                             self.assertTrue(any(d['claim_id'] == claims['b'] and d['action'] == 'investigate'
                                 and d['reason'] == 'lower_rank_than_selected' for d in decision['deferred']))
                         if rejected:
                             break
-                    if decision['action'] == 'critique' and decision['claim_id'] == claims.get('c'):
+                    if decision['action'] == 'critique' and decision['claim_id'] == claims.get('a') and not rejected:
                         self.assertIn('independent reconsideration of reviewed challenge', decision['reason'])
-                        self.assertTrue(any(d['action'] == 'synthesize' and
-                            d['reason'] == 'equivalent_strategy_exhausted' for d in decision['deferred']))
                         self.assertTrue(any(d['claim_id'] == claims['b'] and
                             d['reason'] == 'lower_rank_than_selected' for d in decision['deferred']))
                     job_id = decision['job_id']
@@ -192,7 +195,7 @@ class GraphCollaborationTests(unittest.TestCase):
                     if step == 0:
                         receipt = coordinator.store.ingest_group_graph_response(group_id, job_id)
                         self.assertIn('claims', receipt, (receipt, observed))
-                        claims, edges = receipt['claims'], receipt['relationships']
+                        claims = receipt['claims']
                     for _ in range(2):
                         coordinator.tick()
                     for row in coordinator.store.group(group_id)['artifacts']:
@@ -209,7 +212,7 @@ class GraphCollaborationTests(unittest.TestCase):
                 group = snapshot['group']
                 run = api(url, '/v1/runs/' + group['run']['run_id'])
                 self.assertEqual(run['status'], 'solved')
-                self.assertIn(('critique', C), [(a, s) for a, s, _, _ in observed])
+                self.assertIn(('critique', A), [(a, s) for a, s, _, _ in observed])
                 self.assertEqual(len(observed), 7)
                 self.assertEqual(group['cost']['requests'], 7)
                 self.assertEqual(group['cost']['input_tokens'], {'known': 161, 'unknown': 0})
@@ -243,7 +246,7 @@ class GraphCollaborationTests(unittest.TestCase):
                     source = calls[publication['job_id']]
                     for field in ('agent_id', 'task_id', 'assignment_id'):
                         self.assertEqual(publication[field], source[field])
-                self.assertEqual([r['status'] for r in graph['reviews']], ['challenged', 'abandoned'])
+                self.assertEqual([r['status'] for r in graph['reviews']], ['challenged', 'promising'])
                 self.assertNotEqual(calls[group['artifacts'][0]['job_id']]['worker_id'],
                     calls[group['artifacts'][1]['job_id']]['worker_id'])
                 attempt = run['attempts'][-1]
@@ -267,7 +270,7 @@ class GraphCollaborationTests(unittest.TestCase):
                 self.assertIn('proof-use status=known', trace)
                 self.assertIn('graph cost:', trace)
                 self.assertIn('planning ', trace)
-                self.assertIn('abandoned', trace)
+                self.assertIn('promising', trace)
                 exported = Path(directory) / 'replay.json'
                 exported.write_text(json.dumps(bundle))
                 coordinator.store = Store(path)
@@ -293,5 +296,6 @@ class GraphCollaborationTests(unittest.TestCase):
     def test_paired_graph_loop_composition_and_redirect(self):
         accepted = self.scenario()
         rejected = self.scenario(rejected=True)
-        self.assertEqual(accepted[0], 'synthesize')
-        self.assertNotEqual(accepted[0], rejected[0])
+        self.assertEqual(accepted[0], 'critique')
+        self.assertIn('reviewed challenge', accepted[1])
+        self.assertIn('negative formal', rejected[1])

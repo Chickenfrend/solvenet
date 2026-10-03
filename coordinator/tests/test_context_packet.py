@@ -64,6 +64,52 @@ class ContextPacketTests(unittest.TestCase):
         self.assertEqual(self.packet(other)[1]['checked_lemmas'], [])
         self.assertNotIn(proof, self.packet(other)[0]['source_ids'])
 
+    def test_source_ids_only_describe_final_packet_including_retained_review_references(self):
+        claim, proof = self.lemma('reviewed')
+        edge = self.edge('reviewed', self.root, claim)
+        review = self.store.review_group_relationship(self.group, 'promising', edge, self.critic,
+            'promising', 'Useful context')
+        built, packet = self.packet()
+        self.assertIn(review, built['source_ids'])
+        self.assertIn(review, packet['checked_lemmas'][0]['planning_review_ids'])
+
+        # This cap removes all untrusted reviews/artifacts, but retains a checked
+        # declaration carrying the review ID. It is still genuinely received.
+        retained, packet = self.packet(max_bytes=1800)
+        self.assertEqual(packet['untrusted']['reviews'], [])
+        self.assertEqual(packet['untrusted']['artifacts'], [])
+        self.assertEqual(packet['checked_lemmas'][0]['planning_review_ids'], [review])
+        self.assertIn(review, retained['source_ids'])
+        self.assertIn(proof, retained['source_ids'])
+
+        # A tighter cap also removes the declaration. The queried opinion must
+        # no longer appear in the received-source manifest.
+        omitted, packet = self.packet(max_bytes=900)
+        self.assertEqual(packet['untrusted']['reviews'], [])
+        self.assertEqual(packet['untrusted']['artifacts'], [])
+        self.assertEqual(packet['checked_lemmas'], [])
+        self.assertGreater(packet['omitted']['reviews'], 0)
+        self.assertNotIn(review, omitted['source_ids'])
+        self.assertNotIn(proof, omitted['source_ids'])
+
+        def received_ids(value):
+            ids = set()
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if isinstance(item, str) and (key == 'id' or key.endswith('_id')):
+                        ids.add(item)
+                    elif key in ('planning_review_ids', 'prerequisite_ids'):
+                        ids.update(item)
+                    elif isinstance(item, (dict, list)):
+                        ids.update(received_ids(item))
+            elif isinstance(value, list):
+                for item in value:
+                    ids.update(received_ids(item))
+            return ids
+
+        for result in (built, retained, omitted):
+            self.assertEqual(set(result['source_ids']), received_ids(json.loads(result['packet'])))
+
     def test_new_real_lean_checked_lemma_enters_packet(self):
         from solvenet.verifier import LeanVerifier
         claim = self.claim('real', ': True')

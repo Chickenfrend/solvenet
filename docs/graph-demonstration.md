@@ -19,12 +19,15 @@ Real Lean's elaborated-expression receipt confirms direct A-use by B and direct
 B-use/transitive A-use by the target. These lemmas are useful to this candidate,
 not mathematically necessary for every proof of the theorem.
 
-The script challenges a third branch, deliberately fails two bounded target
-attempts, then independently critiques/abandons the challenged suggestion and
-redirects to B. A paired database differs only in A's proof body: when Lean rejects
-A, the **next action** is critique of negative formal evidence rather than target
-synthesis with newly checked context. Selection reasons and deferred alternatives
-are asserted, rather than assigning tasks directly in the test.
+The investigator challenges its own incoming target → A suggestion using the
+relationship ID received in its packet. The independently dispatched critic
+requires that exact relationship and the challenge's reason in its frozen packet
+before marking the suggestion promising. Neither review target is taken from
+the test harness's graph receipts. Two deliberately failed bounded target attempts
+then open B's frontier. In the paired negative database, Lean rejects A instead
+of receiving a planning challenge: the next critique is selected for negative
+formal evidence. Selection reasons and deferred alternatives are asserted,
+rather than assigning tasks directly in the test.
 
 The coordinator is real localhost HTTP; the Go worker is compiled once. Each
 queued job is handled by a separate `-once` worker process with one of two stable

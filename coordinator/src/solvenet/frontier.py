@@ -182,7 +182,8 @@ class Frontier:
                 if e['to_id'] != root:
                     current = nodes.get(e['to_id'])
                     if current is None or e['opinion'] in ('challenged', 'abandoned'):
-                        nodes[e['to_id']] = dict(opinion=e['opinion'] or 'suggested', review_id=e['review_id'] or '')
+                         nodes[e['to_id']] = dict(opinion=e['opinion'] or 'suggested', review_id=e['review_id'] or '',
+                                                  relationship_id=e['id'])
                 if len(nodes) >= 16:
                     break
             artifacts = db.execute('''SELECT a.*,ca.claim_id FROM group_artifacts a JOIN claim_artifacts ca
@@ -192,13 +193,13 @@ class Frontier:
                 'SELECT * FROM graph_action_proposals WHERE group_id=? ORDER BY rowid LIMIT 128', (group_id,))}
             candidates, deferred = [], []
 
-            def candidate(cid, action, rank, reason, strategy='default'):
+            def candidate(cid, action, rank, reason, strategy='default', **evidence):
                 if action in ('plan', 'critique') and planning >= limits['planning_calls']:
                     deferred.append(dict(claim_id=cid, action=action, reason='planning_critique_cap'))
                     return
                 priority = proposals.get(cid, {}).get('priority', 0)
                 candidates.append(dict(claim_id=cid, action=action, rank=rank, priority=priority,
-                    reason=reason, strategy=strategy, avoid=None, parent=None))
+                    reason=reason, strategy=strategy, avoid=None, parent=None, evidence=evidence))
 
             if not history:
                 candidate(root, 'plan', -1, 'initial bounded decomposition', 'initial')
@@ -210,7 +211,8 @@ class Frontier:
                         deferred.append(dict(claim_id=cid, action='investigate', reason='abandoned_advisory_suggestion'))
                         continue
                     if node['opinion'] == 'challenged':
-                        candidate(cid, 'critique', 1, 'independent reconsideration of reviewed challenge', node['review_id'])
+                        candidate(cid, 'critique', 1, 'independent reconsideration of reviewed challenge', node['review_id'],
+                                  relationship_ids=[node['relationship_id']], review_ids=[node['review_id']])
                     elif cid in checked:
                         deferred.append(dict(claim_id=cid, action='prove', reason='currently_checked'))
                         continue
@@ -222,7 +224,8 @@ class Frontier:
                         elif node['opinion'] == 'promising' or attempted or proposals.get(cid, {}).get('action') == 'prove':
                             candidate(cid, 'prove', 2, 'promising or investigated target-relevant claim')
                         else:
-                            candidate(cid, 'investigate', 3, 'bounded unresolved target suggestion')
+                            candidate(cid, 'investigate', 3, 'bounded unresolved target suggestion',
+                                      relationship_ids=[node['relationship_id']])
                     help_request = proposals.get(cid)
                     if help_request and help_request['action'] == 'critique':
                         action = help_request['action']
@@ -239,8 +242,14 @@ class Frontier:
                     WHERE group_id=? AND status IN ('verified','rejected','timeout','verifier_error') ORDER BY rowid LIMIT 24''', (group_id,))]
                 events += [r['review_id'] for r in nodes.values() if r['opinion'] == 'challenged']
                 events += [r['job_id'] for r in history if r['status'] == 'failed']
+                verdicts = db.execute('''SELECT v.attempt_id FROM verifications v
+                    JOIN attempts t ON t.id=v.attempt_id JOIN assignments a ON a.id=t.assignment_id
+                    JOIN group_jobs gj ON gj.job_id=a.job_id WHERE gj.group_id=?
+                    AND v.status IN ('rejected','timeout') ORDER BY t.rowid DESC LIMIT 1''', (group_id,)).fetchall()
+                events += ['target:' + r['attempt_id'] for r in verdicts]
                 if events and sum(r['action'] == 'plan' for r in history) < 3:
-                    candidate(root, 'plan', 5, 'bounded evidence-triggered replanning', hashlib.sha256(encode(events).encode()).hexdigest())
+                    candidate(root, 'plan', 5, 'bounded evidence-triggered replanning', hashlib.sha256(encode(events).encode()).hexdigest(),
+                              target_attempt_ids=[r['attempt_id'] for r in verdicts])
             candidates.sort(key=lambda c: (c['rank'], -c['priority'], c['claim_id'], c['action']))
             models = json.loads(loop['models'])
             models = {r: [m] if isinstance(m, str) else m for r, m in models.items()}
@@ -262,11 +271,12 @@ class Frontier:
                 try:
                     built = build_packet(self, db, group_id, c['claim_id'], messages,
                         max_output_tokens=output_tokens, max_bytes=limits['packet_bytes'],
-                        context_limit=min(8192, max(capabilities.get(m, {}).get('context_tokens', 8192) for m in models[role])))
+                         context_limit=min(8192, max(capabilities.get(m, {}).get('context_tokens', 8192) for m in models[role])),
+                         **c['evidence'])
                     manifest = built['manifest']
                     if len(manifest['declarations']) > limits['included_lemmas'] or len(encode(manifest).encode()) > limits['source_bytes']:
                         built = build_packet(self, db, group_id, c['claim_id'], messages, proof_ids=[],
-                            max_output_tokens=output_tokens, max_bytes=limits['packet_bytes'])
+                             max_output_tokens=output_tokens, max_bytes=limits['packet_bytes'], **c['evidence'])
                     # Packet revisions include work/evidence writes. Only actual selected
                     # declarations and explicit strategy changes create a new attempt key.
                     context_key = hashlib.sha256(encode(built['manifest']['declarations']).encode()).hexdigest()
@@ -332,7 +342,7 @@ class Frontier:
                 min(2, limits['planning_calls'] - planning) if c['action'] in ('plan', 'critique') else 2,
                 kind, None if kind == 'model.generate' else task_type, json.dumps(built['messages'])))
             db.execute('INSERT INTO group_jobs VALUES (?,?,?,?,?,?,?)', (job_id, group_id, key, task_id, agents[owner], group['environment'], cost))
-            freeze_packet(db, job_id, group_id, task_id, built, dict(action=c['action'], strategy=c['strategy']))
+            freeze_packet(db, job_id, group_id, task_id, built, dict(action=c['action'], strategy=c['strategy'], **c['evidence']))
             deferred += [a | dict(reason='lower_rank_than_selected') for a in candidates if a is not c and
                          not any(d.get('claim_id') == a['claim_id'] and d.get('action') == a['action'] for d in deferred)]
             db.execute('''INSERT INTO frontier_decisions

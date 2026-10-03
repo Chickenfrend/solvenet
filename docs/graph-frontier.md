@@ -37,7 +37,7 @@ rule tier. The order is:
 4. Prove a promising, investigated, or agent-prioritized claim.
 5. Investigate an unresolved suggested claim.
 6. Try the target directly, including when suggestions are abandoned or reciprocal.
-7. Replan on observed checked/rejected/timed-out evidence, reviewed challenges or
+7. Replan on observed checked/rejected/timed-out evidence (including target verdicts), reviewed challenges or
    failed jobs, with at most two additional planning calls.
 
 Each tier is still subject to routing, packet admission and caps. An unavailable
@@ -76,6 +76,21 @@ At most one independent retry of a completed strategy is allowed by default;
 it gets explicit retry lineage and uses the other investigator or an alternative
 model where available. Worker lease retries reuse the original reservation/job.
 Agents' IDs persist across model routing changes and coordinator restart.
+
+A challenged incoming suggestion is supplied to the focused critic by explicit
+relationship/review IDs persisted in the frozen request. Its review reason is
+supplied as a bounded JSON-encoded excerpt, preserving exact IDs, endpoints,
+status and provenance under the existing category, packet and prompt limits;
+unrelated incoming relationships are not broadcast. Investigator packets likewise
+carry the particular suggestion that selected their focus. A trigger that cannot
+fit defers that action rather than dispatching an evidence-free critique.
+
+Committed target rejections/timeouts are durable replanning events even though
+their generation jobs finish as `done`. A replanner receives the latest negative
+target attempt/job IDs, verdict and JSON-quoted diagnostic excerpt (400-byte
+excerpt bound, 1000-byte category ceiling). The persisted evidence fingerprint
+deduplicates unchanged events across restart, and the existing three-plan and
+reserved planning/critique assignment caps still apply.
 
 ## Separate ceilings and cost accounting
 

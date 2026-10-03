@@ -32,6 +32,13 @@ synthesizer receives bounded, explicitly **unverified** findings and a
 can solve the run. Malformed plan/review results, exhausted retries, rejected
 proof, work limits, deadline and verifier errors yield explicit group reasons.
 
+Fixed groups created before the claim-graph migration retain a null graph root.
+Their synthesis jobs resume with the original findings and corrected finding in
+bounded, JSON-quoted unverified context, plus freshly bound verified artifact
+statement summaries. These summaries are hints, not supplied Lean declarations;
+the legacy job has no graph packet or composed proof manifest. New fixed groups
+use the frozen graph packet and eligible checked declarations.
+
 Plan/finding/critique JSON may additionally contain the explicit versioned G2
 graph schema documented in [claim-graph.md](claim-graph.md#completed-response-ingestion-g2).
 Its atomic ingestion records proposals with completed-assignment provenance;

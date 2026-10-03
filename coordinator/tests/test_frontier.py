@@ -47,14 +47,15 @@ class FrontierTests(unittest.TestCase):
         self.store.result(lease['assignment_id'], payload)
         self.store.result(lease['assignment_id'], payload)
 
-    def plan(self, group):
+    def plan(self, group, reason=''):
         lease, decision = self.next(group)
         self.assertEqual(decision['action'], 'plan')
         root = self.store.group(group)['graph']['root_id']
         self.complete(lease, dict(graph_schema='solvenet.graph.v1', claims=[
             dict(key=k, statement=s, imports=['Init'], environment='lean-test') for k, s in
             [('a', ': True'), ('b', ': True ∧ True'), ('c', ': True ∨ False')]],
-            relationships=[dict(key='edge-' + k, **{'from': root, 'to': '$' + k}, kind='suggests_using')
+            relationships=[dict(key='edge-' + k, **{'from': root, 'to': '$' + k}, kind='suggests_using',
+                                reason=reason if k == 'a' else '')
                            for k in ('a', 'b', 'c')],
             priorities=[dict(key='p-' + k, claim='$' + k, priority=p) for k, p in [('a', 3), ('b', 2), ('c', 1)]]))
         receipt = self.store.ingest_group_graph_response(group, lease['job']['id'])
@@ -168,6 +169,148 @@ class FrontierTests(unittest.TestCase):
             self.assertEqual(after['current_status'], 'verified')
             self.assertEqual(after['verifier_identity'], checked['verifier_identity'])
         self.assertEqual(actions, ['synthesize', 'critique'])
+
+    def test_critique_freezes_exact_trigger_without_unrelated_incoming_broadcast(self):
+        group = self.start()
+        claims, edges = self.plan(group)
+        investigator, _ = self.next(group)
+        critic = next(a['id'] for a in self.store.group(group)['agents'] if a['role'] == 'critic')
+        unrelated = self.store.propose_group_relationship(group, 'unrelated', claims['c'], claims['a'], 'alternative_to')
+        unrelated_review = self.store.review_group_relationship(group, 'unrelated-review', unrelated, critic,
+            'promising', 'Not the scheduling trigger')
+        self.complete(investigator, dict(graph_schema='solvenet.graph.v1', reviews=[dict(
+            key='challenge', relationship=edges['edge-a'], status='challenged', reason='Exact reconsideration evidence')]))
+        lease, choice = self.next(group)
+        frozen = self.store.job_context_packet(lease['job']['id'])
+        packet = json.loads(frozen['packet'])
+        self.assertEqual(choice['action'], 'critique')
+        review = next(r for r in packet['untrusted']['reviews'] if r['reason'] == 'Exact reconsideration evidence')
+        self.assertEqual(review['status'], 'challenged')
+        self.assertEqual(review['relationship_id'], edges['edge-a'])
+        self.assertTrue(any(r['id'] == edges['edge-a'] and r['to_id'] == claims['a']
+                            for r in packet['untrusted']['relationships']))
+        self.assertEqual(frozen['request']['relationship_ids'], [edges['edge-a']])
+        self.assertEqual(frozen['request']['review_ids'], [review['id']])
+        self.assertNotIn(unrelated, frozen['source_ids'])
+        self.assertNotIn(unrelated_review, frozen['source_ids'])
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        self.assertEqual(self.store.job_context_packet(lease['job']['id']), frozen)
+        self.complete(lease, dict(graph_schema='solvenet.graph.v1', reviews=[dict(key='resolve',
+            relationship=review['relationship_id'], status='abandoned', reason='Response from packet evidence')]))
+        _, choice = self.next(group)
+        self.assertNotEqual((choice['action'], choice['claim_id']), ('critique', claims['a']))
+
+    def test_long_multibyte_reasons_reach_investigator_and_critic_with_exact_provenance(self):
+        from solvenet.context_packet import CATEGORY_BYTES, encoded_bytes
+
+        def reason(prefix, size):
+            remaining = size - len(prefix.encode())
+            return prefix + 'λ\n"' * (remaining // 4) + 'x' * (remaining % 4)
+
+        for size in (1200, 2048):
+            with self.subTest(reason_bytes=size):
+                group = self.start('long-reasons-' + str(size))
+                relation_reason = reason('Use reassociation before composition. ', size)
+                review_reason = reason('Reconsider whether this lemma advances the target. ', size)
+                self.assertEqual(len(relation_reason.encode()), size)
+                self.assertEqual(len(review_reason.encode()), size)
+                claims, edges = self.plan(group, relation_reason)
+                investigator, choice = self.next(group)
+                self.assertEqual((choice['action'], choice['claim_id']), ('investigate', claims['a']))
+
+                def assert_received(lease, review_id=None):
+                    frozen = self.store.job_context_packet(lease['job']['id'])
+                    packet = json.loads(frozen['packet'])
+                    selections = [('relationships', edges['edge-a'], 'claim_relationships', relation_reason)]
+                    if review_id:
+                        selections.append(('reviews', review_id, 'claim_relationship_reviews', review_reason))
+                    for category, selected_id, table, original_reason in selections:
+                        received = next(r for r in packet['untrusted'][category] if r['id'] == selected_id)
+                        with self.store.connect() as db:
+                            original = dict(db.execute('SELECT * FROM ' + table + ' WHERE id=?', (selected_id,)).fetchone())
+                        self.assertEqual(original['reason'], original_reason)
+                        for key in original.keys() - {'reason'}:
+                            self.assertEqual(received[key], original[key], key)
+                        self.assertTrue(received['reason'].startswith(original_reason.split('λ')[0]))
+                        self.assertIn('λ', received['reason'])
+                        self.assertTrue(received['reason'].endswith(' [truncated]'))
+                        self.assertLessEqual(len(encoded_bytes(received['reason'])), 416)
+                        self.assertLessEqual(len(encoded_bytes(packet['untrusted'][category])), CATEGORY_BYTES[category])
+                        self.assertIn(selected_id, frozen['source_ids'])
+                    self.assertEqual(json.loads(lease['job']['messages'][-1]['content'].split('\n')[-1]), packet)
+                    self.assertLessEqual(frozen['budget']['packet_bytes'], 6144)
+                    self.assertLessEqual(frozen['budget']['admission_upper_bound'], 8192)
+
+                assert_received(investigator)
+                self.complete(investigator, dict(graph_schema='solvenet.graph.v1', reviews=[dict(
+                    key='challenge', relationship=edges['edge-a'], status='challenged', reason=review_reason)]))
+                critic, choice = self.next(group)
+                self.assertEqual((choice['action'], choice['claim_id']), ('critique', claims['a']))
+                review_id = self.store.job_context_packet(critic['job']['id'])['request']['review_ids'][0]
+                assert_received(critic, review_id)
+                self.complete(critic, dict(graph_schema='solvenet.graph.v1', reviews=[]))
+                self.store.stop_frontier(group, 'test_done')
+
+    def test_empty_plan_rejected_target_replans_once_with_durable_diagnostics(self):
+        group = self.start(graph_limits={'retries': 0})
+        initial, _ = self.next(group)
+        self.complete(initial, dict(graph_schema='solvenet.graph.v1', claims=[]))
+        target, choice = self.next(group)
+        self.assertEqual(choice['action'], 'synthesize')
+        self.complete(target, 'exact True.intro')
+        self.coordinator.tick()
+        attempt = self.store.run(self.store.group(group)['run']['run_id'])['attempts'][-1]
+        self.assertEqual(attempt['verification_status'], 'rejected')
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        replan, choice = self.next(group)
+        self.assertEqual(choice['action'], 'plan')
+        frozen = self.store.job_context_packet(replan['job']['id'])
+        verdict = json.loads(frozen['packet'])['untrusted']['target_verdicts'][0]
+        self.assertEqual(verdict['attempt_id'], attempt['id'])
+        self.assertEqual(verdict['job_id'], target['job']['id'])
+        self.assertEqual(verdict['status'], 'rejected')
+        self.assertIn('type mismatch', verdict['diagnostics'])
+        self.assertIn(verdict['diagnostics'], attempt['diagnostics'])
+        self.assertEqual(frozen['request']['target_attempt_ids'], [attempt['id']])
+        self.assertLessEqual(frozen['budget']['packet_bytes'], 6144)
+        # An empty replan adds no evidence. The same verdict cannot buy a third plan.
+        self.complete(replan, dict(graph_schema='solvenet.graph.v1', claims=[]))
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        for _ in range(3):
+            self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)['reason'], 'no_useful_frontier')
+        self.assertEqual(len([d for d in self.store.frontier_trace(group)['decisions'] if d['action'] == 'plan']), 2)
+        self.assertEqual(self.store.job_context_packet(replan['job']['id']), frozen)
+
+    def test_target_replanning_capacity_can_publish_new_decomposition_and_respects_cap(self):
+        for cap in (1, 4):
+            group = self.start('target-cap-' + str(cap), graph_limits={'planning_calls': cap, 'retries': 0})
+            initial, _ = self.next(group)
+            self.complete(initial, dict(graph_schema='solvenet.graph.v1', claims=[]))
+            target, _ = self.next(group)
+            self.complete(target, 'exact True.intro')
+            self.coordinator.tick()
+            if cap == 1:
+                self.coordinator.tick()
+                self.assertEqual(self.store.group_loop(group)['phase'], 'stopped')
+                self.assertEqual(self.store.frontier_trace(group)['model']['reserved_planning_critique_assignments'], 1)
+                continue
+            replan, choice = self.next(group)
+            self.assertEqual(choice['action'], 'plan')
+            root = json.loads(self.store.job_context_packet(replan['job']['id'])['packet'])['focus']['id']
+            self.complete(replan, dict(graph_schema='solvenet.graph.v1', claims=[dict(key='new',
+                statement=': True', imports=['Init'], environment='lean-test')], relationships=[dict(
+                key='new-edge', **{'from': root, 'to': '$new'}, kind='suggests_using')]))
+            investigator, choice = self.next(group)
+            self.assertEqual(choice['action'], 'investigate')
+            self.assertNotEqual(choice['claim_id'], root)
+            self.assertEqual(self.store.frontier_trace(group)['model']['reserved_planning_critique_assignments'], 4)
+            # Finish the active group so the next loop iteration has no competing job.
+            self.complete(investigator, 'No further evidence')
+            self.store.stop_frontier(group, 'test_done')
 
     def test_successful_target_finalizes_linked_task_and_decision_across_restart(self):
         group, _, winning, target = self.scenario('verified')
@@ -597,5 +740,10 @@ class FrontierTests(unittest.TestCase):
         self.coordinator.tick()  # generated Lean source exceeds the smaller cap before subprocesses
         self.assertEqual(self.store.frontier_trace(group)['lean']['operations'], 1)
         self.assertEqual(self.store.frontier_trace(group)['lean']['subprocesses'], 0)
+        self.coordinator.tick()
+        replan, choice = self.next(group)
+        self.assertEqual(choice['action'], 'plan')
+        self.assertLessEqual(self.store.job_context_packet(replan['job']['id'])['budget']['packet_bytes'], 2048)
+        self.complete(replan, dict(graph_schema='solvenet.graph.v1', claims=[]))
         self.coordinator.tick()
         self.assertIn(self.store.group_loop(group)['reason'], ('no_useful_frontier', 'capacity_or_model_budget'))

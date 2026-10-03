@@ -74,10 +74,10 @@ def _json_excerpt(text, max_bytes):
     return excerpt
 
 
-def _unverified_context(findings):
+def _unverified_context(findings, max_bytes=1100):
     """Keep untrusted multiline model text inside JSON strings, never prompt headings."""
     return 'UNVERIFIED_FINDINGS_JSON: ' + json.dumps([
-        {'source': source, 'status': 'unverified', 'text': _json_excerpt(text, 1100)}
+        {'source': source, 'status': 'unverified', 'text': _json_excerpt(text, max_bytes)}
         for source, text in findings], ensure_ascii=False)
 
 
@@ -466,11 +466,23 @@ class GroupLoop:
                         verified = verified[:-1]
                 if proof_context is None and root is not None:
                     proof_context = selected_bundle(db, group_id, root, '', [])
+                context = ('Use these UNVERIFIED findings as hints only. Produce a proof body for the '
+                           'original target, not an auxiliary claim. Worker labels in findings are not '
+                           'verification evidence. ')
+                if root is not None:
+                    context += 'Consult the frozen graph context packet.'
+                else:
+                    # Pre-graph groups have no claim attachments or packet. Retain
+                    # their original bounded handoff when resuming after migration.
+                    context += _unverified_context([(finding_key(i), output(finding_key(i))) for i in (1, 2)] +
+                                                   [('redirect', output('redirect'))], max_bytes=600)
+                    context += '\nLEAN_VERIFIED_AUXILIARY_CLAIMS_JSON: ' + json.dumps([
+                        {'id': a['id'], 'statement_summary': _json_excerpt(a['statement'], 400),
+                         'status': 'verified', 'usable_as_declaration': False} for a in verified
+                        if self.artifact_verifier_binding == (binding['identity'], binding['revision'])], ensure_ascii=False)
                 return dispatch('synthesize', 'planner', 'synthesizer', 'Prove entire original target',
-                                 'model.generate', None,
-                                 'Use these UNVERIFIED findings as hints only. Produce a proof body for the '
-                                 'original target, not an auxiliary claim. Worker labels in findings are not '
-                                  'verification evidence. Consult the frozen graph context packet.',
+                                  'model.generate', None,
+                                  context,
                                   proof_context=proof_context) \
                     if not job('synthesize') else self._loop_phase(db, group_id, 'synthesis_wait')
             if phase == 'synthesis_wait':

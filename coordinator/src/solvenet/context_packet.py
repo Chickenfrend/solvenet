@@ -13,6 +13,7 @@ MAX_SELECTIONS = 8
 CATEGORY_BYTES = dict(claims=1000, relationships=1000, publications=600,
                       reviews=1000, messages=2000, tasks=600, artifacts=1000,
                       outcomes=600, lemmas=2400)
+TARGET_VERDICT_BYTES = 1000
 # Both current Go providers prepend system instructions and a trusted theorem
 # message. Reserve more than their current encoded size, plus unknown chat framing.
 PROVIDER_MARGIN = 1536
@@ -62,7 +63,8 @@ def prompt_cost(statement, imports, messages, max_output_tokens):
 
 
 def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=512,
-                 context_limit=8192, max_bytes=MAX_PACKET_BYTES, proof_ids=None):
+                 context_limit=8192, max_bytes=MAX_PACKET_BYTES, proof_ids=None,
+                 relationship_ids=(), review_ids=(), target_attempt_ids=()):
     _number(max_bytes, 'packet max_bytes', MAX_PACKET_BYTES)
     _number(context_limit, 'context_limit', 1024 * 1024)
     if proof_ids is not None and (not isinstance(proof_ids, list) or len(proof_ids) > MAX_SELECTIONS or
@@ -80,7 +82,40 @@ def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=5
     graph = store.group_claim_neighborhood(group_id, claim_id, depth=1, max_nodes=16,
         max_items=32, max_bytes=256 * 1024, verifier_identity=binding,
         _db=db, _outgoing=True, _recent=True)
-    categories = tuple(CATEGORY_BYTES)
+    # Only explicitly selected, incident relationships cross the outgoing traversal
+    # boundary. Preserve the evidence that caused a critique, not all incoming work.
+    required = {name: set() for name in ('relationships', 'reviews', 'target_verdicts')}
+    for ids in (relationship_ids, review_ids, target_attempt_ids):
+        if len(ids) > MAX_SELECTIONS or any(not isinstance(i, str) for i in ids):
+            raise ValueError('Invalid packet evidence selection')
+    for rid in relationship_ids:
+        row = db.execute('''SELECT * FROM claim_relationships WHERE group_id=? AND id=?
+            AND (from_id=? OR to_id=?)''', (group_id, rid, claim_id, claim_id)).fetchone()
+        if row is None:
+            raise ValueError('Packet relationship is not incident to focus')
+        required['relationships'].add(rid)
+        if not any(r['id'] == rid for r in graph['relationships']):
+            graph['relationships'].append(dict(row))
+    for rid in review_ids:
+        row = db.execute('SELECT * FROM claim_relationship_reviews WHERE group_id=? AND id=?',
+                         (group_id, rid)).fetchone()
+        if row is None or row['relationship_id'] not in required['relationships']:
+            raise ValueError('Packet review is not selected relationship evidence')
+        required['reviews'].add(rid)
+        if not any(r['id'] == rid for r in graph['reviews']):
+            graph['reviews'].insert(0, dict(row))
+    graph['target_verdicts'] = []
+    for aid in target_attempt_ids:
+        row = db.execute('''SELECT v.attempt_id,v.status,v.diagnostics,a.job_id FROM verifications v
+            JOIN attempts t ON t.id=v.attempt_id JOIN assignments a ON a.id=t.assignment_id
+            JOIN group_jobs gj ON gj.job_id=a.job_id WHERE gj.group_id=? AND v.attempt_id=?''',
+            (group_id, aid)).fetchone()
+        if row is None:
+            raise ValueError('Unknown target verdict')
+        from .group_loop import _json_excerpt
+        graph['target_verdicts'].append(dict(row) | {'diagnostics': _json_excerpt(row['diagnostics'], 400)})
+        required['target_verdicts'].add(aid)
+    categories = tuple(CATEGORY_BYTES) + (('target_verdicts',) if target_attempt_ids else ())
     packet = dict(schema='solvenet.context.v1', group_id=group_id,
         focus=dict(id=claim_id, statement=focus['statement'], imports=json.loads(focus['imports']),
                    environment=focus['environment']), graph_revision=graph['revision'],
@@ -133,16 +168,19 @@ def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=5
         # Explicit focus/task/suggestion relevance precedes reviewed recency;
         # IDs break ties deterministically, independent of SQL row arrival.
         is_reviewed = row.get('review_status', 'pending') != 'pending' or 'relationship_id' in row
-        return (0 if cid == claim_id else 1 if cid in edge_by_claim or cid in task_claims else 2,
+        pertinent = row.get('id', row.get('attempt_id')) in set().union(*required.values())
+        return (-1 if pertinent else 0 if cid == claim_id else 1 if cid in edge_by_claim or cid in task_claims else 2,
                 -int(is_reviewed), -recency,
                 row.get('id', row.get('task_id', row.get('artifact_id', ''))), encode(row))
 
     def bounded(name, rows):
         dest = packet['checked_lemmas'] if name == 'lemmas' else packet['untrusted'][name]
         for row in rows:
-            if len(encoded_bytes([*dest, row])) <= CATEGORY_BYTES[name]:
+            if len(encoded_bytes([*dest, row])) <= (TARGET_VERDICT_BYTES if name == 'target_verdicts' else CATEGORY_BYTES[name]):
                 dest.append(row)
             else:
+                if row.get('id', row.get('attempt_id')) in required.get(name, set()):
+                    raise ValueError('Trigger evidence exceeds packet category budget')
                 packet['omitted'][name] += 1
 
     for name in categories:
@@ -164,6 +202,13 @@ def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=5
         if name == 'relationships':
             rows = [row | {'planning_status': latest.get(row['id'], {}).get('status', 'suggested')}
                     for row in rows]
+        if name in ('relationships', 'reviews'):
+            from .group_loop import _json_excerpt
+            # Graph reasons may be 2 KiB. Keep exact identifiers, endpoints and
+            # provenance, but quote a useful excerpt before category admission.
+            rows = [row | {'reason': _json_excerpt(row['reason'], min(400, max(1,
+                CATEGORY_BYTES[name] - len(encoded_bytes([row | {'reason': ''}])) - 16)))}
+                for row in rows]
         bounded(name, sorted(rows, key=rank))
 
     # Historical status remains in untrusted.artifacts; only selected_bundle can
@@ -215,7 +260,7 @@ def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=5
 
     # Remove whole rows. In particular, never shorten a formal statement or
     # advertise a declaration removed from the frozen proof manifest.
-    order = ('outcomes', 'publications', 'tasks', 'artifacts', 'messages', 'reviews',
+    order = ('outcomes', 'publications', 'tasks', 'artifacts', 'messages', 'target_verdicts', 'reviews',
              'relationships', 'claims', 'lemmas')
     while (len(encoded_bytes(packet['checked_lemmas'])) > CATEGORY_BYTES['lemmas'] or
            len(encoded_bytes(packet)) > max_bytes or
@@ -225,8 +270,12 @@ def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=5
         removal_order = (('lemmas',) if len(encoded_bytes(packet['checked_lemmas'])) > CATEGORY_BYTES['lemmas']
                          else order)
         for name in removal_order:
+            if name not in categories:
+                continue
             rows = packet['checked_lemmas'] if name == 'lemmas' else packet['untrusted'][name]
             if not rows:
+                continue
+            if name != 'lemmas' and rows[-1].get('id', rows[-1].get('attempt_id')) in required.get(name, set()):
                 continue
             if name == 'lemmas':
                 selected.pop()
@@ -242,14 +291,14 @@ def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=5
         else:
             raise ValueError('Trusted target/focus and complete messages exceed context budget')
     raw = encoded_bytes(packet)
-    source_ids = {claim_id} | {review_id for ids in opinion_ids.values() for review_id in ids}
+    source_ids = set()
 
     def sources(value):
         if isinstance(value, dict):
             for key, item in value.items():
                 if (key == 'id' or key.endswith('_id')) and isinstance(item, str):
                     source_ids.add(item)
-                elif key == 'prerequisite_ids':
+                elif key in ('prerequisite_ids', 'planning_review_ids'):
                     source_ids.update(item)
                 elif isinstance(item, (dict, list)):
                     sources(item)
@@ -257,8 +306,7 @@ def build_packet(store, db, group_id, claim_id, messages, *, max_output_tokens=5
             for item in value:
                 sources(item)
 
-    sources(packet['untrusted'])
-    sources(packet['checked_lemmas'])
+    sources(packet)
     complete_messages = job_messages()
     budget = dict(packet_bytes=len(raw), packet_limit_bytes=max_bytes,
         context_limit=context_limit, input_byte_limit=MAX_INPUT_BYTES, provider_margin=PROVIDER_MARGIN,
