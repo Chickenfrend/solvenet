@@ -1,14 +1,23 @@
 # G4: relevant, frozen graph context
 
 `coordinator/src/solvenet/context_packet.py` builds coordinator-owned context for
-an explicitly focused task. Scheduling remains the existing fixed group loop;
-these APIs also let a future scheduler dispatch a focused task without adding a
-frontier policy here. The Go worker and its job/result contract are unchanged.
+an explicitly focused task. G4 is implemented locally (`9ea32a0`); both the
+default fixed group loop and the opt-in [G5 frontier](graph-frontier.md) dispatch
+through these APIs. The Go worker and its job/result contract are unchanged.
+The [G6 demonstration](graph-demonstration.md) checks actual cross-worker checked
+context use and challenged-relationship handoff. Follow-up `fbcadb8` supplies the
+specific incoming relationship/review and bounded reason to investigators and
+critics, and negative target verdicts/diagnostics to replanners, in frozen packets.
 
 ## Selection and trust
 
 A packet reads the focus and its **outgoing one-hop** planning neighborhood,
-with at most 16 claims and 32 rows per evidence category. An investigator does
+with at most 16 claims and 32 rows per evidence category. Explicitly selected
+incident incoming relationships and their triggering reviews are also admitted
+for investigation or critique, with bounded reason excerpts and exact IDs and
+provenance. Replanning packets include selected target verdicts and bounded
+diagnostic excerpts. These exceptions deliver the action's triggering evidence;
+they do not expand into unrelated incoming neighborhoods. An investigator does
 not receive the target's other branches merely because both branches point back
 to the target. An explicitly supplied checked proof can additionally bring its
 necessary G3 declaration closure; that closure is mathematical context, not a
@@ -65,6 +74,7 @@ Encoded array ceilings (bytes) are:
 | Tasks | 600 |
 | Formal artifact summaries | 1000 |
 | Historical outcomes | 600 |
+| Target verdicts (diagnostic excerpts at most 400 bytes each) | 1000 |
 | Supplied checked declarations | 2400 |
 
 Every category has an omission count, including empty categories. These count
@@ -151,7 +161,9 @@ synthesis context now uses the packet rather than truncated statement summaries.
 Its explicit informal review/redirect handoffs remain bounded and JSON-quoted.
 The scripted HTTP fixture checks the complete actual provider prompt, including
 the worker-prepended trusted messages and output allowance. This is protocol and
-Lean integration evidence, not evidence of real-model efficiency.
+Lean integration evidence, not evidence of real-model efficiency. The G6 capped
+local-model observation completed without structured graph proposals or a verified
+target; useful real-model sharing/decomposition remains to be established.
 
 ## Checks
 

@@ -36,10 +36,15 @@ Build the smallest end-to-end system that can:
 
 Local execution is sufficient for the first version. Distributed execution can come later.
 
-The local collaborating agent group is implemented; independent proof candidates
-and repair chains remain supported v1 behavior. Its scripted-model integration
-test checks the loop with real Lean, while real-model effectiveness and efficiency
-remain to be measured in an optional live operator run.
+The local collaborating agent group and G1–G6 claim-graph path are implemented;
+independent proof candidates, repair chains and the default fixed group mode
+remain supported. The G6 scripted-model demonstration checks actual information
+handoff and composed lemma use with real Lean. A capped local qwen2.5-coder:7b
+observation completed but produced no structured graph proposals and a rejected
+target proof; real-model collaboration effectiveness and efficiency remain
+unmeasured. See [the G6 record](docs/graph-demonstration.md). Public untrusted
+contributors still require the separate trusted-checker gate: malicious tactic
+IO can forge candidate-writable in-process completion/use receipts.
 
 ## Engineering Guidelines
 

@@ -20,13 +20,21 @@ loop now persists distinct logical agents, bounded tasks and findings across
 jobs, routes work by configured model capabilities, reviews and redirects
 findings, and checks proposed artifacts and synthesized target proofs with Lean.
 The independent/repair run path remains supported; its chains are not agents.
-The deterministic two-worker collaboration test uses scripted model responses
-and real Lean, not real-model efficiency evidence. See the
+G1–G6 are implemented locally: immutable claims and attributable proposals,
+replayable composed proofs, frozen relevant context packets and an opt-in bounded
+graph frontier (`mode: "graph"`). The fixed group mode remains the default.
+The current [G6 demonstration](docs/graph-demonstration.md) uses scripted model
+responses, separate worker processes and real Lean. It checks actual challenge
+handoff and A → B → target proof use against frozen dependency manifests and
+elaborated-expression receipts; these are local execution records, not public
+trusted-checker attestations. A capped local `qwen2.5-coder:7b` observation
+completed with no structured graph proposals and a Lean-rejected target proof.
+Real-model collaboration effectiveness and efficiency remain unmeasured. See the
 [collaboration direction](docs/collaboration-direction.md) and
 [terminology glossary](docs/ticket-18-terminology.md); the
 [group-loop guide](docs/group-loop.md) and
 [A6 integration guide](integration/README.md#A6-collaborating-agents--two-workers--pinned-lean)
-describe the local demonstration and optional live-model operator run.
+describe the retained fixed-mode A6 demonstration and its optional operator run.
 
 ### Run it locally
 

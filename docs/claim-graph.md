@@ -1,11 +1,15 @@
-# Coordinator claim graph (G1–G2)
+# Coordinator claim graph (G1–G2; integrated through G6)
 
 The SQLite claim graph is separate from the work graph. Task `parent_id` still
 means work parentage; a task's additive `claim_tasks` record identifies its focused
 claim and action. Worker assignments still belong to jobs and do not identify
 logical agents. The coordinator persists and inspects knowledge and ingests
-explicit graph JSON from completed model responses. The fixed group-loop
-scheduling policy remains A1–A6.
+explicit graph JSON from completed model responses. G1–G6 are implemented
+locally. The fixed A1–A6 group loop remains the default; opt-in
+[graph mode](graph-frontier.md) uses frozen packets and bounded frontier decisions.
+The [G6 demonstration](graph-demonstration.md) checks actual handoff and composed
+proof use with scripted models and real Lean, and records the unsuccessful
+capped local-model observation without claiming measured collaboration gains.
 
 ## Immutable claims and sources
 
@@ -42,7 +46,7 @@ retains the same source information and a bounded reason:
 
 All links require distinct, same-group nodes with identical imports/environment.
 Reciprocal links and suggestion cycles are allowed. No suggestion creates the
-acyclic proof-use manifest planned for G3.
+acyclic proof-use manifest implemented in [G3](ticket-g3-composed-proofs.md).
 
 `review_group_relationship(group_id, request_key, relationship_id, reviewer_id,
 status, reason)` appends an attributable `promising`, `challenged`, or `abandoned`
@@ -113,7 +117,8 @@ editing statement text. Review omission counts include reviews of every
 relationship within the selected nodes, even when that relationship is excluded
 by the edge row cap. Returned reviews reference returned edges; their count and
 fetch use bounded batched joins. Extremely small byte budgets fail if metadata cannot fit.
-This is inspection data, not a frozen/ranked worker context packet (G4).
+This is inspection data; [G4](ticket-g4-context-packets.md) builds separate
+frozen/ranked worker context packets.
 
 Schema 19 gives preexisting groups an empty graph/revision zero and **no root or
 historical links**. Their v1 and fixed-loop data still load normally. Explicit
@@ -181,7 +186,8 @@ An oversized typed response fails the existing worker/coordinator formatting
 boundary. The outer result request double-encodes this JSON string and includes
 usage/generation fields; its existing 2 MiB transport limit remains in force.
 These are response limits, not G4 ranked/frozen context packets: existing group
-prompt/context admission and worker message limits remain in force.
+prompt/context admission and worker message limits remain in force alongside
+G4 complete-prompt admission.
 
 Every claim publication, relationship, review, finding and formal proposal uses
 the job's actual agent/task and successful completed assignment. Model-supplied
@@ -210,8 +216,9 @@ G2 supplies proposals and reviews to the coordinator; it does not autonomously
 redirect tasks or schedule a graph frontier. A coordinator can create a new
 focused task after a challenge through the existing task method; the fixed loop
 continues to apply its existing `decisions`-based redirect. Graph relationships
-do not compose Lean declarations or prove dependencies (G3), rank/freeze worker
-packets (G4), or replace scheduling (G5).
+do not themselves compose Lean declarations or prove dependencies. Those
+operations are implemented separately in [G3](ticket-g3-composed-proofs.md),
+[G4 packets](ticket-g4-context-packets.md), and [G5 scheduling](graph-frontier.md).
 
 The opt-in [G5 frontier policy](graph-frontier.md) now consumes this graph and
 adds bounded attributed priorities/help requests. The fixed loop remains the default.

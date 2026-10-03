@@ -1,5 +1,23 @@
 # G6: graph-driven composed proof and local observation
 
+G1–G6 are implemented locally in sequence: G1 `e0aaa6f`, G2 `906fa68`,
+G3 `833969a`, G4 `9ea32a0`, G5 `e935aea`, G6 `e3ae833`. Combined review
+fix `fbcadb8` delivers the actual triggering relationship/review/reason in
+investigator and critic packets, retains fixed-mode information handoff, and
+makes rejected/timed-out target verdicts durable bounded replanning events with
+diagnostic context. The fixed mode remains the default and independent/repair v1
+remain supported. The implementation sequence has focused build/review/check
+coverage for graph persistence/ingestion, pinned-Lean composition, packet
+admission/retry, frontier bounds and process-level integration; the fixes have
+regression assertions for handoff and target rejection/replanning.
+
+These manifests and elaborated proof-use receipts establish composition under
+the local execution assumption. Malicious tactic IO can forge candidate-writable
+receipts in the same Lean process; they do not make the verifier secure for
+public untrusted contributors. The [separate trusted-checker gate](ticket-g3-composed-proofs.md#local-execution-trust-boundary)
+remains open. A6 is the retained fixed-mode demonstration; G6 is the current
+graph-driven demonstration.
+
 Run from the repository root with Go and the pinned Lean 4.19.0 toolchain:
 
 ```sh
@@ -170,3 +188,9 @@ explicit “no decomposition” response, measuring ingestion acceptance separat
 from theorem success before increasing planning budgets. No G5 scheduling change
 is justified by this single observation. The scripted arithmetic fixture validates
 composition and coordination mechanics; it does not establish real-model gains.
+
+The next local work is to refine real-model structured collaboration from these
+small observations: separate schema acceptance, useful sharing/decomposition,
+checked lemma handoff, target success and total cost. Keep unknown usage explicit
+and compare observed paths before increasing budgets or adding infrastructure.
+Real-model collaboration effectiveness and efficiency remain unmeasured.
