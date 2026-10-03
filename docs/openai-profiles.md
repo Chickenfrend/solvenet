@@ -35,6 +35,12 @@ Run from `worker/` with the existing worker-local `OPENAI_API_KEY` or
 `OPENAI_API_KEY_FILE` configuration. Starting a worker serves coordinator jobs
 and can make billable calls; automated tests use only fake loopback providers.
 
+For external key-file setup, native/Compose launch and rotation, and the explicit
+`-openai-check` / `-openai-check-paid` workflow, see
+[operator setup](homelab-docker.md#optional-openai-hosted-worker). Startup and
+public health reporting perform no OpenAI requests and report unobserved until
+a structured generation succeeds. A standalone check does not persist readiness.
+
 ## Capacity and routing
 
 Profiles do not imply equal model capacity. Configure `-openai-context` (tokens),

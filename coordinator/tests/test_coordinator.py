@@ -1140,6 +1140,73 @@ class APITests(unittest.TestCase):
             thread.join()
             server.server_close()
 
+    @unittest.skipUnless(shutil.which('go'), 'Go required')
+    def test_compiled_openai_health_revocation_restart_and_no_credential_storage(self):
+        calls = []
+        class Provider(BaseHTTPRequestHandler):
+            def do_POST(handler):
+                handler.rfile.read(int(handler.headers['Content-Length']))
+                valid = handler.headers['Authorization'] == 'Bearer mock-corrected-key'
+                calls.append(valid)
+                body = (b'{"choices":[{"finish_reason":"stop","message":{"content":"{\\"proof\\":\\"rfl\\"}"}}]}'
+                        if valid else b'{"error":{"message":"mock-revoked\\u002dkey"}}')
+                handler.send_response(200 if valid else 401)
+                handler.send_header('Content-Length', str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            binary = Path(self.temp.name) / 'worker'
+            subprocess.run(['go', 'build', '-o', str(binary), './cmd/solvenet-worker'],
+                           cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True)
+            key_path = Path(self.temp.name) / 'mock-key'
+            key_path.write_text('mock-revoked-key\n')
+            key_path.chmod(0o600)
+            env = {**os.environ, 'OPENAI_API_KEY': '', 'OPENAI_API_KEY_FILE': str(key_path)}
+            command = [str(binary), '-coordinator', self.url, '-provider', 'openai',
+                       '-model', 'gpt-4o-mini', '-openai-url', f'http://127.0.0.1:{server.server_port}']
+            checked = subprocess.run(command + ['-openai-check'], env=env, check=True,
+                                     capture_output=True, text=True, timeout=10)
+            self.assertEqual(json.loads(checked.stdout), {'status': 'unobserved'})
+            subprocess.run(command + ['-once'], env=env, check=True, capture_output=True, timeout=10)
+            activity_url = '/v1/model-activity?model=openai%2Fgpt-4o-mini'
+            self.assertNotIn('ready', self.request(activity_url)[1]['items'][0])
+            self.assertEqual(calls, [])
+            self.coordinator.verifier = FakeVerifier()
+            _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1,
+                                               'model': 'openai/gpt-4o-mini', 'max_output_tokens': 64})
+            revoked = subprocess.run(command, env=env, check=True, capture_output=True,
+                                     text=True, timeout=10)
+            self.assertEqual(calls, [False])
+            activity = self.request(activity_url)[1]['items'][0]
+            self.assertEqual(activity['reason'], 'OpenAI credential rejected')
+            key_path.write_text('mock-corrected-key\n')
+            self.request('/v1/runs', {'statement': ': True', 'attempts': 1,
+                                     'model': 'openai/gpt-4o-mini', 'max_output_tokens': 64})
+            worker = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                for _ in range(100):
+                    if self.request(activity_url)[1]['items'][0].get('ready') is True:
+                        break
+                    threading.Event().wait(.05)
+                else:
+                    self.fail('corrected worker never became ready')
+            finally:
+                worker.terminate()
+                stdout, stderr = worker.communicate(timeout=10)
+            self.assertEqual(calls, [False, True])
+            public = json.dumps(self.request('/v1/runs/' + run['run_id'])[1])
+            for key in ('mock-revoked-key', 'mock-corrected-key', 'mock-revoked\\u002dkey'):
+                self.assertNotIn(key, public + revoked.stdout + revoked.stderr)
+                self.assertNotIn(key.encode(), stdout + stderr)
+                self.assertNotIn(key.encode(), (Path(self.temp.name) / 'state.db').read_bytes())
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
     @unittest.skipUnless(shutil.which('go') and shutil.which('lake'), 'Go and Lake required')
     def test_go_ollama_repairs_with_real_lean_feedback(self):
         self.coordinator.verifier = LeanVerifier(ROOT / 'lean')

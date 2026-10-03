@@ -326,6 +326,10 @@ class SiteTests(unittest.TestCase):
         self.assertIn('Provider unavailable — Ollama service unreachable', self.page())
         stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'idle'}
         self.assertIn('Idle — provider health unobserved', self.page())
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'unavailable', 'reason': 'OpenAI credential rejected'}
+        self.assertIn('Provider unavailable — OpenAI credential rejected', self.page())
+        stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'offline'}
+        self.assertIn('Offline/stale — worker signal is stale', self.page())
         stub.activity['ollama/a'] = {'model': 'ollama/a', 'status': 'working',
                                       'job_id': '<job>', 'run_id': 'a' * 32}
         self.assertIn('Working on job &lt;job&gt;', self.page())

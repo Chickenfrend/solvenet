@@ -109,6 +109,11 @@ services:
       - -coordinator=http://coordinator:8080
       - -provider=openai
       - -model=${OPENAI_MODEL:-gpt-4o-mini}
+      - -openai-profile=${OPENAI_PROFILE:-chat-json}
+      - -openai-context=${OPENAI_CONTEXT:-32768}
+      - -openai-context-bytes=${OPENAI_CONTEXT_BYTES:-32768}
+      - -openai-max-output=${OPENAI_MAX_OUTPUT:-16384}
+      - -openai-reasoning-effort=${OPENAI_REASONING_EFFORT:-}
       - -id=homelab-openai
     environment:
       OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
@@ -143,7 +148,7 @@ volumes:
 
 secrets:
   openai_api_key:
-    file: ${OPENAI_KEY_FILE:-./secrets/openai_api_key}
+    file: ${OPENAI_KEY_FILE:-/var/lib/solvenet/secrets/openai_api_key}
 
 networks:
   frontend:

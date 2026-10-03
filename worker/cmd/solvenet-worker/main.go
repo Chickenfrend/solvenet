@@ -22,18 +22,20 @@ import (
 )
 
 type config struct {
-	coordinatorURL string
-	id             string
-	providerName   string
-	model          string
-	ollamaURL      string
-	ollamaContext  int
-	progressURL    string
-	openaiURL      string
-	openaiConfig   provider.OpenAIConfig
-	proof          string
-	delay          time.Duration
-	once           bool
+	coordinatorURL  string
+	id              string
+	providerName    string
+	model           string
+	ollamaURL       string
+	ollamaContext   int
+	progressURL     string
+	openaiURL       string
+	openaiConfig    provider.OpenAIConfig
+	proof           string
+	delay           time.Duration
+	once            bool
+	openaiCheck     bool
+	openaiCheckPaid bool
 }
 
 func parseConfig(args []string, output io.Writer) (config, error) {
@@ -56,11 +58,19 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	flags.StringVar(&cfg.proof, "proof", "rfl", "scripted proof body")
 	flags.DurationVar(&cfg.delay, "delay", 0, "scripted execution delay")
 	flags.BoolVar(&cfg.once, "once", false, "claim at most one job, then exit")
+	flags.BoolVar(&cfg.openaiCheck, "openai-check", false, "print worker-local public configuration health and exit (no API call)")
+	flags.BoolVar(&cfg.openaiCheckPaid, "openai-check-paid", false, "with -openai-check, authorize ONE paid generation compatibility call (60s; chat 256 / Responses 1024 output tokens including reasoning)")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
 	if flags.NArg() != 0 {
 		return cfg, fmt.Errorf("unexpected positional arguments: %v", flags.Args())
+	}
+	if (cfg.openaiCheck || cfg.openaiCheckPaid) && cfg.providerName != "openai" {
+		return cfg, fmt.Errorf("OpenAI checks require -provider openai")
+	}
+	if cfg.openaiCheckPaid && !cfg.openaiCheck {
+		return cfg, fmt.Errorf("-openai-check-paid requires -openai-check")
 	}
 	if cfg.ollamaContext <= 0 || cfg.ollamaContext > provider.MaxOllamaContext {
 		return cfg, fmt.Errorf("ollama-context must be between 1 and %d tokens", provider.MaxOllamaContext)
@@ -114,9 +124,31 @@ func makeExecutor(cfg config) (daemon.Executor, string, error) {
 	return executor, requestedModel, nil
 }
 
+// Detect explicit check intent before flag parsing: the parser can stop at an
+// earlier invalid flag and its diagnostics can echo arbitrary argument values.
+func requestsOpenAICheck(args []string) bool {
+	for _, arg := range args {
+		for _, name := range []string{"-openai-check", "--openai-check"} {
+			if arg == name || (strings.HasPrefix(arg, name+"=") && arg != name+"=false") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func main() {
-	cfg, err := parseConfig(os.Args[1:], os.Stderr)
+	checkRequested := requestsOpenAICheck(os.Args[1:])
+	var diagnostics io.Writer = os.Stderr
+	if checkRequested {
+		diagnostics = io.Discard
+	}
+	cfg, err := parseConfig(os.Args[1:], diagnostics)
 	if err != nil {
+		if checkRequested {
+			_ = json.NewEncoder(os.Stdout).Encode(daemon.Health{Status: "unavailable", Reason: "OpenAI configuration unsupported"})
+			os.Exit(1)
+		}
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
@@ -126,7 +158,23 @@ func main() {
 	defer stop()
 	executor, requestedModel, err := makeExecutor(cfg)
 	if err != nil {
+		if cfg.openaiCheck {
+			reason := "OpenAI configuration unsupported"
+			if strings.Contains(err.Error(), "credential") {
+				reason = "OpenAI credential missing or invalid"
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(daemon.Health{Status: "unavailable", Reason: reason})
+			os.Exit(1)
+		}
 		log.Fatal(err)
+	}
+	if cfg.openaiCheck {
+		health := executor.(*provider.OpenAI).Check(ctx, cfg.openaiCheckPaid)
+		_ = json.NewEncoder(os.Stdout).Encode(health)
+		if health.Status == "unavailable" {
+			os.Exit(1)
+		}
+		return
 	}
 	if cfg.id == "local-scripted-worker" && cfg.providerName != "scripted" {
 		cfg.id = "local-" + cfg.providerName + "-worker"
@@ -177,6 +225,9 @@ func main() {
 			log.Print("submitted result")
 		}
 		if openai, ok := executor.(*provider.OpenAI); ok && openai.AuthFailed() {
+			// Publish only the fixed unavailable health before stopping. The
+			// coordinator cannot assign work to an unavailable worker.
+			_, _ = w.Once(ctx)
 			log.Print("OpenAI credential rejected; stopping worker until credentials are corrected")
 			return
 		}

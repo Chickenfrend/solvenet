@@ -97,7 +97,7 @@ func (o *OpenAI) extractResponse(data []byte, job daemon.Job, execution daemon.E
 		}
 	}
 	redact := func(s string) string { return strings.ReplaceAll(s, o.Key, "[redacted]") }
-	execution.Generation.Model, execution.Generation.FinishReason = redact(reply.Model), redact(reply.Status)
+	execution.Generation.Model, execution.Generation.FinishReason = redactRawString(reply.Model, o.Key, 0), redactRawString(reply.Status, o.Key, 0)
 	if len(execution.Generation.Model) > daemon.MaxModelBytes || len(execution.Generation.FinishReason) > daemon.MaxFinishReasonBytes {
 		execution.Generation.Model, execution.Generation.FinishReason = "", ""
 		return fail("response metadata exceeded size limit")
@@ -110,7 +110,11 @@ func (o *OpenAI) extractResponse(data []byte, job daemon.Job, execution daemon.E
 		}
 		if len(reply.Error) <= 8192 && json.Unmarshal(reply.Error, &bodyError) == nil {
 			if bodyError.Code == "rate_limit_exceeded" || bodyError.Code == "server_error" {
-				return execution, daemon.Categorize(daemon.Transient(fmt.Errorf("OpenAI response failed with a retryable provider error")), daemon.ProviderFailure)
+				reason := "OpenAI service unavailable"
+				if bodyError.Code == "rate_limit_exceeded" {
+					reason = "OpenAI rate limited"
+				}
+				return execution, daemon.Categorize(withOpenAIHealth(daemon.Transient(fmt.Errorf("OpenAI response failed with a retryable provider error")), reason), daemon.ProviderFailure)
 			}
 		}
 		return fail("response failed with a provider error")

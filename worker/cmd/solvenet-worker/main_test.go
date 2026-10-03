@@ -2,13 +2,54 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"solvenet/worker/internal/provider"
 )
+
+func TestCheckModeParseFailuresAreSanitizedJSON(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "worker")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v: %s", err, output)
+	}
+	for _, args := range [][]string{
+		{"--openai-check", "-provider=openai", "-openai-max-output=0"},
+		{"-provider=openai", "-openai-context=0", "--openai-check"},
+		{"-openai-context=mock-secret-key", "--openai-check"},
+		{"--mock-secret-key", "--openai-check"},
+		{"--openai-check", "mock-secret-key"},
+	} {
+		cmd := exec.Command(binary, args...)
+		cmd.Env = append(os.Environ(), "OPENAI_API_KEY=", "OPENAI_API_KEY_FILE=")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+			t.Fatalf("exit: %v", err)
+		}
+		var health map[string]string
+		if err := json.Unmarshal(stdout.Bytes(), &health); err != nil {
+			t.Fatal(err)
+		}
+		if health["status"] != "unavailable" || health["reason"] != "OpenAI configuration unsupported" || len(health) != 2 {
+			t.Fatal(health)
+		}
+		if stderr.Len() != 0 || strings.Contains(stdout.String(), "mock-secret-key") {
+			t.Fatal("unsafe parse diagnostics")
+		}
+	}
+	// Ordinary CLI help and validation continue using the existing diagnostics.
+	cmd := exec.Command(binary, "-ollama-context=0")
+	if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "ollama-context must") {
+		t.Fatal("normal CLI diagnostics changed")
+	}
+}
 
 func TestOllamaContextFlag(t *testing.T) {
 	for _, test := range []struct {
@@ -33,6 +74,21 @@ func TestOllamaContextFlag(t *testing.T) {
 				t.Fatalf("context=%d want=%d", ollama.ContextSize, test.want)
 			}
 		})
+	}
+}
+
+func TestOpenAICheckFlagsRequireExplicitOptIn(t *testing.T) {
+	for _, args := range [][]string{
+		{"-openai-check"},
+		{"-provider", "openai", "-openai-check-paid"},
+	} {
+		if _, err := parseConfig(args, &bytes.Buffer{}); err == nil {
+			t.Fatal("accepted invalid check flags")
+		}
+	}
+	cfg, err := parseConfig([]string{"-provider", "openai", "-model", "gpt-4o-mini", "-openai-check"}, &bytes.Buffer{})
+	if err != nil || !cfg.openaiCheck || cfg.openaiCheckPaid {
+		t.Fatal(cfg, err)
 	}
 }
 

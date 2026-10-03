@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,8 @@ type OpenAI struct {
 	Client          *http.Client
 	Config          OpenAIConfig
 	authFailed      atomic.Bool
+	healthMu        sync.Mutex
+	health          daemon.Health
 }
 
 func (o *OpenAI) AuthFailed() bool { return o.authFailed.Load() }
@@ -55,6 +58,10 @@ func NewOpenAIWithConfig(baseURL, model, key string, config OpenAIConfig) (*Open
 }
 
 func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Execution, resultErr error) {
+	defer func() { o.observe(resultErr) }()
+	if o.AuthFailed() {
+		return daemon.Execution{}, daemon.Categorize(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI HTTP 401 (credential rejected; restart required)")), "OpenAI credential rejected"), daemon.ProviderFailure)
+	}
 	generation := rawGeneration("")
 	generation.MaxOutputTokens = job.MaxOutputTokens
 	generation.Temperature, generation.Seed = job.GenerationSettings.Temperature, job.GenerationSettings.Seed
@@ -136,7 +143,7 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 		if ctx.Err() != nil {
 			return fail(ctx.Err())
 		}
-		return fail(daemon.Transient(fmt.Errorf("OpenAI request failed (check network and service)")))
+		return fail(withOpenAIHealth(daemon.Transient(fmt.Errorf("OpenAI request failed (check network and service)")), "OpenAI network unavailable"))
 	}
 	defer response.Body.Close()
 	// Never forward provider error bodies: they may contain account or credential details.
@@ -153,21 +160,21 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 				} `json:"error"`
 			}
 			if len(data) <= 8192 && json.Unmarshal(data, &failure) == nil && failure.Error.Code == "model_not_found" {
-				return fail(daemon.Permanent(fmt.Errorf("OpenAI unsupported or inaccessible model (HTTP %d)", response.StatusCode)))
+				return fail(withOpenAIHealth(daemon.Permanent(fmt.Errorf("OpenAI unsupported or inaccessible model (HTTP %d)", response.StatusCode)), "OpenAI model unavailable"))
 			}
 		}
 		err := fmt.Errorf("OpenAI HTTP %d (check worker credential, model and provider availability)", response.StatusCode)
 		if response.StatusCode == 408 || response.StatusCode == 429 || response.StatusCode >= 500 {
-			return fail(daemon.Transient(err))
+			return fail(withOpenAIHealth(daemon.Transient(err), openAIHTTPHealth(response.StatusCode).Reason))
 		}
-		return fail(daemon.Permanent(err))
+		return fail(withOpenAIHealth(daemon.Permanent(err), openAIHTTPHealth(response.StatusCode).Reason))
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxOpenAIResponse+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return fail(ctx.Err())
 		}
-		return fail(daemon.Transient(fmt.Errorf("reading OpenAI response failed")))
+		return fail(withOpenAIHealth(daemon.Transient(fmt.Errorf("reading OpenAI response failed")), "OpenAI network unavailable"))
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err)
@@ -208,7 +215,7 @@ func (o *OpenAI) Execute(ctx context.Context, job daemon.Job) (result daemon.Exe
 	// A faulty or compromised upstream must not echo the local credential into
 	// coordinator-visible generation metadata or raw model output.
 	redact := func(value string) string { return strings.ReplaceAll(value, o.Key, "[redacted]") }
-	generation.Model, generation.FinishReason = redact(reply.Model), redact(choice.FinishReason)
+	generation.Model, generation.FinishReason = redactRawString(reply.Model, o.Key, 0), redactRawString(choice.FinishReason, o.Key, 0)
 	if len(generation.Model) > daemon.MaxModelBytes || len(generation.FinishReason) > daemon.MaxFinishReasonBytes {
 		generation.Model, generation.FinishReason = "", ""
 		return fail(daemon.Permanent(fmt.Errorf("OpenAI response metadata exceeded size limit")))

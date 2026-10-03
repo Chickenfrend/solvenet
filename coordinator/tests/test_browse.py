@@ -307,6 +307,33 @@ class BrowseTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'idle'])
         self.assertEqual(self.get('/v1/model-activity?model=ollama%2Fa&model=ollama%2Fa')[0], 400)
 
+    def test_openai_public_health_unobserved_checked_ready_and_unavailable(self):
+        def claim(health):
+            payload = {'worker_id': 'mock-openai', 'models': ['openai/mock-model'],
+                       'capabilities': ['model_respond'], 'provider_health': health}
+            with urlopen(Request(self.url + '/v1/claim', json.dumps(payload).encode(),
+                                 {'Content-Type': 'application/json'})) as response:
+                return response.status
+        def activity():
+            return self.get('/v1/model-activity?model=openai%2Fmock-model')[1]['items'][0]
+        self.assertEqual(claim({'status': 'unobserved'}), 204)
+        self.assertEqual(activity()['status'], 'idle')
+        self.assertNotIn('ready', activity())
+        self.assertEqual(claim({'status': 'ready'}), 204)
+        self.assertTrue(activity()['ready'])
+        for reason in ('OpenAI credential rejected', 'OpenAI model unavailable',
+                       'OpenAI profile or model access unsupported', 'OpenAI rate limited',
+                       'OpenAI service unavailable', 'OpenAI network unavailable',
+                       'OpenAI deadline exceeded', 'OpenAI compatibility check inconclusive'):
+            self.assertEqual(claim({'status': 'unavailable', 'reason': reason}), 204)
+            self.assertEqual(activity()['reason'], reason)
+        with self.assertRaises(HTTPError) as caught:
+            claim({'status': 'unavailable', 'reason': 'mock-secret-key'})
+        self.assertEqual(caught.exception.code, 400)
+        self.assertNotIn('mock-secret-key', caught.exception.read().decode())
+        caught.exception.close()
+        self.assertNotIn('mock-secret-key', json.dumps(activity()))
+
     def test_provider_health_prevents_claim_and_recovers_with_legacy_worker(self):
         self.store.submit(': True', ['Init'], model='ollama/test', attempts=1)
         def claim(worker, health=None):

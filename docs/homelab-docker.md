@@ -76,12 +76,49 @@ Outside Compose, use the same token in both processes and pass the worker
 
 ### Optional OpenAI hosted worker
 
-The `hosted` Compose profile starts a second worker for OpenAI Chat Completions.
+The `hosted` Compose profile starts a second worker for OpenAI API access.
 It has outbound HTTPS via the frontend network, no Docker socket and no
 published port. Create a key file outside the repository, readable by container
 UID 65532 (Compose mounts it read-only), and set `OPENAI_KEY_FILE` to its
-absolute path in `.env`. Restrict access to that file on the host. Set
-`OPENAI_MODEL=gpt-4o-mini` (the only model supported by this first adapter), then run:
+absolute path in `.env` (the path only, never the key). For example, create the
+external directory and enter the key with hidden terminal input (from the
+repository root):
+
+```sh
+sudo install -d -m 0700 /var/lib/solvenet/secrets
+sudo python3 worker/setup_openai_key.py /var/lib/solvenet/secrets/openai_api_key
+sudo chown 65532:65532 /var/lib/solvenet/secrets/openai_api_key
+sudo chmod 0400 /var/lib/solvenet/secrets/openai_api_key
+```
+
+Compose's file-backed secret uses a read-only bind mount, so the host ownership
+and mode must allow UID 65532 to read it; secret UID/mode declarations do not
+change that host file. The worker sees `/run/secrets/openai_api_key`. No other
+service mounts it. The helper prompts without terminal echo, refuses an echoing
+fallback, creates an exclusive mode-0600 file and removes a partial file on
+write failure or Ctrl-C/SIGTERM. It never overwrites an existing file. Keep the
+key out of shell arguments/history; the only argument is the external path.
+For rotation, stop the worker and remove the old external file before rerunning
+the helper, then reapply the Compose ownership/mode commands above. Configure
+these **non-secret** settings in `.env`:
+
+```sh
+OPENAI_KEY_FILE=/var/lib/solvenet/secrets/openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_PROFILE=chat-json
+OPENAI_CONTEXT=32768
+OPENAI_CONTEXT_BYTES=32768
+OPENAI_MAX_OUTPUT=16384
+# For responses-reasoning only: omitted, low, medium or high.
+OPENAI_REASONING_EFFORT=
+```
+
+Model IDs are configurable: select the API contract explicitly for unfamiliar
+models. `chat-json` uses Chat Completions JSON mode and supports temperature/seed;
+`responses-reasoning` uses Responses strict JSON schema and **does not** support
+those sampling settings. Reasoning effort is separate from sampling. Capacities
+are operator-supplied limits, not claims about model quality or pricing. See
+[worker API profiles](openai-profiles.md). Then run:
 
 ```sh
 docker compose --profile hosted up -d site worker hosted-worker
@@ -101,8 +138,77 @@ a permanent worker provider failure (`OpenAI HTTP 401`) without forwarding the
 provider error body. On HTTP 401/403 it stops advertising the model until the
 key is corrected and the worker is restarted; the card becomes Offline after
 its last worker signal ages out. Compose deliberately does not restart the
-hosted worker automatically; restart it explicitly after fixing the key (or
-after an unexpected process exit) with `docker compose --profile hosted up -d hosted-worker`.
+hosted worker automatically. For rotation, stop it first, replace the external
+file and restore its ownership/mode, then recreate to refresh the mounted file
+and current model/profile settings:
+
+```sh
+docker compose stop hosted-worker
+# Rotate the external key file, or change the non-secret settings in .env.
+docker compose --profile hosted up -d --force-recreate hosted-worker
+```
+
+A live worker initially reports **unobserved**, not ready. Startup and health
+claims never call OpenAI. The existing routing policy permits an unobserved
+worker to accept explicitly scheduled jobs; successful structured generation
+changes health to ready on the next claim. Failures mark it unavailable (with a
+fixed public reason); restart after correcting credentials/configuration or
+temporary network/rate/service problems. 401/403 publishes unavailable and
+stops immediately, with no repeated paid calls. Stopped/stale cards become
+Offline; changing a card does not change worker credentials or configuration.
+
+#### Explicit worker-local checks
+
+For native setup, build from the worker directory and create the external file
+as the worker user (directory 0700, file 0600):
+
+```sh
+# Run from the repository root; ensure $HOME/.local/bin is on PATH.
+mkdir -p "$HOME/.local/bin"
+(cd worker && go build -o "$HOME/.local/bin/solvenet-worker" ./cmd/solvenet-worker)
+mkdir -p "$HOME/.config/solvenet"
+chmod 0700 "$HOME/.config/solvenet"
+python3 worker/setup_openai_key.py "$HOME/.config/solvenet/openai_api_key"
+```
+
+Export only its path:
+
+```sh
+export OPENAI_API_KEY_FILE="$HOME/.config/solvenet/openai_api_key"
+solvenet-worker -provider openai -model gpt-4o-mini -openai-profile chat-json -openai-check
+solvenet-worker -provider openai -model gpt-4o-mini -openai-profile chat-json -coordinator http://127.0.0.1:8080
+```
+
+The first command exits after validating local configuration: `unobserved`
+means configured, with API access and generation compatibility **not checked**.
+Missing/invalid credentials or configuration (including invalid CLI capacities)
+return fixed unavailable health JSON and exit 1. Check-mode parse errors never
+echo argument values into stderr.
+For manual runs, `OPENAI_API_KEY` is also supported: obtain it with an interactive
+hidden read (`read -rs OPENAI_API_KEY; export OPENAI_API_KEY`), unset
+`OPENAI_API_KEY_FILE`, and unset the key after use. Never put its value in command
+arguments, a `.env` file, URLs, site/database settings or logs. Native rotation
+requires stopping the process and starting it again; keys are read once.
+
+Only the following explicit flag authorizes a **paid** check (one call, no
+retries; no coordinator jobs or storage):
+
+```sh
+solvenet-worker -provider openai -model gpt-4o-mini -openai-profile chat-json -openai-check -openai-check-paid
+# Compose: use the same model/profile/capacity flags as hosted-worker.
+docker compose --profile hosted run --rm --no-deps hosted-worker -provider=openai -model=gpt-4o-mini -openai-profile=chat-json -openai-check -openai-check-paid
+```
+
+The generation check has a 60-second deadline and output cap of 256 tokens for
+Chat or 1024 for Responses, further limited by configured output capacity.
+Responses' cap includes hidden reasoning; truncation/incomplete/refusal/malformed
+output is **inconclusive**, never ready. A successful check says only that one
+structured `model.respond` call worked, not that proofs or collaboration work.
+No metadata-only probe is used: metadata access would not establish generation
+compatibility. Check results are printed as fixed public health JSON; standalone
+checks do not persist readiness or transfer credentials to the coordinator/site.
+Actual worker job outcomes supply subsequent public health. API-key access is
+separate from ChatGPT subscriptions and SolveNet user login.
 
 The worker sends theorem/imports and strategy/repair messages with JSON proof
 instructions, maps `max_output_tokens` to Chat Completions `max_tokens`, and
