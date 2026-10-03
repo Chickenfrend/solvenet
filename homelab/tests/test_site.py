@@ -546,7 +546,8 @@ class SiteTests(unittest.TestCase):
         stub.run_detail['status'] = 'exhausted'
         stub.run_detail['jobs'] = [{'id': 'd' * 32, 'status': 'failed', 'repair_depth': 0}]
         stub.run_detail['assignments'] = [{'id': 'e' * 32, 'job_id': 'd' * 32,
-                                           'status': 'failed', 'error': '<failure>', 'usage': {}}]
+                                           'status': 'completed', 'failure_class': 'permanent',
+                                           'error': '<failure>', 'usage': {}}]
         with urlopen(self.site_url + path + '/status') as response:
             fragment = response.read().decode()
         self.assertIn('Run status: exhausted', fragment)
@@ -573,7 +574,7 @@ class SiteTests(unittest.TestCase):
         self.settings.add_model('ollama', 'Local prover', 'ollama', 'On this device')
         stub.run_detail.update(status='exhausted',
             jobs=[{'id': f'{i:032x}', 'model': 'ollama', 'status': 'failed'} for i in range(9)],
-            assignments=[{'id': f'{i+100:032x}', 'job_id': f'{i:032x}', 'status': 'failed',
+            assignments=[{'id': f'{i+100:032x}', 'job_id': f'{i:032x}', 'status': 'completed',
                           'error': 'dial tcp: connection refused <offline>',
                           'failure_class': 'transient', 'usage': {},
                           'generation': {'raw_response': ''}} for i in range(9)])
@@ -583,7 +584,7 @@ class SiteTests(unittest.TestCase):
         self.assertIn('Outcome: zero candidates; provider unreachable', html)
         self.assertIn('9 failed leased assignment(s); no proof reached Lean', html)
         self.assertNotIn('candidate(s) rejected by Lean', html)
-        self.assertEqual(html.count('Leased work → failed'), 9)
+        self.assertEqual(html.count('Leased work → completed'), 9)
         self.assertEqual(html.count('Lease details, raw output and usage'), 9)
         self.assertIn('connection refused &lt;offline&gt;', html)
         self.assertNotIn('<offline>', html)

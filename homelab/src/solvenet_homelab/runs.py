@@ -70,7 +70,9 @@ def outcome(run):
         return ('<h2>Outcome: Verification pending</h2><p>A generated candidate is awaiting Lean.</p>'
                 if attempts else '<h2>Outcome: Awaiting candidates</h2><p>Waiting for model output.</p>')
     leases = run['assignments']
-    failures = [lease for lease in leases if lease.get('status') == 'failed']
+    # Lease completion is separate from execution success. Store.run exposes a
+    # failure class only for reported failed results, including legacy failures.
+    failures = [lease for lease in leases if lease.get('failure_class') is not None]
     if failures:
         reasons = Counter(str(lease['error']).strip() for lease in failures if lease.get('error'))
         reason, count = reasons.most_common(1)[0] if reasons else ('Unknown provider failure', 0)
