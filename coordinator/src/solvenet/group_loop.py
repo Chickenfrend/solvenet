@@ -6,11 +6,14 @@ completed jobs advance the group. Text from models is untrusted strategy context
 """
 
 import json
+import logging
 import math
 
 from .group_state import _conflict, _key, _require_group, _text
 from .group_artifacts import artifact_from_finding, insert_artifact
 from .group_routing import validate_routing, choose
+
+LOG = logging.getLogger(__name__)
 
 
 MIGRATION_15 = """
@@ -159,8 +162,35 @@ class GroupLoop:
         with self.connect() as db:
             ids = [r[0] for r in db.execute("SELECT group_id FROM group_loops WHERE phase!='stopped'")]
         changed = False
+        errors = getattr(self, '_group_transition_errors', {})
+        self._group_transition_errors = errors
+        for group_id in list(errors):
+            if group_id not in ids:
+                del errors[group_id]
+        overflow_count = 0
+        overflow_sample = None
         for group_id in ids:
-            changed = self.advance_group(group_id) or changed
+            try:
+                changed = self.advance_group(group_id) or changed
+            except (ValueError, TypeError, KeyError, IndexError, RuntimeError) as error:
+                # Each transition's transaction has rolled back. Isolate local
+                # state/response errors; database, OS and resource errors escape.
+                detail = (type(error).__name__, _excerpt(str(error), 512))
+                if group_id not in errors and len(errors) >= 128:
+                    overflow_count += 1
+                    if overflow_sample is None:
+                        overflow_sample = (group_id, *detail)
+                    continue
+                if errors.get(group_id) != detail:
+                    LOG.error('Group %s transition failed (%s): %s', group_id, *detail)
+                errors[group_id] = detail
+            else:
+                errors.pop(group_id, None)
+        if overflow_count and not getattr(self, '_group_transition_overflow', False):
+            LOG.error('Group transition error cache full; %s additional failures '
+                      '(sample group %s, %s: %s); further overflow logs suppressed until recovery',
+                      overflow_count, *overflow_sample)
+        self._group_transition_overflow = bool(overflow_count)
         return changed
 
     def advance_group(self, group_id):
@@ -402,7 +432,9 @@ class GroupLoop:
                 if text is None:
                     return False
                 decisions = _parse(text, 'decisions', 2) if text is not False else None
-                if not decisions or sorted(decisions) != ['accept', 'redirect']:
+                if (not decisions or any(not isinstance(d, str) or d not in ('accept', 'redirect')
+                                         for d in decisions) or
+                        sorted(decisions) != ['accept', 'redirect']):
                     return stop('invalid_review' if text is not False else 'review_failed')
                 message('review', 'critic', 'critique', text)
                 for index, decision in enumerate(decisions, 1):

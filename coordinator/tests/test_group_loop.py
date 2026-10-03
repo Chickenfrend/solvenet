@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from contextlib import ExitStack, closing
 
 from solvenet.server import Coordinator
@@ -93,7 +93,7 @@ class GroupLoopTests(unittest.TestCase):
         self.assertEqual(state['tasks'][0]['remaining'], 1)
         self.assertEqual(self.store.run_status(run_id)['status'], 'exhausted')
 
-    def drive(self, key, text, *, expires=False):
+    def drive(self, key, text, *, expires=False, advance=True):
         for _ in range(12):
             self.store.advance_group(self.group)
             lease = self.store.claim('worker', ['scripted'], supports_model_respond=True)
@@ -123,8 +123,117 @@ class GroupLoopTests(unittest.TestCase):
             output = {'type': lease['job']['task_type'], 'text': text}
         self.store.result(lease['assignment_id'], {'lease_token': lease['lease_token'],
                                                     'status': 'completed', 'output': output})
-        self.store.advance_group(self.group)
+        if advance:
+            self.store.advance_group(self.group)
         return lease
+
+    def pending_independent_proof(self):
+        run = self.store.submit(': True', ['Init'], attempts=1, model='proof-scripted')['run_id']
+        lease = self.store.claim('proof-worker', ['proof-scripted'])
+        self.store.result(lease['assignment_id'], {'lease_token': lease['lease_token'],
+                          'status': 'completed', 'output': {'text': 'trivial'}})
+        return run
+
+    def test_malformed_reviews_stop_without_blocking_other_groups_or_proofs(self):
+        malformed = [None, {}, 'accept', [None, None], [{}, {}], [[], []],
+                     ['accept', None], ['redirect', {}], [[], 'accept'], [1, 'redirect'],
+                     ['accept', 'accept'], ['redirect', 'redirect'], ['accept', 'unknown'],
+                     [], ['accept'], ['accept', 'redirect', 'accept']]
+        verifier = Mock()
+        verifier.artifact_identity.return_value = 'test:fixture'
+        verifier.verify.return_value = VerificationResult(VerificationStatus.VERIFIED, 'fixture', 0)
+        for index, decisions in enumerate(malformed):
+            with self.subTest(decisions=decisions):
+                if index:
+                    self.group = self.store.start_group_loop(f'malformed-{index}', ': True ∧ True',
+                                                            ['Init'], 'lean-test', self.models)
+                self.drive('plan', '{"approaches":["First","Second"]}')
+                self.drive('investigate-1', 'First finding')
+                self.drive('investigate-2', 'Second finding')
+                self.drive('review', json.dumps({'decisions': decisions}), advance=False)
+                self.store.advance_group(self.group)
+                self.assertEqual(self.store.group_loop(self.group)['phase'], 'review_wait')
+                other = self.store.start_group_loop(f'other-{index}', ': True', ['Init'], 'lean-test',
+                                                    {role: 'other-scripted' for role in self.models})
+                run = self.pending_independent_proof()
+                self.assertTrue(Coordinator(self.store, verifier).tick())
+                self.assertEqual(self.store.group_loop(self.group)['reason'], 'invalid_review')
+                self.assertEqual(self.store.group_loop(self.group)['phase'], 'stopped')
+                self.assertFalse(self.store.advance_group(self.group))
+                state = self.store.group(self.group)
+                self.assertFalse(any(j['request_key'] == 'redirect' for j in state['jobs']))
+                self.assertFalse(any(t['status'] == 'open' for t in state['tasks']))
+                self.assertTrue(self.store.group(other)['jobs'])
+                self.assertEqual(self.store.run_status(run)['status'], 'solved')
+        self.assertEqual(verifier.verify.call_count, len(malformed))
+
+    def test_group_transition_errors_roll_back_and_allow_tick_to_continue(self):
+        other = self.store.start_group_loop('healthy', ': True', ['Init'], 'lean-test', self.models)
+        original = self.store._loop_phase
+        verifier = Mock()
+        verifier.artifact_identity.return_value = 'test:fixture'
+        verifier.verify.return_value = VerificationResult(VerificationStatus.VERIFIED, 'fixture', 0)
+        self.store.advance_group(self.group)  # plan job exists; next transition changes phase
+        before = self.store.group(self.group)
+
+        def fail_after_write(db, group_id, phase):
+            changed = original(db, group_id, phase)
+            if group_id == self.group:
+                raise TypeError('unexpected malformed state ' + 'x' * 2000)
+            return changed
+
+        with patch.object(self.store, '_loop_phase', side_effect=fail_after_write):
+            with self.assertLogs('solvenet.group_loop', level='ERROR') as logs:
+                run = self.pending_independent_proof()
+                self.assertTrue(Coordinator(self.store, verifier).tick())
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn('TypeError', logs.output[0])
+            self.assertLess(len(logs.output[0]), 700)
+            self.assertEqual(self.store.group(self.group), before)
+            self.assertEqual(self.store.group_loop(self.group)['phase'], 'plan')
+            self.assertTrue(self.store.group(other)['jobs'])
+            self.assertEqual(self.store.run_status(run)['status'], 'solved')
+            with self.assertNoLogs('solvenet.group_loop', level='ERROR'):
+                self.store.advance_groups()  # repeated identical failure is suppressed
+        self.assertTrue(self.store.advance_groups())
+        self.assertEqual(self.store.group_loop(self.group)['phase'], 'plan_wait')
+        self.assertNotIn(self.group, self.store._group_transition_errors)
+
+    def test_group_error_cache_overflow_does_not_churn_and_resets_after_recovery(self):
+        for index in range(128):
+            self.store.start_group_loop(f'failing-{index}', ': True', ['Init'],
+                                        'lean-test', self.models)
+        with patch.object(self.store, 'advance_group', side_effect=TypeError('malformed state')):
+            with self.assertLogs('solvenet.group_loop', level='ERROR') as logs:
+                self.assertFalse(self.store.advance_groups())
+            self.assertEqual(len(logs.output), 129)  # 128 retained failures and one overflow summary
+            self.assertIn('1 additional failures', logs.output[-1])
+            self.assertIn('sample group', logs.output[-1])
+            self.assertIn('TypeError: malformed state', logs.output[-1])
+            retained = dict(self.store._group_transition_errors)
+            self.assertEqual(len(retained), 128)
+            with self.assertNoLogs('solvenet.group_loop', level='ERROR'):
+                for _ in range(3):
+                    self.assertFalse(self.store.advance_groups())
+            self.assertEqual(self.store._group_transition_errors, retained)
+
+        with patch.object(self.store, 'advance_group', return_value=False):
+            self.assertFalse(self.store.advance_groups())
+        self.assertEqual(self.store._group_transition_errors, {})
+        self.assertFalse(self.store._group_transition_overflow)
+        with patch.object(self.store, 'advance_group', side_effect=TypeError('malformed state')):
+            with self.assertLogs('solvenet.group_loop', level='ERROR') as logs:
+                self.store.advance_groups()
+            self.assertEqual(len(logs.output), 129)
+            self.assertEqual(len(self.store._group_transition_errors), 128)
+
+    def test_systemic_group_errors_are_not_suppressed(self):
+        for error in (sqlite3.OperationalError('database unavailable'), OSError('disk failure'),
+                      MemoryError('out of memory')):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(self.store, 'advance_group', side_effect=error):
+                    with self.assertRaises(type(error)):
+                        self.store.advance_groups()
 
     def collaboration(self, proof, *, expire=False):
         self.drive('plan', json.dumps({'approaches': ['Study first conjunct', 'Study second conjunct']}))
