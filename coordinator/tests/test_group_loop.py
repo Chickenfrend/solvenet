@@ -488,7 +488,7 @@ class GroupLoopTests(unittest.TestCase):
     def test_version_18_fixed_group_resume_delivers_findings_and_verified_summaries(self):
         old_path = self.path.parent / 'historical.db'
         with ExitStack() as stack:
-            for version in range(19, 25):
+            for version in range(19, 26):
                 stack.enter_context(patch('solvenet.store.MIGRATION_' + str(version),
                                           'PRAGMA user_version=' + str(version) + ';'))
             Store(old_path)

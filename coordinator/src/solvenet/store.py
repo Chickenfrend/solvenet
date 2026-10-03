@@ -152,6 +152,14 @@ ALTER TABLE jobs ADD COLUMN messages TEXT NOT NULL DEFAULT '[]';
 PRAGMA user_version = 13;
 """
 
+# Run snapshots and history join through these keys; status/expiry indexes do
+# not avoid scanning unrelated jobs and assignments.
+MIGRATION_25 = """
+CREATE INDEX jobs_run ON jobs(run_id);
+CREATE INDEX assignments_job ON assignments(job_id);
+PRAGMA user_version = 25;
+"""
+
 TASK_TYPES = ('plan', 'question', 'finding', 'critique', 'task_proposal')
 MAX_TASK_MESSAGE_BYTES = 8192
 MAX_TASK_MESSAGES = 8
@@ -332,7 +340,10 @@ class Store(GroupLoop, GroupState, GroupArtifacts, ClaimGraph, GraphResponses, P
             if version == 23:
                 db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_24 + "COMMIT;")
                 version = 24
-            if version != 24:
+            if version == 24:
+                db.executescript("BEGIN IMMEDIATE;\n" + MIGRATION_25 + "COMMIT;")
+                version = 25
+            if version != 25:
                 raise RuntimeError(f"Unsupported database schema {version}")
 
     @contextmanager
