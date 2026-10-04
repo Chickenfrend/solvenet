@@ -12,6 +12,7 @@ import math
 from .group_state import _conflict, _key, _require_group, _text
 from .group_artifacts import artifact_from_finding, insert_artifact
 from .group_routing import validate_routing, choose
+from .group_operations import create_group_run, insert_group_job, stop_group_jobs
 
 LOG = logging.getLogger(__name__)
 
@@ -212,10 +213,7 @@ class GroupLoop:
                 'SELECT * FROM group_agents WHERE group_id=?', (group_id,))}
 
             def stop(reason):
-                db.execute("UPDATE group_loops SET phase='stopped',reason=? WHERE group_id=?",
-                           (reason, group_id))
-                db.execute("""UPDATE jobs SET status='cancelled' WHERE status='queued' AND id IN
-                    (SELECT job_id FROM group_jobs WHERE group_id=?)""", (group_id,))
+                stop_group_jobs(db, group_id, reason)
                 db.execute("""UPDATE group_tasks SET status=CASE
                     WHEN request_key='synthesize' AND ?='verified_target' THEN 'done'
                     WHEN ?='deadline' THEN 'cancelled' ELSE 'blocked' END
@@ -306,12 +304,7 @@ class GroupLoop:
                 db.execute('UPDATE agent_groups SET remaining_work=remaining_work-? WHERE id=?', (cost, group_id))
                 nonlocal run
                 if not run:
-                    problem_id, run_id = identifier(), identifier()
-                    db.execute('INSERT INTO problems VALUES (?,?,?)',
-                               (problem_id, group['statement'], group['imports']))
-                    db.execute("INSERT INTO runs(id,problem_id,status,max_repairs,created_at) VALUES (?,?, 'running',0,?)",
-                               (run_id, problem_id, self.clock()))
-                    db.execute('INSERT INTO group_runs VALUES (?,?,?)', (group_id, run_id, group['environment']))
+                    run_id = create_group_run(db, group, self.clock())
                 else:
                     run_id = run['id']
                     if run['status'] == 'exhausted':
@@ -319,15 +312,10 @@ class GroupLoop:
                     elif run['status'] != 'running':
                         return stop('run_terminal')
                 job_id = identifier()
-                db.execute('''INSERT INTO jobs
-                    (id,run_id,status,model,max_output_tokens,max_assignments,
-                     generation_timeout_seconds,kind,task_type,messages)
-                    VALUES (?,?,'queued',?, ?,2,120,?,?,?)''',
-                     (job_id, run_id, model,
-                     2048 if kind == 'model.generate' else 512, kind, task_type,
-                      json.dumps(actual_messages)))
-                db.execute('INSERT INTO group_jobs VALUES (?,?,?,?,?,?,?)',
-                            (job_id, group_id, key, task_id, agents[owner], group['environment'], cost))
+                insert_group_job(db, job_id, run_id, group_id, key, task_id, agents[owner],
+                    group['environment'], cost, model=model, max_output_tokens=output_tokens,
+                    max_assignments=2, kind=kind, task_type=task_type,
+                    messages=json.dumps(actual_messages))
                 if built is not None:
                     freeze_packet(db, job_id, group_id, task_id, built, dict(messages=base_messages))
                 elif proof_context is not None:

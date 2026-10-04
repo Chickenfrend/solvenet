@@ -7,6 +7,7 @@ from .composed import encode
 from .context_packet import build_packet, freeze_packet, prompt_cost
 from .group_routing import choose
 from .group_state import _require_group
+from .group_operations import create_group_run, insert_group_job, stop_group_jobs
 
 DEFAULT_LIMITS = dict(planning_calls=8, verification_operations=24,
                       lean_elapsed_ms=180000, included_lemmas=8,
@@ -54,9 +55,7 @@ def validate_limits(value):
 
 
 def stop(db, store, group_id, reason):
-    db.execute("UPDATE group_loops SET phase='stopped',reason=? WHERE group_id=?", (reason, group_id))
-    db.execute("""UPDATE jobs SET status='cancelled' WHERE status='queued' AND id IN
-        (SELECT job_id FROM group_jobs WHERE group_id=?)""", (group_id,))
+    stop_group_jobs(db, group_id, reason)
     db.execute("UPDATE group_tasks SET status='blocked' WHERE group_id=? AND status='open'", (group_id,))
     store._refresh(db)
     return True
@@ -276,19 +275,17 @@ def _dispatch_frontier_task(store, db, group_id, group, run, limits, history, pl
     attach_task(db, group_id, task_id, c['claim_id'], c['action'] if c['action'] != 'plan' else 'investigate')
     db.execute('UPDATE agent_groups SET remaining_work=remaining_work-? WHERE id=?', (cost, group_id))
     if not run:
-        problem_id, run_id = identifier(), identifier()
-        db.execute('INSERT INTO problems VALUES (?,?,?)', (problem_id, group['statement'], group['imports']))
-        db.execute("INSERT INTO runs(id,problem_id,status,max_repairs,created_at) VALUES (?,?,'running',0,?)", (run_id, problem_id, store.clock()))
-        db.execute('INSERT INTO group_runs VALUES (?,?,?)', (group_id, run_id, group['environment']))
+        run_id = create_group_run(db, group, store.clock())
     else:
         run_id = run['id']
         db.execute("UPDATE runs SET status='running' WHERE id=? AND status='exhausted'", (run_id,))
     kind = 'model.generate' if c['action'] == 'synthesize' else 'model.respond'
-    db.execute('''INSERT INTO jobs(id,run_id,status,model,max_output_tokens,max_assignments,generation_timeout_seconds,kind,task_type,messages)
-        VALUES (?,?,'queued',?,?,?,120,?,?,?)''', (job_id, run_id, model, 2048 if kind == 'model.generate' else 512,
-        min(2, limits['planning_calls'] - planning) if c['action'] in ('plan', 'critique') else 2,
-        kind, None if kind == 'model.generate' else task_type, json.dumps(built['messages'])))
-    db.execute('INSERT INTO group_jobs VALUES (?,?,?,?,?,?,?)', (job_id, group_id, key, task_id, agents[owner], group['environment'], cost))
+    insert_group_job(db, job_id, run_id, group_id, key, task_id, agents[owner],
+        group['environment'], cost, model=model,
+        max_output_tokens=2048 if kind == 'model.generate' else 512,
+        max_assignments=min(2, limits['planning_calls'] - planning) if c['action'] in ('plan', 'critique') else 2,
+        kind=kind, task_type=None if kind == 'model.generate' else task_type,
+        messages=json.dumps(built['messages']))
     freeze_packet(db, job_id, group_id, task_id, built, dict(action=c['action'], strategy=c['strategy'], **c['evidence']))
     deferred += [a | dict(reason='lower_rank_than_selected') for a in candidates if a is not c and
                  not any(d.get('claim_id') == a['claim_id'] and d.get('action') == a['action'] for d in deferred)]

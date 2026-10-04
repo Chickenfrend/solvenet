@@ -7,6 +7,7 @@ immediate transactions, including the idempotency and budget checks.
 import json
 
 from . import protocol_limits as limits
+from .group_operations import create_group_run, group_job_source, insert_group_job
 
 
 MIGRATION_14 = """
@@ -323,22 +324,11 @@ class GroupState:
                 if run['status'] not in ('running', 'exhausted'):
                     _conflict('Group run is terminal')
             else:
-                problem_id, run_id = identifier(), identifier()
-                db.execute('INSERT INTO problems VALUES (?, ?, ?)',
-                           (problem_id, group['statement'], group['imports']))
-                db.execute('''INSERT INTO runs(id, problem_id, status, max_repairs, created_at)
-                    VALUES (?, ?, 'running', 0, ?)''', (run_id, problem_id, self.clock()))
-                db.execute('INSERT INTO group_runs VALUES (?, ?, ?)', (group_id, run_id, environment))
+                run_id = create_group_run(db, group, self.clock())
             job_id = identifier()
-            db.execute('''INSERT INTO jobs
-                (id, run_id, status, model, max_output_tokens, max_assignments,
-                 generation_timeout_seconds, kind, task_type, messages)
-                  VALUES (?, ?, 'queued', ?, ?, ?, 120, ?, ?, ?)''',
-                  (job_id, run_id, model, max_output_tokens, cost, kind, task_type, serialized))
-            db.execute('''INSERT INTO group_jobs
-                (job_id, group_id, request_key, task_id, agent_id, environment, cost)
-                VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (job_id, group_id, request_key, task_id, agent_id, environment, cost))
+            insert_group_job(db, job_id, run_id, group_id, request_key, task_id, agent_id,
+                environment, cost, model=model, max_output_tokens=max_output_tokens,
+                max_assignments=cost, kind=kind, task_type=task_type, messages=serialized)
             db.execute('UPDATE group_tasks SET remaining=remaining-? WHERE id=?', (cost, task_id))
             if built is not None:
                 from .context_packet import freeze_packet
@@ -358,12 +348,7 @@ class GroupState:
             _require(db, 'group_agents', group_id, agent_id)
             _require(db, 'group_tasks', group_id, task_id)
             if job_id:
-                job = db.execute('''SELECT j.status, a.result FROM group_jobs gj
-                    JOIN jobs j ON j.id=gj.job_id
-                    LEFT JOIN assignments a ON a.job_id=j.id AND a.status='completed'
-                    WHERE gj.job_id=? AND gj.group_id=? AND gj.task_id=? AND gj.agent_id=?
-                    ORDER BY a.rowid DESC LIMIT 1''',
-                    (job_id, group_id, task_id, agent_id)).fetchone()
+                job = group_job_source(db, group_id, task_id, agent_id, job_id)
                 if job is None or job['status'] != 'done' or not job['result']:
                     _conflict('Job is not completed for this agent and task')
                 output = json.loads(job['result']).get('output', {})

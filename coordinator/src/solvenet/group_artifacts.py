@@ -4,6 +4,7 @@ import json
 
 from . import protocol_limits as limits
 from .group_state import _conflict, _key, _require, _require_group, _text
+from .group_operations import group_job_source
 from .verifier import truncate_diagnostics
 
 
@@ -73,12 +74,7 @@ def insert_artifact(db, group_id, request_key, agent_id, task_id,
     if task['owner_id'] != agent_id:
         _conflict('Artifact agent is not task owner')
     if job_id:
-        source = db.execute('''SELECT j.status, j.kind, j.task_type, a.result, a.id AS assignment_id FROM group_jobs gj
-            JOIN jobs j ON j.id=gj.job_id
-            LEFT JOIN assignments a ON a.job_id=j.id AND a.status='completed'
-            WHERE gj.job_id=? AND gj.group_id=? AND gj.task_id=? AND gj.agent_id=?
-            ORDER BY a.rowid DESC LIMIT 1''',
-            (job_id, group_id, task_id, agent_id)).fetchone()
+        source = group_job_source(db, group_id, task_id, agent_id, job_id)
         if (not source or source['status'] != 'done' or not source['result'] or
                 source['kind'] != 'model.respond' or source['task_type'] != 'finding'):
             _conflict('Artifact source is not a completed finding for this agent and task')
