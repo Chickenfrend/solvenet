@@ -55,7 +55,9 @@ class FrontierTests(unittest.TestCase):
                     if d["job_id"] == lease["job"]["id"]
                 )
                 return lease, decision
-        self.fail("No next frontier assignment: " + str(self.store.group_loop(group)))
+        raise self.failureException(
+            "No next frontier assignment: " + str(self.store.group_loop(group))
+        )
 
     def complete(self, lease, value):
         payload = {

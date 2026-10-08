@@ -41,7 +41,7 @@ class RoutingTests(unittest.TestCase):
             )
             if lease:
                 return lease
-        self.fail("No lease for " + name)
+        raise self.failureException("No lease for " + name)
 
     def complete(self, lease, text):
         self.store.result(

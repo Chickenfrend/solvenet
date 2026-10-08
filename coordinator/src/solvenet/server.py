@@ -398,7 +398,7 @@ class Coordinator:
                 "Artifact environment differs from target environment",
                 binding=binding,
             )
-            return
+            return None
         imports = json.loads(artifact["imports"])
         target_imports = json.loads(artifact["target_imports"])
         try:
@@ -411,7 +411,7 @@ class Coordinator:
             self.store.checked_group_artifact(
                 artifact["id"], "rejected", str(error), binding=binding
             )
-            return
+            return None
         try:
             check_id = (
                 self.store.begin_composed_check(
@@ -434,7 +434,7 @@ class Coordinator:
             return False
         except FrontierLimit as error:
             self.store.stop_frontier(artifact["group_id"], str(error))
-            return
+            return None
         graph_mode = self.store.group_loop(artifact["group_id"])
         if bundle is not None and (
             bundle["declarations"] or (graph_mode and graph_mode["mode"] == "graph")
@@ -470,7 +470,7 @@ class Coordinator:
                 usage=usage,
                 check_id=check_id,
             )
-            return
+            return None
         try:
 
             def check(check_imports):
@@ -531,6 +531,8 @@ class Coordinator:
             usage={"status": "known", "direct": [], "type": [], "transitive": []},
             check_id=check_id,
         )
+
+        return None
 
     def loop(self, stop):
         while not stop.is_set():
@@ -909,7 +911,7 @@ def make_server(coordinator, address=("127.0.0.1", 8080)):  # noqa: C901 -- loca
                 )
                 data = self.read_json(limit)
                 if data is None:
-                    return
+                    return None
                 if parts == ["v1", "experiments"]:
                     key = experiment_identity(data)
                     fixture = load_experiment_set(

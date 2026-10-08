@@ -207,14 +207,14 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-                return
+                return None
             if (
                 path not in ("/", "/models/activity", "/problems")
                 and not path.startswith("/problems/")
                 and not path.startswith("/runs/")
             ):
                 self.send_error(404)
-                return
+                return None
             url = settings.selected()
             models = settings.models(url)
             client = Client(url, timeout)
@@ -339,7 +339,7 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                     or not problems.ID.fullmatch(parts[3])
                 ):
                     self.send_error(404)
-                    return
+                    return None
                 try:
                     fixture = client.problem(parts[1], int(parts[2]), parts[3])
                     runs = client.overview()[1]
@@ -384,6 +384,7 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                     fixture_titles(client, activity),
                 )
             )
+            return None
 
         def do_POST(self):
             if urlsplit(self.path).path == "/internal/progress":
@@ -391,10 +392,10 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                     self.headers.get("Authorization", ""), "Bearer " + progress_token
                 ):
                     self.send_error(403)
-                    return
+                    return None
                 if self.headers.get("Content-Type") != "application/json":
                     self.send_error(415)
-                    return
+                    return None
                 try:
                     size = int(self.headers.get("Content-Length", "0"))
                     if not 1 <= size <= 9000:
@@ -415,7 +416,7 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                         raise ValueError()
                 except (ValueError, UnicodeError):
                     self.send_error(400)
-                    return
+                    return None
                 accepted = live.put(
                     payload["run_id"],
                     payload["job_id"],
@@ -426,7 +427,7 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
-                return
+                return None
             parts = urlsplit(self.path).path.strip("/").split("/")
             if (
                 len(parts) != 4
@@ -438,10 +439,10 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                 or not problems.ID.fullmatch(parts[3])
             ):
                 self.send_error(404)
-                return
+                return None
             if self.headers.get("Content-Type") != "application/x-www-form-urlencoded":
                 self.send_error(415)
-                return
+                return None
             try:
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 1 <= size <= 4096:
@@ -454,7 +455,7 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                 )
             except (ValueError, UnicodeError):
                 self.send_error(400)
-                return
+                return None
             cookie, new_cookie = self.csrf_cookie()
             if (
                 new_cookie
@@ -462,7 +463,7 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
                 or not hmac.compare_digest(fields["csrf"][0], self.token(cookie))
             ):
                 self.send_error(403)
-                return
+                return None
             url = settings.selected()
             client = Client(url, timeout)
             models = settings.models(url)
@@ -509,8 +510,9 @@ def make_server(settings, address, timeout=2, progress_token=None):  # noqa: C90
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return None
 
-        def log_message(self, format, *args):
+        def log_message(self, fmt, *args):
             # Never log request targets or upstream exceptions (which may contain secrets).
             pass
 

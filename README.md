@@ -73,7 +73,9 @@ Run `.venv/bin/ruff check --fix .` to apply safe lint fixes and
 `.venv/bin/ruff format .` to format Python code. The shared `ruff.toml` enables
 basic errors (`E4`, `E7`, `E9`), Pyflakes (`F`), import ordering (`I`), likely
 bugs (`B`), Python 3.11 modernization (`UP`), simplification (`SIM`), Ruff-specific
-checks (`RUF`), comprehensions (`C4`), security (`S`), and complexity (`C901`) for
+checks (`RUF`), comprehensions (`C4`), security (`S`), complexity (`C901`), built-in
+shadowing (`A`), miscellaneous improvements (`PIE`), return consistency (`RET`),
+and logging correctness (`LOG`) for
 the coordinator, homelab, and Python scripts. Complexity is limited to 20, with
 explained function-level exceptions for existing state machines, route dispatch,
 and other deliberately explicit large operations. Security exceptions in
