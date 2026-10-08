@@ -50,6 +50,29 @@ is to choose a model/profile and explicit projected-spend cap before a capped
 live collaboration observation. Mocked contracts and schema acceptance do not
 establish real-model effectiveness.
 
+### Python code quality
+
+Install the development tools from the repository root:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+```
+
+Run `.venv/bin/ruff check --fix .` to apply safe lint fixes and
+`.venv/bin/ruff format .` to format Python code. The shared `ruff.toml` enables
+basic errors (`E4`, `E7`, `E9`), Pyflakes (`F`), import ordering (`I`), likely
+bugs (`B`), Python 3.11 modernization (`UP`), simplification (`SIM`), Ruff-specific
+checks (`RUF`), comprehensions (`C4`), security (`S`), and complexity (`C901`) for
+the coordinator, homelab, and Python scripts. Complexity is limited to 20, with
+explained function-level exceptions for existing state machines, route dispatch,
+and other deliberately explicit large operations. Security exceptions in
+`ruff.toml` cover reviewed parameterized SQL, operator-configured tool execution,
+and intentional test operations; they do not disable all security checks.
+CI runs the same lint and format checks using the pinned Ruff version.
+
 ### Run it locally
 
 Requirements: Python 3.11+, Go 1.22+, and either Docker or Lean 4.19 via

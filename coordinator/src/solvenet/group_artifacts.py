@@ -3,10 +3,9 @@
 import json
 
 from . import protocol_limits as limits
-from .group_state import _conflict, _key, _require, _require_group, _text
 from .group_operations import group_job_source
+from .group_state import _conflict, _key, _require, _require_group, _text
 from .verifier import truncate_diagnostics
-
 
 MIGRATION_16 = """
 CREATE TABLE artifact_verifier_binding (
@@ -34,13 +33,20 @@ MAX_ARTIFACT_TEXT_BYTES = 8192
 
 
 def validate_artifact(statement, imports, environment, proof):
-    _text(statement, 'artifact statement', MAX_ARTIFACT_TEXT_BYTES)
-    if (not isinstance(imports, list) or not 1 <= len(imports) <= limits.MAX_IMPORTS or
-            any(not isinstance(item, str) or not item.strip() or
-                    len(item.encode()) > limits.MAX_IMPORT_BYTES for item in imports)):
-        raise ValueError('Invalid artifact imports')
-    _text(environment, 'artifact environment', 1024)
-    _text(proof, 'artifact proof', MAX_ARTIFACT_TEXT_BYTES)
+    _text(statement, "artifact statement", MAX_ARTIFACT_TEXT_BYTES)
+    if (
+        not isinstance(imports, list)
+        or not 1 <= len(imports) <= limits.MAX_IMPORTS
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or len(item.encode()) > limits.MAX_IMPORT_BYTES
+            for item in imports
+        )
+    ):
+        raise ValueError("Invalid artifact imports")
+    _text(environment, "artifact environment", 1024)
+    _text(proof, "artifact proof", MAX_ARTIFACT_TEXT_BYTES)
 
 
 def artifact_from_finding(text):
@@ -49,116 +55,237 @@ def artifact_from_finding(text):
         value = json.loads(text)
     except (ValueError, TypeError):
         return None
-    if (not isinstance(value, dict) or 'graph_schema' in value or
-            not isinstance(value.get('artifact'), dict)):
+    if (
+        not isinstance(value, dict)
+        or "graph_schema" in value
+        or not isinstance(value.get("artifact"), dict)
+    ):
         return None
-    artifact = value['artifact']
-    if not {'statement', 'imports', 'environment', 'proof'} <= artifact.keys():
+    artifact = value["artifact"]
+    if not {"statement", "imports", "environment", "proof"} <= artifact.keys():
         return None
     try:
-        validate_artifact(*(artifact[k] for k in ('statement', 'imports', 'environment', 'proof')))
+        validate_artifact(
+            *(artifact[k] for k in ("statement", "imports", "environment", "proof"))
+        )
     except ValueError:
         return None
     return artifact
 
 
-def insert_artifact(db, group_id, request_key, agent_id, task_id,
-                    statement, imports, environment, proof, job_id=None, *, graph_proposal_key=None):
+def insert_artifact(
+    db,
+    group_id,
+    request_key,
+    agent_id,
+    task_id,
+    statement,
+    imports,
+    environment,
+    proof,
+    job_id=None,
+    *,
+    graph_proposal_key=None,
+):
     """Insert with checked provenance inside the caller's existing transaction."""
     from .store import identifier
+
     _key(request_key)
     validate_artifact(statement, imports, environment, proof)
     _require_group(db, group_id)
-    _require(db, 'group_agents', group_id, agent_id)
-    task = _require(db, 'group_tasks', group_id, task_id)
-    if task['owner_id'] != agent_id:
-        _conflict('Artifact agent is not task owner')
+    _require(db, "group_agents", group_id, agent_id)
+    task = _require(db, "group_tasks", group_id, task_id)
+    if task["owner_id"] != agent_id:
+        _conflict("Artifact agent is not task owner")
     if job_id:
         source = group_job_source(db, group_id, task_id, agent_id, job_id)
-        if (not source or source['status'] != 'done' or not source['result'] or
-                source['kind'] != 'model.respond' or source['task_type'] != 'finding'):
-            _conflict('Artifact source is not a completed finding for this agent and task')
-        output = json.loads(source['result']).get('output', {})
+        if (
+            not source
+            or source["status"] != "done"
+            or not source["result"]
+            or source["kind"] != "model.respond"
+            or source["task_type"] != "finding"
+        ):
+            _conflict(
+                "Artifact source is not a completed finding for this agent and task"
+            )
+        output = json.loads(source["result"]).get("output", {})
         if graph_proposal_key is None:
-            proposal = artifact_from_finding(output.get('text'))
+            proposal = artifact_from_finding(output.get("text"))
         else:
             from .graph_response import graph_batch
-            batch = graph_batch(output.get('text'))
-            proposal = next((item for item in batch.get('artifacts', [])
-                             if item['key'] == graph_proposal_key), None) if batch else None
-        if not proposal or any(proposal[k] != value for k, value in (
-                ('statement', statement), ('imports', imports),
-                ('environment', environment), ('proof', proof))):
-            _conflict('Artifact differs from completed job output')
+
+            batch = graph_batch(output.get("text"))
+            proposal = (
+                next(
+                    (
+                        item
+                        for item in batch.get("artifacts", [])
+                        if item["key"] == graph_proposal_key
+                    ),
+                    None,
+                )
+                if batch
+                else None
+            )
+        if not proposal or any(
+            proposal[k] != value
+            for k, value in (
+                ("statement", statement),
+                ("imports", imports),
+                ("environment", environment),
+                ("proof", proof),
+            )
+        ):
+            _conflict("Artifact differs from completed job output")
     serialized = json.dumps(imports)
-    old = db.execute('SELECT * FROM group_artifacts WHERE group_id=? AND request_key=?',
-                     (group_id, request_key)).fetchone()
+    old = db.execute(
+        "SELECT * FROM group_artifacts WHERE group_id=? AND request_key=?",
+        (group_id, request_key),
+    ).fetchone()
     if old:
-        if (old['agent_id'], old['task_id'], old['job_id'], old['statement'],
-                old['imports'], old['environment'], old['proof']) != (
-                agent_id, task_id, job_id, statement, serialized, environment, proof):
-            _conflict('Artifact key reused with different contents')
-        return old['id']
-    if db.execute('SELECT count(*) FROM group_artifacts WHERE group_id=?',
-                  (group_id,)).fetchone()[0] >= MAX_ARTIFACTS:
-        _conflict('Artifact limit reached')
+        if (
+            old["agent_id"],
+            old["task_id"],
+            old["job_id"],
+            old["statement"],
+            old["imports"],
+            old["environment"],
+            old["proof"],
+        ) != (agent_id, task_id, job_id, statement, serialized, environment, proof):
+            _conflict("Artifact key reused with different contents")
+        return old["id"]
+    if (
+        db.execute(
+            "SELECT count(*) FROM group_artifacts WHERE group_id=?", (group_id,)
+        ).fetchone()[0]
+        >= MAX_ARTIFACTS
+    ):
+        _conflict("Artifact limit reached")
     artifact_id = identifier()
-    db.execute('''INSERT INTO group_artifacts
+    db.execute(
+        """INSERT INTO group_artifacts
         (id,group_id,request_key,agent_id,task_id,job_id,statement,imports,environment,proof,source,assignment_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-        (artifact_id, group_id, request_key, agent_id, task_id, job_id,
-          statement, serialized, environment, proof, 'job' if job_id else 'coordinator',
-          source['assignment_id'] if job_id else None))
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            artifact_id,
+            group_id,
+            request_key,
+            agent_id,
+            task_id,
+            job_id,
+            statement,
+            serialized,
+            environment,
+            proof,
+            "job" if job_id else "coordinator",
+            source["assignment_id"] if job_id else None,
+        ),
+    )
     # Historical groups remain untouched; new proposals in graph-enabled groups
     # publish their exact context rather than inheriting a possibly different focus.
-    graph = db.execute('SELECT root_id FROM group_graphs WHERE group_id=?', (group_id,)).fetchone()
-    if graph['root_id'] is not None:
-        from .claim_graph import insert_claim, attach_evidence
-        claim_id, _ = insert_claim(db, group_id, 'artifact:' + artifact_id,
-                                  statement, imports, environment, agent_id=agent_id,
-                                  task_id=task_id, job_id=job_id, reason='Formal artifact proposal')
-        attach_evidence(db, group_id, claim_id, 'artifact', artifact_id)
+    graph = db.execute(
+        "SELECT root_id FROM group_graphs WHERE group_id=?", (group_id,)
+    ).fetchone()
+    if graph["root_id"] is not None:
+        from .claim_graph import attach_evidence, insert_claim
+
+        claim_id, _ = insert_claim(
+            db,
+            group_id,
+            "artifact:" + artifact_id,
+            statement,
+            imports,
+            environment,
+            agent_id=agent_id,
+            task_id=task_id,
+            job_id=job_id,
+            reason="Formal artifact proposal",
+        )
+        attach_evidence(db, group_id, claim_id, "artifact", artifact_id)
     return artifact_id
 
 
 class GroupArtifacts:
     def record_group_lean_check(self, artifact_id, status, elapsed_ms):
         with self.transaction() as db:
-            db.execute('''INSERT INTO group_lean_checks(group_id,artifact_id,status,elapsed_ms)
-                SELECT group_id,id,?,? FROM group_artifacts WHERE id=?''',
-                (str(status), elapsed_ms, artifact_id))
+            db.execute(
+                """INSERT INTO group_lean_checks(group_id,artifact_id,status,elapsed_ms)
+                SELECT group_id,id,?,? FROM group_artifacts WHERE id=?""",
+                (str(status), elapsed_ms, artifact_id),
+            )
 
-    def propose_group_artifact(self, group_id, request_key, agent_id, task_id,
-                               statement, imports, environment, proof, *, job_id=None,
-                               prerequisite_proof_ids=None):
+    def propose_group_artifact(
+        self,
+        group_id,
+        request_key,
+        agent_id,
+        task_id,
+        statement,
+        imports,
+        environment,
+        proof,
+        *,
+        job_id=None,
+        prerequisite_proof_ids=None,
+    ):
         with self.transaction() as db:
-            artifact = insert_artifact(db, group_id, request_key, agent_id, task_id,
-                                       statement, imports, environment, proof, job_id)
+            artifact = insert_artifact(
+                db,
+                group_id,
+                request_key,
+                agent_id,
+                task_id,
+                statement,
+                imports,
+                environment,
+                proof,
+                job_id,
+            )
             if prerequisite_proof_ids is not None:
-                from .proof_context import selected_bundle, freeze_context
-                prior = db.execute('SELECT bundle FROM proof_contexts WHERE owner_id=?', (artifact,)).fetchone()
+                from .proof_context import freeze_context, selected_bundle
+
+                prior = db.execute(
+                    "SELECT bundle FROM proof_contexts WHERE owner_id=?", (artifact,)
+                ).fetchone()
                 if prior:
-                    if json.loads(prior['bundle'])['selected_proof_ids'] != prerequisite_proof_ids:
-                        _conflict('Artifact key reused with different prerequisites')
+                    if (
+                        json.loads(prior["bundle"])["selected_proof_ids"]
+                        != prerequisite_proof_ids
+                    ):
+                        _conflict("Artifact key reused with different prerequisites")
                     return artifact
-                claim = db.execute('SELECT claim_id FROM claim_artifacts WHERE artifact_id=?',
-                                   (artifact,)).fetchone()[0]
-                freeze_context(db, artifact, 'artifact', selected_bundle(
-                    db, group_id, claim, proof, prerequisite_proof_ids))
+                claim = db.execute(
+                    "SELECT claim_id FROM claim_artifacts WHERE artifact_id=?",
+                    (artifact,),
+                ).fetchone()[0]
+                freeze_context(
+                    db,
+                    artifact,
+                    "artifact",
+                    selected_bundle(db, group_id, claim, proof, prerequisite_proof_ids),
+                )
             return artifact
 
     def bind_group_artifact_verifier(self, identity):
         """Return (identity, revision); invalidate stale claims atomically."""
         with self.transaction() as db:
-            row = db.execute('SELECT identity,revision FROM artifact_verifier_binding WHERE id=1').fetchone()
-            revision = row['revision']
-            if row['identity'] != identity:
+            row = db.execute(
+                "SELECT identity,revision FROM artifact_verifier_binding WHERE id=1"
+            ).fetchone()
+            revision = row["revision"]
+            if row["identity"] != identity:
                 revision += 1
-                db.execute('UPDATE artifact_verifier_binding SET identity=?,revision=? WHERE id=1',
-                           (identity, revision))
-                db.execute('''UPDATE group_artifacts SET status='pending',diagnostics='',verifier_identity=NULL
+                db.execute(
+                    "UPDATE artifact_verifier_binding SET identity=?,revision=? WHERE id=1",
+                    (identity, revision),
+                )
+                db.execute(
+                    """UPDATE group_artifacts SET status='pending',diagnostics='',verifier_identity=NULL
                     WHERE status='verified' AND (verifier_identity IS NULL OR verifier_identity != ?
-                        OR ? IS NULL)''', (identity, identity))
+                        OR ? IS NULL)""",
+                    (identity, identity),
+                )
             token = identity, revision
         self.artifact_verifier_binding = token
         return token
@@ -166,45 +293,88 @@ class GroupArtifacts:
     def needs_artifact_identity(self):
         """Only pending checks or synthesis about to consume verified context need a scan."""
         with self.connect() as db:
-            return db.execute('''SELECT 1 FROM group_artifacts a
+            return (
+                db.execute("""SELECT 1 FROM group_artifacts a
                 LEFT JOIN group_loops gl ON gl.group_id=a.group_id
                 WHERE (a.status='pending' AND (gl.group_id IS NULL OR gl.phase!='stopped'))
-                   OR (a.status='verified' AND gl.phase='synthesize') LIMIT 1''').fetchone() is not None or db.execute('''
+                   OR (a.status='verified' AND gl.phase='synthesize') LIMIT 1""").fetchone()
+                is not None
+                or db.execute("""
                    SELECT 1 FROM proof_contexts pc JOIN assignments a ON a.job_id=pc.owner_id
                    JOIN attempts t ON t.assignment_id=a.id LEFT JOIN verifications v ON v.attempt_id=t.id
-                   WHERE pc.owner_kind='job' AND v.attempt_id IS NULL LIMIT 1''').fetchone() is not None or db.execute('''
+                   WHERE pc.owner_kind='job' AND v.attempt_id IS NULL LIMIT 1""").fetchone()
+                is not None
+                or db.execute("""
                    SELECT 1 FROM group_loops gl JOIN group_graphs gg ON gg.group_id=gl.group_id
-                    WHERE gl.phase IN ('synthesize','frontier') AND gg.root_id IS NOT NULL LIMIT 1''').fetchone() is not None
+                    WHERE gl.phase IN ('synthesize','frontier') AND gg.root_id IS NOT NULL LIMIT 1""").fetchone()
+                is not None
+            )
 
     def pending_group_artifact(self):
         with self.connect() as db:
-            row = db.execute('''SELECT a.*, g.imports AS target_imports,
+            row = db.execute("""SELECT a.*, g.imports AS target_imports,
                 g.environment AS target_environment FROM group_artifacts a
                 JOIN agent_groups g ON g.id=a.group_id
                 LEFT JOIN group_loops gl ON gl.group_id=a.group_id
                 WHERE a.status='pending' AND (gl.group_id IS NULL OR gl.phase!='stopped')
-                ORDER BY a.rowid LIMIT 1''').fetchone()
+                ORDER BY a.rowid LIMIT 1""").fetchone()
             return dict(row) if row else None
 
-    def checked_group_artifact(self, artifact_id, status, diagnostics='', *, binding=None,
-                               bundle=None, result=None, usage=None, check_id=None):
-        if status not in ('verified', 'rejected', 'incompatible', 'verifier_error', 'timeout'):
-            raise ValueError('Invalid artifact verification status')
-        if binding is None or (status == 'verified' and not binding[0]):
-            raise ValueError('Verifier binding required for artifact result')
+    def checked_group_artifact(
+        self,
+        artifact_id,
+        status,
+        diagnostics="",
+        *,
+        binding=None,
+        bundle=None,
+        result=None,
+        usage=None,
+        check_id=None,
+    ):
+        if status not in (
+            "verified",
+            "rejected",
+            "incompatible",
+            "verifier_error",
+            "timeout",
+        ):
+            raise ValueError("Invalid artifact verification status")
+        if binding is None or (status == "verified" and not binding[0]):
+            raise ValueError("Verifier binding required for artifact result")
         bounded = truncate_diagnostics(diagnostics, MAX_ARTIFACT_DIAGNOSTICS_BYTES)
         with self.transaction() as db:
             current = True
             if bundle is not None:
-                from .proof_context import binding_matches, check_inputs_match, record_check, owns_check
-                current = (owns_check(db, artifact_id, 'artifact', check_id) and binding_matches(db, bundle)
-                           and check_inputs_match(db, artifact_id, 'artifact', bundle))
+                from .proof_context import (
+                    binding_matches,
+                    check_inputs_match,
+                    owns_check,
+                    record_check,
+                )
+
+                current = (
+                    owns_check(db, artifact_id, "artifact", check_id)
+                    and binding_matches(db, bundle)
+                    and check_inputs_match(db, artifact_id, "artifact", bundle)
+                )
             accepted = False
             if current:
-                updated = db.execute('''UPDATE group_artifacts SET status=?,diagnostics=?,verifier_identity=?
+                updated = db.execute(
+                    """UPDATE group_artifacts SET status=?,diagnostics=?,verifier_identity=?
                 WHERE id=? AND status='pending' AND EXISTS (
-                    SELECT 1 FROM artifact_verifier_binding WHERE id=1 AND identity IS ? AND revision=?)''',
-                (status, bounded, binding[0], artifact_id, binding[0], binding[1]))
+                    SELECT 1 FROM artifact_verifier_binding WHERE id=1 AND identity IS ? AND revision=?)""",
+                    (status, bounded, binding[0], artifact_id, binding[0], binding[1]),
+                )
                 accepted = updated.rowcount == 1
             if bundle is not None:
-                record_check(db, artifact_id, 'artifact', bundle, result, usage, accepted, check_id)
+                record_check(
+                    db,
+                    artifact_id,
+                    "artifact",
+                    bundle,
+                    result,
+                    usage,
+                    accepted,
+                    check_id,
+                )

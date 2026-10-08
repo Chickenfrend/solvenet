@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.ruff_cache/
 *.db
 *.db-shm
 *.db-wal
@@ -8,3 +9,13 @@ lean/.lake/
 worker/solvenet-worker
 .env
 /secrets/
+
+# Generated Python packaging output.
+build/
+*.egg-info/
+
+# Local trial manifests reference runs in the operator's SQLite database.
+/trial*-runs.json
+
+# Accidental root-level README copy named with a literal backslash.
+/\\

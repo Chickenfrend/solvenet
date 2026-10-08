@@ -99,6 +99,7 @@ coordinator reservations:
 import json
 from pathlib import Path
 from solvenet.verifier import LeanVerifier
+
 bundle = json.loads(Path("replay.json").read_text())
 result, usage = LeanVerifier(Path("lean")).verify_composed(bundle)
 print(result.status, result.elapsed_ms, usage)

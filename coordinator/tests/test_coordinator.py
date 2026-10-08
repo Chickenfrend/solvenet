@@ -15,10 +15,9 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from solvenet.server import Coordinator, make_server
-from solvenet.problem_set import load as load_problem_set
 from solvenet import protocol_limits as limits
-from solvenet.store import MAX_REPAIRS, Conflict, Store, SCHEMA
+from solvenet.server import Coordinator, make_server
+from solvenet.store import MAX_REPAIRS, SCHEMA, Conflict, Store
 from solvenet.verifier import (
     LeanVerifier,
     VerificationResult,
@@ -34,8 +33,12 @@ class FakeVerifier:
         self.readiness_result = VerifierReadiness(True)
 
     def verify(self, statement, candidate, *, imports):
-        status = VerificationStatus.VERIFIED if candidate == 'rfl' else VerificationStatus.REJECTED
-        return VerificationResult(status, 'scripted test verifier', 0)
+        status = (
+            VerificationStatus.VERIFIED
+            if candidate == "rfl"
+            else VerificationStatus.REJECTED
+        )
+        return VerificationResult(status, "scripted test verifier", 0)
 
     def readiness(self):
         return self.readiness_result
@@ -45,117 +48,151 @@ class StoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name) / 'state.db'
+        self.path = Path(self.temp.name) / "state.db"
         self.now = 1000
         self.store = Store(self.path, clock=lambda: self.now, lease_seconds=3)
-        self.run = self.store.submit('(n : Nat) : n + 0 = n', ['Init'], attempts=1)['run_id']
+        self.run = self.store.submit("(n : Nat) : n + 0 = n", ["Init"], attempts=1)[
+            "run_id"
+        ]
 
-    def payload(self, assignment, proof='rfl'):
-        return {'lease_token': assignment['lease_token'], 'status': 'completed', 'output': {'text': proof}}
+    def payload(self, assignment, proof="rfl"):
+        return {
+            "lease_token": assignment["lease_token"],
+            "status": "completed",
+            "output": {"text": proof},
+        }
 
     def test_proof_result_accepts_legacy_extra_output_fields(self):
-        assignment = self.store.claim('worker', ['scripted'])
-        payload = self.payload(assignment) | {'output': {'text': 'rfl', 'metadata': 'legacy'}}
-        self.store.result(assignment['assignment_id'], payload)
-        self.assertEqual(self.store.pending()['candidate'], 'rfl')
+        assignment = self.store.claim("worker", ["scripted"])
+        payload = self.payload(assignment) | {
+            "output": {"text": "rfl", "metadata": "legacy"}
+        }
+        self.store.result(assignment["assignment_id"], payload)
+        self.assertEqual(self.store.pending()["candidate"], "rfl")
 
     def test_typed_task_capability_result_retry_and_lean_boundary(self):
-        task_id = self.store.enqueue_task(self.run, 'scripted', 'finding',
-                                          [{'role': 'user', 'content': 'Investigate an approach'}])
-        proof = self.store.claim('old-worker', ['scripted'])
-        self.assertEqual(proof['job']['kind'], 'model.generate')
-        self.assertIsNone(self.store.claim('old-worker', ['scripted']))
-        task = self.store.claim('new-worker', ['scripted'], supports_model_respond=True)
-        self.assertEqual(task['job']['id'], task_id)
-        self.assertEqual(task['job']['task_type'], 'finding')
-        wrong = {'lease_token': task['lease_token'], 'status': 'completed',
-                 'output': {'type': 'plan', 'text': 'Try induction'}}
+        task_id = self.store.enqueue_task(
+            self.run,
+            "scripted",
+            "finding",
+            [{"role": "user", "content": "Investigate an approach"}],
+        )
+        proof = self.store.claim("old-worker", ["scripted"])
+        self.assertEqual(proof["job"]["kind"], "model.generate")
+        self.assertIsNone(self.store.claim("old-worker", ["scripted"]))
+        task = self.store.claim("new-worker", ["scripted"], supports_model_respond=True)
+        self.assertEqual(task["job"]["id"], task_id)
+        self.assertEqual(task["job"]["task_type"], "finding")
+        wrong = {
+            "lease_token": task["lease_token"],
+            "status": "completed",
+            "output": {"type": "plan", "text": "Try induction"},
+        }
         with self.assertRaises(ValueError):
-            self.store.result(task['assignment_id'], wrong)
+            self.store.result(task["assignment_id"], wrong)
         with self.assertRaises(ValueError):
-            self.store.result(task['assignment_id'], wrong | {'output': {
-                'type': 'finding', 'text': 'x' * 8193}})
-        result = wrong | {'output': {'type': 'finding', 'text': 'Try induction'},
-                          'usage': {'input_tokens': 12, 'output_tokens': 3},
-                          'generation': {'raw_response': '{"text":"Try induction"}'}}
-        self.store.result(task['assignment_id'], result)
+            self.store.result(
+                task["assignment_id"],
+                wrong | {"output": {"type": "finding", "text": "x" * 8193}},
+            )
+        result = wrong | {
+            "output": {"type": "finding", "text": "Try induction"},
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+            "generation": {"raw_response": '{"text":"Try induction"}'},
+        }
+        self.store.result(task["assignment_id"], result)
         restarted = Store(self.path, clock=lambda: self.now, lease_seconds=3)
-        restarted.result(task['assignment_id'], result)
+        restarted.result(task["assignment_id"], result)
         self.assertIsNone(restarted.pending())
         snapshot = restarted.run(self.run)
-        self.assertEqual(snapshot['attempts'], [])
-        self.assertEqual(snapshot['assignments'][-1]['task_result'], result['output'])
-        self.assertEqual(snapshot['assignments'][-1]['usage']['input_tokens'], 12)
-        self.assertEqual(snapshot['status'], 'running')
-        self.store.result(proof['assignment_id'], self.payload(proof))
+        self.assertEqual(snapshot["attempts"], [])
+        self.assertEqual(snapshot["assignments"][-1]["task_result"], result["output"])
+        self.assertEqual(snapshot["assignments"][-1]["usage"]["input_tokens"], 12)
+        self.assertEqual(snapshot["status"], "running")
+        self.store.result(proof["assignment_id"], self.payload(proof))
         self.assertTrue(Coordinator(restarted, FakeVerifier()).tick())
-        self.assertEqual(restarted.run(self.run)['status'], 'solved')
+        self.assertEqual(restarted.run(self.run)["status"], "solved")
 
     def test_typed_task_expiry_and_late_result(self):
-        self.store.enqueue_task(self.run, 'scripted', 'critique',
-                                [{'role': 'user', 'content': 'Review'}])
-        first = self.store.claim('new', ['scripted'])  # older proof job
-        self.store.result(first['assignment_id'], self.payload(first, 'not a proof'))
-        task = self.store.claim('new', ['scripted'], supports_model_respond=True)
+        self.store.enqueue_task(
+            self.run, "scripted", "critique", [{"role": "user", "content": "Review"}]
+        )
+        first = self.store.claim("new", ["scripted"])  # older proof job
+        self.store.result(first["assignment_id"], self.payload(first, "not a proof"))
+        task = self.store.claim("new", ["scripted"], supports_model_respond=True)
         self.now += 4
         self.store.expire()
-        payload = {'lease_token': task['lease_token'], 'status': 'completed',
-                   'output': {'type': 'critique', 'text': 'Needs another argument'}}
+        payload = {
+            "lease_token": task["lease_token"],
+            "status": "completed",
+            "output": {"type": "critique", "text": "Needs another argument"},
+        }
         with self.assertRaises(Conflict):
-            self.store.result(task['assignment_id'], payload)
-        retry = self.store.claim('new', ['scripted'], supports_model_respond=True)
-        self.assertEqual(retry['job']['id'], task['job']['id'])
-        self.assertEqual(retry['job']['messages'], task['job']['messages'])
+            self.store.result(task["assignment_id"], payload)
+        retry = self.store.claim("new", ["scripted"], supports_model_respond=True)
+        self.assertEqual(retry["job"]["id"], task["job"]["id"])
+        self.assertEqual(retry["job"]["messages"], task["job"]["messages"])
 
     def test_claim_without_expiry_skips_refresh_and_expiry_scopes_runs(self):
-        another = self.store.submit('True', ['Init'], attempts=1)['run_id']
-        first = self.store.claim('worker', ['scripted'])
-        with patch.object(self.store, '_refresh', wraps=self.store._refresh) as refresh:
-            second = self.store.claim('worker-2', ['scripted'])
-            self.assertEqual(second['job']['run_id'], another)
-            self.assertIsNone(self.store.claim('worker-3', ['scripted']))
+        another = self.store.submit("True", ["Init"], attempts=1)["run_id"]
+        first = self.store.claim("worker", ["scripted"])
+        with patch.object(self.store, "_refresh", wraps=self.store._refresh) as refresh:
+            second = self.store.claim("worker-2", ["scripted"])
+            self.assertEqual(second["job"]["run_id"], another)
+            self.assertIsNone(self.store.claim("worker-3", ["scripted"]))
             refresh.assert_not_called()
             self.now += 4
-            retry = self.store.claim('worker-3', ['scripted'])
-            self.assertEqual(retry['job']['id'], first['job']['id'])
-            self.assertEqual({call.args[1] for call in refresh.call_args_list}, {self.run, another})
+            retry = self.store.claim("worker-3", ["scripted"])
+            self.assertEqual(retry["job"]["id"], first["job"]["id"])
+            self.assertEqual(
+                {call.args[1] for call in refresh.call_args_list}, {self.run, another}
+            )
         with self.store.connect() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM assignments WHERE status='expired'").fetchone()[0], 2)
-        self.assertEqual(self.store.run_status(self.run)['status'], 'running')
-        self.assertEqual(self.store.run_status(another)['status'], 'running')
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM assignments WHERE status='expired'"
+                ).fetchone()[0],
+                2,
+            )
+        self.assertEqual(self.store.run_status(self.run)["status"], "running")
+        self.assertEqual(self.store.run_status(another)["status"], "running")
 
     def test_expired_final_assignment_exhausts_only_its_run(self):
-        other = self.store.submit('True', ['Init'], attempts=1)['run_id']
+        other = self.store.submit("True", ["Init"], attempts=1)["run_id"]
         with self.store.connect() as db:
-            db.execute('UPDATE jobs SET max_assignments=1 WHERE run_id=?', (self.run,))
+            db.execute("UPDATE jobs SET max_assignments=1 WHERE run_id=?", (self.run,))
             db.commit()
-        lease = self.store.claim('worker', ['scripted'])
-        self.assertEqual(lease['job']['run_id'], self.run)
-        with patch.object(self.store, '_refresh', wraps=self.store._refresh) as refresh:
+        lease = self.store.claim("worker", ["scripted"])
+        self.assertEqual(lease["job"]["run_id"], self.run)
+        with patch.object(self.store, "_refresh", wraps=self.store._refresh) as refresh:
             self.now += 4
-            next_lease = self.store.claim('worker-2', ['scripted'])
-            self.assertEqual(next_lease['job']['run_id'], other)
+            next_lease = self.store.claim("worker-2", ["scripted"])
+            self.assertEqual(next_lease["job"]["run_id"], other)
             refresh.assert_called_once()
             self.assertEqual(refresh.call_args.args[1], self.run)
-        self.assertEqual(self.store.run_status(self.run)['status'], 'exhausted')
-        self.assertEqual(self.store.run_status(other)['status'], 'running')
+        self.assertEqual(self.store.run_status(self.run)["status"], "exhausted")
+        self.assertEqual(self.store.run_status(other)["status"], "running")
 
     def test_restart_and_duplicate_result(self):
-        a = self.store.claim('worker', ['scripted'])
+        a = self.store.claim("worker", ["scripted"])
         restarted = Store(self.path, clock=lambda: self.now)
         payload = self.payload(a)
-        self.assertEqual(restarted.result(a['assignment_id'], payload), {'accepted': True})
-        self.assertEqual(restarted.result(a['assignment_id'], payload), {'accepted': True})
+        self.assertEqual(
+            restarted.result(a["assignment_id"], payload), {"accepted": True}
+        )
+        self.assertEqual(
+            restarted.result(a["assignment_id"], payload), {"accepted": True}
+        )
         with self.assertRaises(Conflict):
-            restarted.result(a['assignment_id'], self.payload(a, 'trivial'))
-        self.assertEqual(len(restarted.run(self.run)['attempts']), 1)
+            restarted.result(a["assignment_id"], self.payload(a, "trivial"))
+        self.assertEqual(len(restarted.run(self.run)["attempts"]), 1)
         Coordinator(restarted, FakeVerifier()).tick()
-        self.assertEqual(Store(self.path).run(self.run)['status'], 'solved')
+        self.assertEqual(Store(self.path).run(self.run)["status"], "solved")
 
     def test_run_reads_one_snapshot_during_verification(self):
-        claim = self.store.claim('worker', ['scripted'])
-        self.store.result(claim['assignment_id'], self.payload(claim))
-        attempt_id = self.store.pending()['id']
+        claim = self.store.claim("worker", ["scripted"])
+        self.store.result(claim["assignment_id"], self.payload(claim))
+        attempt_id = self.store.pending()["id"]
         writer = Store(self.path, clock=lambda: self.now)
         original_connect = self.store.connect
         verified_between_reads = []
@@ -163,412 +200,550 @@ class StoreTests(unittest.TestCase):
         @contextmanager
         def interleaved_connect():
             with original_connect() as db:
+
                 def on_query(sql):
-                    if sql.startswith('SELECT * FROM problems WHERE id='):
+                    if sql.startswith("SELECT * FROM problems WHERE id="):
                         db.set_trace_callback(None)
-                        writer.verified(attempt_id, VerificationResult(
-                            VerificationStatus.VERIFIED, 'verified', 1))
+                        writer.verified(
+                            attempt_id,
+                            VerificationResult(
+                                VerificationStatus.VERIFIED, "verified", 1
+                            ),
+                        )
                         verified_between_reads.append(True)
 
                 db.set_trace_callback(on_query)
                 yield db
 
-        with patch.object(self.store, 'connect', interleaved_connect):
+        with patch.object(self.store, "connect", interleaved_connect):
             snapshot = self.store.run(self.run)
 
         self.assertEqual(verified_between_reads, [True])
-        self.assertEqual(snapshot['status'], 'running')
-        self.assertEqual(snapshot['jobs'][0]['status'], 'verifying')
-        self.assertIsNone(snapshot['attempts'][0]['verification_status'])
-        self.assertEqual(snapshot['assignments'][0]['status'], 'completed')
-        self.assertEqual(writer.run(self.run)['status'], 'solved')
+        self.assertEqual(snapshot["status"], "running")
+        self.assertEqual(snapshot["jobs"][0]["status"], "verifying")
+        self.assertIsNone(snapshot["attempts"][0]["verification_status"])
+        self.assertEqual(snapshot["assignments"][0]["status"], "completed")
+        self.assertEqual(writer.run(self.run)["status"], "solved")
 
     def test_atomic_claim(self):
         with ThreadPoolExecutor(max_workers=8) as pool:
-            claims = list(pool.map(lambda i: self.store.claim(str(i), ['scripted']), range(8)))
+            claims = list(
+                pool.map(lambda i: self.store.claim(str(i), ["scripted"]), range(8))
+            )
         self.assertEqual(sum(a is not None for a in claims), 1)
 
     def test_claim_uses_global_job_age_not_worker_model_order(self):
-        for index, models in enumerate((['newer-model', 'older-model'],
-                                        ['older-model', 'newer-model'])):
+        for index, models in enumerate(
+            (["newer-model", "older-model"], ["older-model", "newer-model"])
+        ):
             with self.subTest(models=models):
-                path = Path(self.temp.name) / f'claim-order-{index}.db'
+                path = Path(self.temp.name) / f"claim-order-{index}.db"
                 store = Store(path, clock=lambda: self.now)
                 older_run = store.submit(
-                    ': True', ['Init'], attempts=1, model='older-model')['run_id']
-                store.submit(': True', ['Init'], attempts=1, model='newer-model')
+                    ": True", ["Init"], attempts=1, model="older-model"
+                )["run_id"]
+                store.submit(": True", ["Init"], attempts=1, model="newer-model")
 
                 # Persisted insertion order remains authoritative after restart,
                 # regardless of the order in which the worker advertises models.
-                claim = Store(path, clock=lambda: self.now).claim('worker', models)
-                self.assertEqual(claim['job']['model'], 'older-model')
+                claim = Store(path, clock=lambda: self.now).claim("worker", models)
+                self.assertEqual(claim["job"]["model"], "older-model")
                 self.assertEqual(
-                    Store(path).run(older_run)['jobs'][0]['id'], claim['job']['id'])
+                    Store(path).run(older_run)["jobs"][0]["id"], claim["job"]["id"]
+                )
 
     def test_heterogeneous_claims_repairs_and_restart(self):
-        groups = [{'model': 'model-a', 'count': 2, 'max_output_tokens': 64},
-                  {'model': 'model-b', 'count': 1, 'max_output_tokens': 128}]
-        run_id = self.store.submit(': True', ['Init'], initial_jobs=groups,
-                                   max_repairs=1, max_assignments=2)['run_id']
+        groups = [
+            {"model": "model-a", "count": 2, "max_output_tokens": 64},
+            {"model": "model-b", "count": 1, "max_output_tokens": 128},
+        ]
+        run_id = self.store.submit(
+            ": True", ["Init"], initial_jobs=groups, max_repairs=1, max_assignments=2
+        )["run_id"]
         restarted = Store(self.path, clock=lambda: self.now)
-        self.assertEqual(restarted.run(run_id)['initial_jobs'], groups)
-        self.assertIsNone(restarted.claim('unmatched', ['unknown']))
+        self.assertEqual(restarted.run(run_id)["initial_jobs"], groups)
+        self.assertIsNone(restarted.claim("unmatched", ["unknown"]))
         # Worker model order cannot override oldest compatible job.
-        first = restarted.claim('both', ['model-b', 'model-a'])
-        self.assertEqual((first['job']['model'], first['job']['max_output_tokens']), ('model-a', 64))
-        second = restarted.claim('b-only', ['model-b'])
-        self.assertEqual((second['job']['model'], second['job']['max_output_tokens']), ('model-b', 128))
+        first = restarted.claim("both", ["model-b", "model-a"])
+        self.assertEqual(
+            (first["job"]["model"], first["job"]["max_output_tokens"]), ("model-a", 64)
+        )
+        second = restarted.claim("b-only", ["model-b"])
+        self.assertEqual(
+            (second["job"]["model"], second["job"]["max_output_tokens"]),
+            ("model-b", 128),
+        )
         for claim in (first, second):
-            restarted.result(claim['assignment_id'], self.payload(claim, 'bad'))
-            attempt = next(a['id'] for a in restarted.run(run_id)['attempts']
-                           if a['job_id'] == claim['job']['id'])
-            restarted.verified(attempt, VerificationResult(VerificationStatus.REJECTED, 'bad proof', 1))
+            restarted.result(claim["assignment_id"], self.payload(claim, "bad"))
+            attempt = next(
+                a["id"]
+                for a in restarted.run(run_id)["attempts"]
+                if a["job_id"] == claim["job"]["id"]
+            )
+            restarted.verified(
+                attempt, VerificationResult(VerificationStatus.REJECTED, "bad proof", 1)
+            )
         restarted = Store(self.path, clock=lambda: self.now)
         run = restarted.run(run_id)
-        self.assertEqual(run['initial_jobs'], groups)
-        self.assertEqual(len(run['jobs']), 5)
-        self.assertEqual([(j['model'], j['max_output_tokens']) for j in run['jobs'][3:]],
-                         [('model-a', 64), ('model-b', 128)])
-        repair = restarted.claim('b-only', ['model-b'])
-        self.assertEqual(repair['job']['repair_depth'], 1)
-        self.assertEqual(repair['job']['max_output_tokens'], 128)
-        self.assertEqual(run['jobs'][4]['max_assignments'], 2)
+        self.assertEqual(run["initial_jobs"], groups)
+        self.assertEqual(len(run["jobs"]), 5)
+        self.assertEqual(
+            [(j["model"], j["max_output_tokens"]) for j in run["jobs"][3:]],
+            [("model-a", 64), ("model-b", 128)],
+        )
+        repair = restarted.claim("b-only", ["model-b"])
+        self.assertEqual(repair["job"]["repair_depth"], 1)
+        self.assertEqual(repair["job"]["max_output_tokens"], 128)
+        self.assertEqual(run["jobs"][4]["max_assignments"], 2)
 
     def test_direct_submit_rejects_conflicting_initial_job_fields(self):
-        groups = [{'model': 'other', 'count': 1}]
-        for field, value in (('attempts', 2), ('model', 'other'),
-                             ('max_output_tokens', 64)):
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'cannot be combined'):
-                self.store.submit(': True', ['Init'], initial_jobs=groups, **{field: value})
+        groups = [{"model": "other", "count": 1}]
+        for field, value in (
+            ("attempts", 2),
+            ("model", "other"),
+            ("max_output_tokens", 64),
+        ):
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(ValueError, "cannot be combined"),
+            ):
+                self.store.submit(
+                    ": True", ["Init"], initial_jobs=groups, **{field: value}
+                )
         with self.store.connect() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM runs').fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM runs").fetchone()[0], 1)
 
     def test_expiry_and_stale_result(self):
-        a = self.store.claim('a', ['scripted'])
+        a = self.store.claim("a", ["scripted"])
         self.now += 4
-        b = self.store.claim('b', ['scripted'])
-        self.assertEqual(a['job']['id'], b['job']['id'])
-        self.assertNotEqual(a['lease_token'], b['lease_token'])
+        b = self.store.claim("b", ["scripted"])
+        self.assertEqual(a["job"]["id"], b["job"]["id"])
+        self.assertNotEqual(a["lease_token"], b["lease_token"])
         with self.assertRaises(Conflict):
-            self.store.result(a['assignment_id'], self.payload(a))
-        self.store.result(b['assignment_id'], self.payload(b))
+            self.store.result(a["assignment_id"], self.payload(a))
+        self.store.result(b["assignment_id"], self.payload(b))
 
     def test_heartbeat_and_token(self):
-        a = self.store.claim('a', ['scripted'])
+        a = self.store.claim("a", ["scripted"])
         with self.assertRaises(Conflict):
-            self.store.heartbeat(a['assignment_id'], 'wrong')
+            self.store.heartbeat(a["assignment_id"], "wrong")
         self.now += 2
-        self.store.heartbeat(a['assignment_id'], a['lease_token'])
+        self.store.heartbeat(a["assignment_id"], a["lease_token"])
         self.now += 2
-        self.assertIsNone(self.store.claim('b', ['scripted']))
+        self.assertIsNone(self.store.claim("b", ["scripted"]))
         self.now += 2
-        self.assertIsNotNone(self.store.claim('b', ['scripted']))
+        self.assertIsNotNone(self.store.claim("b", ["scripted"]))
 
     def test_retry_limit(self):
         for _ in range(3):
-            a = self.store.claim('a', ['scripted'])
-            self.store.result(a['assignment_id'], {'lease_token': a['lease_token'], 'status': 'failed', 'error': 'provider unavailable'})
-        self.assertIsNone(self.store.claim('a', ['scripted']))
-        self.assertEqual(self.store.run(self.run)['status'], 'exhausted')
+            a = self.store.claim("a", ["scripted"])
+            self.store.result(
+                a["assignment_id"],
+                {
+                    "lease_token": a["lease_token"],
+                    "status": "failed",
+                    "error": "provider unavailable",
+                },
+            )
+        self.assertIsNone(self.store.claim("a", ["scripted"]))
+        self.assertEqual(self.store.run(self.run)["status"], "exhausted")
 
     def test_transient_failure_retries_and_is_exposed(self):
-        a = self.store.claim('a', ['scripted'])
-        self.store.result(a['assignment_id'], {
-            'lease_token': a['lease_token'], 'status': 'failed',
-            'failure_class': 'transient', 'error': 'service unavailable'})
+        a = self.store.claim("a", ["scripted"])
+        self.store.result(
+            a["assignment_id"],
+            {
+                "lease_token": a["lease_token"],
+                "status": "failed",
+                "failure_class": "transient",
+                "error": "service unavailable",
+            },
+        )
         run = self.store.run(self.run)
-        self.assertEqual(run['status'], 'running')
-        self.assertEqual(run['jobs'][0]['status'], 'queued')
-        self.assertEqual(run['assignments'][0]['failure_class'], 'transient')
-        self.assertIsNotNone(self.store.claim('b', ['scripted']))
+        self.assertEqual(run["status"], "running")
+        self.assertEqual(run["jobs"][0]["status"], "queued")
+        self.assertEqual(run["assignments"][0]["failure_class"], "transient")
+        self.assertIsNotNone(self.store.claim("b", ["scripted"]))
 
     def test_permanent_failure_terminates_job_immediately(self):
-        a = self.store.claim('a', ['scripted'])
-        self.store.result(a['assignment_id'], {
-            'lease_token': a['lease_token'], 'status': 'failed',
-            'failure_class': 'permanent', 'error': 'invalid worker configuration'})
+        a = self.store.claim("a", ["scripted"])
+        self.store.result(
+            a["assignment_id"],
+            {
+                "lease_token": a["lease_token"],
+                "status": "failed",
+                "failure_class": "permanent",
+                "error": "invalid worker configuration",
+            },
+        )
         run = self.store.run(self.run)
-        self.assertEqual(run['status'], 'exhausted')
-        self.assertEqual(run['jobs'][0]['status'], 'failed')
-        self.assertEqual(run['assignments'][0]['failure_class'], 'permanent')
-        self.assertIsNone(self.store.claim('b', ['scripted']))
+        self.assertEqual(run["status"], "exhausted")
+        self.assertEqual(run["jobs"][0]["status"], "failed")
+        self.assertEqual(run["assignments"][0]["failure_class"], "permanent")
+        self.assertIsNone(self.store.claim("b", ["scripted"]))
 
     def test_assignment_rejection_promptly_requeues_without_spending_budget(self):
         run_id = self.store.submit(
-            ': True', ['Init'], attempts=1, model='reject-test', max_assignments=1)['run_id']
-        first = self.store.claim('incompatible', ['reject-test'])
-        self.store.result(first['assignment_id'], {
-            'lease_token': first['lease_token'],
-            'status': 'rejected',
-            'rejection_kind': 'unsupported_protocol',
-            'error': 'unsupported protocol_version 2',
-        })
+            ": True", ["Init"], attempts=1, model="reject-test", max_assignments=1
+        )["run_id"]
+        first = self.store.claim("incompatible", ["reject-test"])
+        self.store.result(
+            first["assignment_id"],
+            {
+                "lease_token": first["lease_token"],
+                "status": "rejected",
+                "rejection_kind": "unsupported_protocol",
+                "error": "unsupported protocol_version 2",
+            },
+        )
 
         # Recovery is immediate: the lease has not elapsed, and a one-assignment
         # budget remains because provider execution never began.
-        second = self.store.claim('compatible', ['reject-test'])
+        second = self.store.claim("compatible", ["reject-test"])
         self.assertIsNotNone(second)
-        self.assertEqual(second['job']['id'], first['job']['id'])
+        self.assertEqual(second["job"]["id"], first["job"]["id"])
         run = self.store.run(run_id)
-        self.assertEqual(run['jobs'][0]['status'], 'assigned')
-        self.assertEqual(run['assignments'][0]['status'], 'rejected')
+        self.assertEqual(run["jobs"][0]["status"], "assigned")
+        self.assertEqual(run["assignments"][0]["status"], "rejected")
         self.assertEqual(
-            run['assignments'][0]['rejection_kind'], 'unsupported_protocol')
+            run["assignments"][0]["rejection_kind"], "unsupported_protocol"
+        )
 
     def test_assignment_rejection_requires_lease_token(self):
-        first = self.store.claim('worker', ['scripted'])
+        first = self.store.claim("worker", ["scripted"])
         payload = {
-            'lease_token': 'wrong',
-            'status': 'rejected',
-            'rejection_kind': 'malformed_assignment',
-            'error': 'job.statement is missing',
+            "lease_token": "wrong",
+            "status": "rejected",
+            "rejection_kind": "malformed_assignment",
+            "error": "job.statement is missing",
         }
         with self.assertRaises(Conflict):
-            self.store.result(first['assignment_id'], payload)
-        self.assertIsNone(self.store.claim('other', ['scripted']))
+            self.store.result(first["assignment_id"], payload)
+        self.assertIsNone(self.store.claim("other", ["scripted"]))
         run = self.store.run(self.run)
-        self.assertEqual(run['assignments'][0]['status'], 'active')
-        self.assertEqual(run['jobs'][0]['status'], 'assigned')
+        self.assertEqual(run["assignments"][0]["status"], "active")
+        self.assertEqual(run["jobs"][0]["status"], "assigned")
 
     def test_old_worker_failure_defaults_to_transient(self):
-        a = self.store.claim('a', ['scripted'])
-        payload = {'lease_token': a['lease_token'], 'status': 'failed',
-                   'error': 'legacy failure'}
-        self.assertEqual(self.store.result(a['assignment_id'], payload), {'accepted': True})
+        a = self.store.claim("a", ["scripted"])
+        payload = {
+            "lease_token": a["lease_token"],
+            "status": "failed",
+            "error": "legacy failure",
+        }
+        self.assertEqual(
+            self.store.result(a["assignment_id"], payload), {"accepted": True}
+        )
         # Simulate a result persisted by a pre-classification coordinator.
         with self.store.transaction() as db:
-            legacy = json.dumps(payload, sort_keys=True, separators=(',', ':'))
-            db.execute("UPDATE assignments SET result=? WHERE id=?",
-                       (legacy, a['assignment_id']))
-        self.assertEqual(self.store.result(a['assignment_id'], payload), {'accepted': True})
+            legacy = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            db.execute(
+                "UPDATE assignments SET result=? WHERE id=?",
+                (legacy, a["assignment_id"]),
+            )
+        self.assertEqual(
+            self.store.result(a["assignment_id"], payload), {"accepted": True}
+        )
         run = self.store.run(self.run)
-        self.assertEqual(run['jobs'][0]['status'], 'queued')
-        self.assertEqual(run['assignments'][0]['failure_class'], 'transient')
+        self.assertEqual(run["jobs"][0]["status"], "queued")
+        self.assertEqual(run["assignments"][0]["failure_class"], "transient")
         with self.store.connect() as db:
-            persisted = json.loads(db.execute(
-                "SELECT result FROM assignments WHERE id=?", (a['assignment_id'],)).fetchone()[0])
-        self.assertEqual(persisted['failure_class'], 'transient')
+            persisted = json.loads(
+                db.execute(
+                    "SELECT result FROM assignments WHERE id=?", (a["assignment_id"],)
+                ).fetchone()[0]
+            )
+        self.assertEqual(persisted["failure_class"], "transient")
 
     def test_rejected_proof_is_not_retried(self):
-        a = self.store.claim('a', ['scripted'])
-        self.store.result(a['assignment_id'], self.payload(a, 'bad'))
+        a = self.store.claim("a", ["scripted"])
+        self.store.result(a["assignment_id"], self.payload(a, "bad"))
         Coordinator(self.store, FakeVerifier()).tick()
-        self.assertEqual(self.store.run(self.run)['status'], 'exhausted')
+        self.assertEqual(self.store.run(self.run)["status"], "exhausted")
 
     def test_verifier_error_stops_run(self):
-        a = self.store.claim('a', ['scripted'])
-        self.store.result(a['assignment_id'], self.payload(a))
-        self.store.verified(self.store.pending()['id'], VerificationResult(VerificationStatus.VERIFIER_ERROR, 'broken environment', 0))
-        self.assertEqual(self.store.run(self.run)['status'], 'error')
+        a = self.store.claim("a", ["scripted"])
+        self.store.result(a["assignment_id"], self.payload(a))
+        self.store.verified(
+            self.store.pending()["id"],
+            VerificationResult(
+                VerificationStatus.VERIFIER_ERROR, "broken environment", 0
+            ),
+        )
+        self.assertEqual(self.store.run(self.run)["status"], "error")
 
     def test_pending_verifications_follow_insertion_order_across_restarts(self):
-        self.store.claim('unrelated', ['scripted'])
+        self.store.claim("unrelated", ["scripted"])
         first_run = self.store.submit(
-            ': True', ['Init'], attempts=2, model='verification-order-a')['run_id']
+            ": True", ["Init"], attempts=2, model="verification-order-a"
+        )["run_id"]
         second_run = self.store.submit(
-            ': True', ['Init'], attempts=2, model='verification-order-b')['run_id']
+            ": True", ["Init"], attempts=2, model="verification-order-b"
+        )["run_id"]
         claims = {
-            'a1': self.store.claim('worker', ['verification-order-a']),
-            'a2': self.store.claim('worker', ['verification-order-a']),
-            'b1': self.store.claim('worker', ['verification-order-b']),
-            'b2': self.store.claim('worker', ['verification-order-b']),
+            "a1": self.store.claim("worker", ["verification-order-a"]),
+            "a2": self.store.claim("worker", ["verification-order-a"]),
+            "b1": self.store.claim("worker", ["verification-order-b"]),
+            "b2": self.store.claim("worker", ["verification-order-b"]),
         }
 
         # Candidate completion, rather than run or job creation, defines queue order.
-        expected = ['b2', 'a1', 'b1', 'a2']
+        expected = ["b2", "a1", "b1", "a2"]
         for name in expected:
             claim = claims[name]
-            self.store.result(claim['assignment_id'], self.payload(claim, name))
+            self.store.result(claim["assignment_id"], self.payload(claim, name))
 
         selected = []
-        for name in expected:
+        for _name in expected:
             restarted = Store(self.path, clock=lambda: self.now)
             pending = restarted.pending()
-            selected.append(pending['candidate'])
+            selected.append(pending["candidate"])
             restarted.verified(
-                pending['id'],
-                VerificationResult(VerificationStatus.TIMEOUT, 'test timeout', 1),
+                pending["id"],
+                VerificationResult(VerificationStatus.TIMEOUT, "test timeout", 1),
             )
 
         self.assertEqual(selected, expected)
         self.assertIsNone(Store(self.path).pending())
-        self.assertEqual(len(self.store.run(first_run)['attempts']), 2)
-        self.assertEqual(len(self.store.run(second_run)['attempts']), 2)
+        self.assertEqual(len(self.store.run(first_run)["attempts"]), 2)
+        self.assertEqual(len(self.store.run(second_run)["attempts"]), 2)
 
     def test_verified_proof_has_precedence_in_both_delivery_orders(self):
         for first, second in (
-                (VerificationStatus.VERIFIER_ERROR, VerificationStatus.VERIFIED),
-                (VerificationStatus.VERIFIED, VerificationStatus.VERIFIER_ERROR)):
+            (VerificationStatus.VERIFIER_ERROR, VerificationStatus.VERIFIED),
+            (VerificationStatus.VERIFIED, VerificationStatus.VERIFIER_ERROR),
+        ):
             with self.subTest(first=first, second=second):
                 run_id = self.store.submit(
-                    ': True', ['Init'], attempts=2, model='terminal-order')['run_id']
+                    ": True", ["Init"], attempts=2, model="terminal-order"
+                )["run_id"]
                 assignments = [
-                    self.store.claim('worker', ['terminal-order']) for _ in range(2)]
+                    self.store.claim("worker", ["terminal-order"]) for _ in range(2)
+                ]
                 attempt_ids = []
                 for assignment in assignments:
-                    self.store.result(assignment['assignment_id'], self.payload(assignment))
-                    attempt_ids.append(next(
-                        attempt['id'] for attempt in self.store.run(run_id)['attempts']
-                        if attempt['job_id'] == assignment['job']['id']))
+                    self.store.result(
+                        assignment["assignment_id"], self.payload(assignment)
+                    )
+                    attempt_ids.append(
+                        next(
+                            attempt["id"]
+                            for attempt in self.store.run(run_id)["attempts"]
+                            if attempt["job_id"] == assignment["job"]["id"]
+                        )
+                    )
 
                 self.store.verified(
-                    attempt_ids[0], VerificationResult(first, 'first outcome', 1))
-                expected_first = 'solved' if first is VerificationStatus.VERIFIED else 'error'
-                self.assertEqual(self.store.run(run_id)['status'], expected_first)
+                    attempt_ids[0], VerificationResult(first, "first outcome", 1)
+                )
+                expected_first = (
+                    "solved" if first is VerificationStatus.VERIFIED else "error"
+                )
+                self.assertEqual(self.store.run(run_id)["status"], expected_first)
                 self.store.verified(
-                    attempt_ids[1], VerificationResult(second, 'second outcome', 1))
+                    attempt_ids[1], VerificationResult(second, "second outcome", 1)
+                )
 
                 run = self.store.run(run_id)
-                self.assertEqual(run['status'], 'solved')
+                self.assertEqual(run["status"], "solved")
                 self.assertCountEqual(
-                    [attempt['verification_status'] for attempt in run['attempts']],
-                    ['verified', 'verifier_error'])
+                    [attempt["verification_status"] for attempt in run["attempts"]],
+                    ["verified", "verifier_error"],
+                )
 
     def test_already_assigned_job_finishes_after_terminal_state(self):
         for terminal, late, expected in (
-                (VerificationStatus.VERIFIER_ERROR, VerificationStatus.VERIFIED, 'solved'),
-                (VerificationStatus.VERIFIED, VerificationStatus.VERIFIER_ERROR, 'solved')):
+            (VerificationStatus.VERIFIER_ERROR, VerificationStatus.VERIFIED, "solved"),
+            (VerificationStatus.VERIFIED, VerificationStatus.VERIFIER_ERROR, "solved"),
+        ):
             with self.subTest(terminal=terminal, late=late):
                 run_id = self.store.submit(
-                    ': True', ['Init'], attempts=2, model='late-terminal')['run_id']
-                first = self.store.claim('first', ['late-terminal'])
-                late_assignment = self.store.claim('late', ['late-terminal'])
+                    ": True", ["Init"], attempts=2, model="late-terminal"
+                )["run_id"]
+                first = self.store.claim("first", ["late-terminal"])
+                late_assignment = self.store.claim("late", ["late-terminal"])
 
-                self.store.result(first['assignment_id'], self.payload(first))
+                self.store.result(first["assignment_id"], self.payload(first))
                 first_attempt = next(
-                    attempt['id'] for attempt in self.store.run(run_id)['attempts']
-                    if attempt['job_id'] == first['job']['id'])
+                    attempt["id"]
+                    for attempt in self.store.run(run_id)["attempts"]
+                    if attempt["job_id"] == first["job"]["id"]
+                )
                 self.store.verified(
-                    first_attempt, VerificationResult(terminal, 'terminal outcome', 1))
+                    first_attempt, VerificationResult(terminal, "terminal outcome", 1)
+                )
 
                 # Work claimed before the terminal transition remains valid.
                 self.assertEqual(
-                    self.store.result(late_assignment['assignment_id'], self.payload(late_assignment)),
-                    {'accepted': True})
+                    self.store.result(
+                        late_assignment["assignment_id"], self.payload(late_assignment)
+                    ),
+                    {"accepted": True},
+                )
                 late_attempt = next(
-                    attempt['id'] for attempt in self.store.run(run_id)['attempts']
-                    if attempt['job_id'] == late_assignment['job']['id'])
-                self.store.verified(late_attempt, VerificationResult(late, 'late outcome', 1))
+                    attempt["id"]
+                    for attempt in self.store.run(run_id)["attempts"]
+                    if attempt["job_id"] == late_assignment["job"]["id"]
+                )
+                self.store.verified(
+                    late_attempt, VerificationResult(late, "late outcome", 1)
+                )
 
                 run = self.store.run(run_id)
-                self.assertEqual(run['status'], expected)
-                self.assertEqual([job['status'] for job in run['jobs']], ['done', 'done'])
+                self.assertEqual(run["status"], expected)
+                self.assertEqual(
+                    [job["status"] for job in run["jobs"]], ["done", "done"]
+                )
 
     def test_concurrent_terminal_outcomes_and_duplicate_delivery_are_stable(self):
         run_id = self.store.submit(
-            ': True', ['Init'], attempts=2, model='concurrent-terminal')['run_id']
+            ": True", ["Init"], attempts=2, model="concurrent-terminal"
+        )["run_id"]
         assignments = [
-            self.store.claim('worker', ['concurrent-terminal']) for _ in range(2)]
+            self.store.claim("worker", ["concurrent-terminal"]) for _ in range(2)
+        ]
         for assignment in assignments:
-            self.store.result(assignment['assignment_id'], self.payload(assignment))
-        attempts = self.store.run(run_id)['attempts']
+            self.store.result(assignment["assignment_id"], self.payload(assignment))
+        attempts = self.store.run(run_id)["attempts"]
         outcomes = (
-            VerificationResult(VerificationStatus.VERIFIED, 'valid proof', 1),
-            VerificationResult(VerificationStatus.VERIFIER_ERROR, 'broken verifier', 1),
+            VerificationResult(VerificationStatus.VERIFIED, "valid proof", 1),
+            VerificationResult(VerificationStatus.VERIFIER_ERROR, "broken verifier", 1),
         )
-        deliveries = list(zip([attempt['id'] for attempt in attempts], outcomes))
+        deliveries = list(
+            zip([attempt["id"] for attempt in attempts], outcomes, strict=True)
+        )
 
         with ThreadPoolExecutor(max_workers=4) as pool:
-            list(pool.map(lambda delivery: self.store.verified(*delivery), deliveries * 2))
+            list(
+                pool.map(
+                    lambda delivery: self.store.verified(*delivery), deliveries * 2
+                )
+            )
 
         run = self.store.run(run_id)
-        self.assertEqual(run['status'], 'solved')
+        self.assertEqual(run["status"], "solved")
         self.assertCountEqual(
-            [attempt['verification_status'] for attempt in run['attempts']],
-            ['verified', 'verifier_error'])
+            [attempt["verification_status"] for attempt in run["attempts"]],
+            ["verified", "verifier_error"],
+        )
 
     def test_solved_run_cancels_queued_jobs(self):
-        other = self.store.submit(': True', ['Init'], attempts=3)['run_id']
-        first = self.store.claim('a', ['scripted'])
-        self.store.result(first['assignment_id'], self.payload(first))
+        other = self.store.submit(": True", ["Init"], attempts=3)["run_id"]
+        first = self.store.claim("a", ["scripted"])
+        self.store.result(first["assignment_id"], self.payload(first))
         Coordinator(self.store, FakeVerifier()).tick()
-        a = self.store.claim('a', ['scripted'])
-        self.store.result(a['assignment_id'], self.payload(a))
+        a = self.store.claim("a", ["scripted"])
+        self.store.result(a["assignment_id"], self.payload(a))
         Coordinator(self.store, FakeVerifier()).tick()
         run = self.store.run(other)
-        self.assertEqual(run['status'], 'solved')
-        self.assertEqual([j['status'] for j in run['jobs']].count('cancelled'), 2)
+        self.assertEqual(run["status"], "solved")
+        self.assertEqual([j["status"] for j in run["jobs"]].count("cancelled"), 2)
 
     def test_migration_preserves_v1_history(self):
-        path = Path(self.temp.name) / 'legacy.db'
+        path = Path(self.temp.name) / "legacy.db"
         with sqlite3.connect(path) as db:
             db.executescript(SCHEMA)
             db.execute("INSERT INTO problems VALUES ('p', ': True', '[\"Init\"]')")
             db.execute("INSERT INTO runs VALUES ('r', 'p', 'solved')")
-            db.execute("INSERT INTO jobs VALUES ('j', 'r', 'done', 'scripted', 2048, 3)")
-            db.execute("INSERT INTO assignments VALUES ('a', 'j', 'w', 'token', 2000, 'completed', NULL)")
-            db.execute("INSERT INTO attempts VALUES ('t', 'a', 'trivial', 'scripted', '{}')")
+            db.execute(
+                "INSERT INTO jobs VALUES ('j', 'r', 'done', 'scripted', 2048, 3)"
+            )
+            db.execute(
+                "INSERT INTO assignments VALUES ('a', 'j', 'w', 'token', 2000, 'completed', NULL)"
+            )
+            db.execute(
+                "INSERT INTO attempts VALUES ('t', 'a', 'trivial', 'scripted', '{}')"
+            )
             db.execute("INSERT INTO verifications VALUES ('t', 'verified', '', 10)")
         migrated = Store(path)
-        run = migrated.run('r')
-        self.assertEqual(run['status'], 'solved')
-        self.assertEqual(run['attempts'][0]['candidate'], 'trivial')
-        self.assertEqual(run['attempts'][0]['generation'], {})
+        run = migrated.run("r")
+        self.assertEqual(run["status"], "solved")
+        self.assertEqual(run["attempts"][0]["candidate"], "trivial")
+        self.assertEqual(run["attempts"][0]["generation"], {})
         with migrated.connect() as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 25)
-        self.assertEqual(run['generation_timeout_seconds'], 120)
-        self.assertEqual(run['max_assignments'], 3)
-        self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 120)
-        self.assertEqual(run['initial_jobs'], [
-            {'model': 'scripted', 'count': 1, 'max_output_tokens': 2048}])
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 25)
+        self.assertEqual(run["generation_timeout_seconds"], 120)
+        self.assertEqual(run["max_assignments"], 3)
+        self.assertEqual(run["jobs"][0]["generation_timeout_seconds"], 120)
+        self.assertEqual(
+            run["initial_jobs"],
+            [{"model": "scripted", "count": 1, "max_output_tokens": 2048}],
+        )
         # Opening again must not repeat ALTER TABLE; new work must still function.
         migrated = Store(path, clock=lambda: self.now)
-        new = migrated.submit(': True', ['Init'], attempts=1)['run_id']
-        a = migrated.claim('w', ['scripted'])
+        new = migrated.submit(": True", ["Init"], attempts=1)["run_id"]
+        a = migrated.claim("w", ["scripted"])
         payload = self.payload(a)
-        payload['generation'] = {'raw_response': '{"proof":"rfl"}', 'model': 'reported', 'eval_duration_ns': 100}
-        payload['usage'] = {'input_tokens': 0, 'output_tokens': 12}
-        migrated.result(a['assignment_id'], payload)
-        migrated.result(a['assignment_id'], payload)
-        saved = Store(path).run(new)['attempts']
+        payload["generation"] = {
+            "raw_response": '{"proof":"rfl"}',
+            "model": "reported",
+            "eval_duration_ns": 100,
+        }
+        payload["usage"] = {"input_tokens": 0, "output_tokens": 12}
+        migrated.result(a["assignment_id"], payload)
+        migrated.result(a["assignment_id"], payload)
+        saved = Store(path).run(new)["attempts"]
         self.assertEqual(len(saved), 1)
-        self.assertEqual(saved[0]['generation'], payload['generation'])
-        self.assertEqual(saved[0]['model'], 'scripted')
-        self.assertEqual(saved[0]['usage'], payload['usage'])
+        self.assertEqual(saved[0]["generation"], payload["generation"])
+        self.assertEqual(saved[0]["model"], "scripted")
+        self.assertEqual(saved[0]["usage"], payload["usage"])
 
     def test_generation_timeout_is_persisted_across_restart(self):
         # Leave the default job assigned so the custom queued job is claimed next.
-        self.store.claim('other-worker', ['scripted'])
-        run_id = self.store.submit(': True', ['Init'], attempts=1,
-                                   generation_timeout_seconds=321)['run_id']
+        self.store.claim("other-worker", ["scripted"])
+        run_id = self.store.submit(
+            ": True", ["Init"], attempts=1, generation_timeout_seconds=321
+        )["run_id"]
         restarted = Store(self.path, clock=lambda: self.now)
-        claim = restarted.claim('worker', ['scripted'])
-        self.assertEqual(claim['job']['timeout_seconds'], 321)
+        claim = restarted.claim("worker", ["scripted"])
+        self.assertEqual(claim["job"]["timeout_seconds"], 321)
         run = restarted.run(run_id)
-        self.assertEqual(run['generation_timeout_seconds'], 321)
-        self.assertEqual(run['jobs'][0]['generation_timeout_seconds'], 321)
+        self.assertEqual(run["generation_timeout_seconds"], 321)
+        self.assertEqual(run["jobs"][0]["generation_timeout_seconds"], 321)
 
     def test_custom_assignment_limit_is_persisted_across_restart(self):
         # Leave the default job assigned so the custom queued job is claimed next.
-        self.store.claim('other-worker', ['scripted'])
-        run_id = self.store.submit(': True', ['Init'], attempts=1, max_assignments=2)['run_id']
+        self.store.claim("other-worker", ["scripted"])
+        run_id = self.store.submit(": True", ["Init"], attempts=1, max_assignments=2)[
+            "run_id"
+        ]
         restarted = Store(self.path, clock=lambda: self.now)
-        claim = restarted.claim('worker', ['scripted'])
-        restarted.result(claim['assignment_id'], {
-            'lease_token': claim['lease_token'], 'status': 'failed',
-            'error': 'provider unavailable'})
+        claim = restarted.claim("worker", ["scripted"])
+        restarted.result(
+            claim["assignment_id"],
+            {
+                "lease_token": claim["lease_token"],
+                "status": "failed",
+                "error": "provider unavailable",
+            },
+        )
         restarted = Store(self.path, clock=lambda: self.now)
-        claim = restarted.claim('worker', ['scripted'])
-        restarted.result(claim['assignment_id'], {
-            'lease_token': claim['lease_token'], 'status': 'failed',
-            'error': 'provider unavailable'})
-        self.assertIsNone(restarted.claim('worker', ['scripted']))
+        claim = restarted.claim("worker", ["scripted"])
+        restarted.result(
+            claim["assignment_id"],
+            {
+                "lease_token": claim["lease_token"],
+                "status": "failed",
+                "error": "provider unavailable",
+            },
+        )
+        self.assertIsNone(restarted.claim("worker", ["scripted"]))
         run = Store(self.path).run(run_id)
-        self.assertEqual(run['max_assignments'], 2)
-        self.assertEqual(run['jobs'][0]['max_assignments'], 2)
-        self.assertEqual(len(run['assignments']), 2)
-        self.assertEqual(run['status'], 'exhausted')
+        self.assertEqual(run["max_assignments"], 2)
+        self.assertEqual(run["jobs"][0]["max_assignments"], 2)
+        self.assertEqual(len(run["assignments"]), 2)
+        self.assertEqual(run["status"], "exhausted")
 
 
 class APITests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.store = Store(Path(self.temp.name) / 'state.db')
+        self.store = Store(Path(self.temp.name) / "state.db")
         self.coordinator = Coordinator(self.store, FakeVerifier())
-        self.server = make_server(self.coordinator, ('127.0.0.1', 0))
+        self.server = make_server(self.coordinator, ("127.0.0.1", 0))
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
-        self.url = 'http://127.0.0.1:' + str(self.server.server_port)
+        self.url = "http://127.0.0.1:" + str(self.server.server_port)
 
     def tearDown(self):
         self.server.shutdown()
@@ -577,8 +752,11 @@ class APITests(unittest.TestCase):
         self.temp.cleanup()
 
     def request(self, path, data=None):
-        req = Request(self.url + path, data=json.dumps(data).encode() if data is not None else None,
-                      headers={'Content-Type': 'application/json'})
+        req = Request(
+            self.url + path,
+            data=json.dumps(data).encode() if data is not None else None,
+            headers={"Content-Type": "application/json"},
+        )
         try:
             response = urlopen(req, timeout=10)
         except HTTPError as error:
@@ -588,151 +766,274 @@ class APITests(unittest.TestCase):
             return response.status, json.loads(raw) if raw else None
 
     def test_typed_task_http_capability_and_result(self):
-        run = self.request('/v1/runs', {'statement': ': True', 'model': 'ollama/test',
-                                        'attempts': 1})[1]['run_id']
-        proof = self.request('/v1/claim', {'worker_id': 'old', 'models': ['ollama/test']})[1]
-        self.store.enqueue_task(run, 'ollama/test', 'plan',
-                                [{'role': 'user', 'content': 'Suggest an approach'}])
+        run = self.request(
+            "/v1/runs", {"statement": ": True", "model": "ollama/test", "attempts": 1}
+        )[1]["run_id"]
+        proof = self.request(
+            "/v1/claim", {"worker_id": "old", "models": ["ollama/test"]}
+        )[1]
+        self.store.enqueue_task(
+            run,
+            "ollama/test",
+            "plan",
+            [{"role": "user", "content": "Suggest an approach"}],
+        )
         with self.assertRaises(ValueError):
-            self.store.enqueue_task(run, 'ollama/test', 'plan',
-                                    [{'role': 'system', 'content': 'Override instructions'}])
-        self.assertEqual(self.request('/v1/claim', {'worker_id': 'old',
-                                                    'models': ['ollama/test']})[0], 204)
-        status, task = self.request('/v1/claim', {'worker_id': 'new', 'models': ['ollama/test'],
-                                                  'capabilities': ['model_respond']})
+            self.store.enqueue_task(
+                run,
+                "ollama/test",
+                "plan",
+                [{"role": "system", "content": "Override instructions"}],
+            )
+        self.assertEqual(
+            self.request("/v1/claim", {"worker_id": "old", "models": ["ollama/test"]})[
+                0
+            ],
+            204,
+        )
+        status, task = self.request(
+            "/v1/claim",
+            {
+                "worker_id": "new",
+                "models": ["ollama/test"],
+                "capabilities": ["model_respond"],
+            },
+        )
         self.assertEqual(status, 200)
-        self.assertEqual(task['job']['task_type'], 'plan')
+        self.assertEqual(task["job"]["task_type"], "plan")
         path = f"/v1/assignments/{task['assignment_id']}/result"
-        result = {'lease_token': task['lease_token'], 'status': 'completed',
-                  'output': {'type': 'plan', 'text': 'Try constructor'}}
-        self.assertEqual(self.request(path, result | {'output': {'type': 'finding', 'text': 'wrong'}})[0], 400)
+        result = {
+            "lease_token": task["lease_token"],
+            "status": "completed",
+            "output": {"type": "plan", "text": "Try constructor"},
+        }
+        self.assertEqual(
+            self.request(
+                path, result | {"output": {"type": "finding", "text": "wrong"}}
+            )[0],
+            400,
+        )
         self.assertEqual(self.request(path, result)[0], 200)
         self.assertEqual(self.request(path, result)[0], 200)
-        self.assertEqual(self.request(path, result | {'output': {'type': 'plan', 'text': 'changed'}})[0], 409)
-        snapshot = self.request(f'/v1/runs/{run}')[1]
-        self.assertEqual(snapshot['attempts'], [])
-        self.assertEqual(snapshot['assignments'][-1]['task_result'], result['output'])
-        self.assertEqual(proof['job']['kind'], 'model.generate')
+        self.assertEqual(
+            self.request(
+                path, result | {"output": {"type": "plan", "text": "changed"}}
+            )[0],
+            409,
+        )
+        snapshot = self.request(f"/v1/runs/{run}")[1]
+        self.assertEqual(snapshot["attempts"], [])
+        self.assertEqual(snapshot["assignments"][-1]["task_result"], result["output"])
+        self.assertEqual(proof["job"]["kind"], "model.generate")
 
     def test_group_loop_http_creation_and_inspection(self):
-        options = {'request_key': 'local-group', 'statement': ': True ∧ True',
-                   'imports': ['Init'], 'environment': 'lean-test',
-                   'models': {role: 'scripted' for role in
-                              ('planner', 'investigator', 'critic', 'synthesizer')}}
-        status, created = self.request('/v1/groups', options)
+        options = {
+            "request_key": "local-group",
+            "statement": ": True ∧ True",
+            "imports": ["Init"],
+            "environment": "lean-test",
+            "models": dict.fromkeys(
+                ("planner", "investigator", "critic", "synthesizer"), "scripted"
+            ),
+        }
+        status, created = self.request("/v1/groups", options)
         self.assertEqual(status, 201)
-        group_id = created['id']
-        self.assertEqual(self.request('/v1/groups', options)[1]['id'], group_id)
-        status, snapshot = self.request(f'/v1/groups/{group_id}')
+        group_id = created["id"]
+        self.assertEqual(self.request("/v1/groups", options)[1]["id"], group_id)
+        status, snapshot = self.request(f"/v1/groups/{group_id}")
         self.assertEqual(status, 200)
-        self.assertEqual(snapshot['loop']['phase'], 'plan')
-        self.assertEqual(len(snapshot['group']['agents']), 5)
-        graph_options = options | {'request_key': 'graph-group', 'mode': 'graph',
-                                   'graph_limits': {'verification_operations': 3}}
-        status, graph = self.request('/v1/groups', graph_options)
+        self.assertEqual(snapshot["loop"]["phase"], "plan")
+        self.assertEqual(len(snapshot["group"]["agents"]), 5)
+        graph_options = options | {
+            "request_key": "graph-group",
+            "mode": "graph",
+            "graph_limits": {"verification_operations": 3},
+        }
+        status, graph = self.request("/v1/groups", graph_options)
         self.assertEqual(status, 201)
-        self.assertEqual(graph['loop']['mode'], 'graph')
-        self.assertEqual(graph['loop']['phase'], 'frontier')
-        self.assertEqual(graph['loop']['limits']['verification_operations'], 3)
-        self.assertEqual(self.request('/v1/groups', graph_options)[1]['id'], graph['id'])
-        self.assertEqual(self.request('/v1/groups', graph_options | {'mode': 'fixed'})[0], 400)
-        self.assertIn('frontier', self.request('/v1/groups/' + graph['id'])[1]['group'])
-        self.assertEqual(self.request('/v1/groups/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')[0], 404)
-        for key in ('request_key', 'statement', 'imports', 'environment', 'models'):
+        self.assertEqual(graph["loop"]["mode"], "graph")
+        self.assertEqual(graph["loop"]["phase"], "frontier")
+        self.assertEqual(graph["loop"]["limits"]["verification_operations"], 3)
+        self.assertEqual(
+            self.request("/v1/groups", graph_options)[1]["id"], graph["id"]
+        )
+        self.assertEqual(
+            self.request("/v1/groups", graph_options | {"mode": "fixed"})[0], 400
+        )
+        self.assertIn("frontier", self.request("/v1/groups/" + graph["id"])[1]["group"])
+        self.assertEqual(
+            self.request("/v1/groups/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")[0], 404
+        )
+        for key in ("request_key", "statement", "imports", "environment", "models"):
             with self.subTest(missing=key):
-                self.assertEqual(self.request('/v1/groups', {k: v for k, v in options.items()
-                                                              if k != key})[0], 400)
-        for deadline in (float('nan'), float('inf'), float('-inf')):
+                self.assertEqual(
+                    self.request(
+                        "/v1/groups", {k: v for k, v in options.items() if k != key}
+                    )[0],
+                    400,
+                )
+        for deadline in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(deadline=deadline):
-                self.assertEqual(self.request('/v1/groups', options | {
-                    'request_key': 'bad-' + str(deadline), 'deadline': deadline})[0], 400)
+                self.assertEqual(
+                    self.request(
+                        "/v1/groups",
+                        options
+                        | {"request_key": "bad-" + str(deadline), "deadline": deadline},
+                    )[0],
+                    400,
+                )
 
     def test_archived_artifact_inspection_qualifies_historical_verification(self):
-        models = {role: 'scripted' for role in ('planner', 'investigator', 'critic', 'synthesizer')}
-        group = self.store.start_group_loop('archived', ': True ∧ True', ['Init'],
-                                            'lean-test', models)
-        agent = next(a['id'] for a in self.store.group(group)['agents']
-                     if a['role'] == 'investigator')
-        task = self.store.add_group_task(group, 'lemma', agent, agent, 'Auxiliary claim', 1)
-        artifact = self.store.propose_group_artifact(group, 'lemma', agent, task,
-                                                     ': True', ['Init'], 'lean-test', 'trivial')
-        binding = self.store.bind_group_artifact_verifier('local:old')
-        self.store.checked_group_artifact(artifact, 'verified', binding=binding)
+        models = dict.fromkeys(
+            ("planner", "investigator", "critic", "synthesizer"), "scripted"
+        )
+        group = self.store.start_group_loop(
+            "archived", ": True ∧ True", ["Init"], "lean-test", models
+        )
+        agent = next(
+            a["id"]
+            for a in self.store.group(group)["agents"]
+            if a["role"] == "investigator"
+        )
+        task = self.store.add_group_task(
+            group, "lemma", agent, agent, "Auxiliary claim", 1
+        )
+        artifact = self.store.propose_group_artifact(
+            group, "lemma", agent, task, ": True", ["Init"], "lean-test", "trivial"
+        )
+        binding = self.store.bind_group_artifact_verifier("local:old")
+        self.store.checked_group_artifact(artifact, "verified", binding=binding)
         with self.store.transaction() as db:
-            db.execute("UPDATE group_loops SET phase='stopped',reason='budget' WHERE group_id=?",
-                       (group,))
-        self.assertEqual(self.store.group(group)['artifacts'][0]['status'], 'verified')
-        self.assertEqual(self.store.group(group)['artifacts'][0]['current_status'], 'needs_recheck')
-        with patch.object(self.coordinator.verifier, 'artifact_identity', create=True,
-                          return_value='local:old') as identity:
-            self.assertEqual(self.request(f'/v1/groups/{group}')[1]['group']['artifacts'][0]
-                             ['current_status'], 'verified')
+            db.execute(
+                "UPDATE group_loops SET phase='stopped',reason='budget' WHERE group_id=?",
+                (group,),
+            )
+        self.assertEqual(self.store.group(group)["artifacts"][0]["status"], "verified")
+        self.assertEqual(
+            self.store.group(group)["artifacts"][0]["current_status"], "needs_recheck"
+        )
+        with patch.object(
+            self.coordinator.verifier,
+            "artifact_identity",
+            create=True,
+            return_value="local:old",
+        ) as identity:
+            self.assertEqual(
+                self.request(f"/v1/groups/{group}")[1]["group"]["artifacts"][0][
+                    "current_status"
+                ],
+                "verified",
+            )
             self.coordinator.tick()
             identity.assert_called_once()  # GET only, not an archived-group scheduler scan
-        with patch.object(self.coordinator.verifier, 'artifact_identity', create=True,
-                          return_value='local:new'):
-            snapshot = self.request(f'/v1/groups/{group}')[1]
-        observed = snapshot['group']['artifacts'][0]
-        self.assertEqual(observed['status'], 'verified')  # historical outcome
-        self.assertEqual(observed['verifier_identity'], 'local:old')
-        self.assertEqual(observed['current_status'], 'needs_recheck')
+        with patch.object(
+            self.coordinator.verifier,
+            "artifact_identity",
+            create=True,
+            return_value="local:new",
+        ):
+            snapshot = self.request(f"/v1/groups/{group}")[1]
+        observed = snapshot["group"]["artifacts"][0]
+        self.assertEqual(observed["status"], "verified")  # historical outcome
+        self.assertEqual(observed["verifier_identity"], "local:old")
+        self.assertEqual(observed["current_status"], "needs_recheck")
 
     def test_protocol_field_byte_boundaries(self):
-        for field, maximum in (('statement', limits.MAX_STATEMENT_BYTES),
-                               ('model', limits.MAX_MODEL_BYTES)):
+        for field, maximum in (
+            ("statement", limits.MAX_STATEMENT_BYTES),
+            ("model", limits.MAX_MODEL_BYTES),
+        ):
             for extra, expected in ((0, 201), (1, 400)):
                 with self.subTest(field=field, extra=extra):
-                    data = {'statement': ': True', field: 'é' * (maximum // 2) + 'x' * extra}
-                    self.assertEqual(self.request('/v1/runs', data)[0], expected)
-        for value, expected in ((limits.MAX_OUTPUT_TOKENS, 201),
-                                (limits.MAX_OUTPUT_TOKENS + 1, 400)):
-            self.assertEqual(self.request('/v1/runs', {
-                'statement': ': True', 'max_output_tokens': value})[0], expected)
-        for value, expected in ((limits.MAX_GENERATION_TIMEOUT_SECONDS, 201),
-                                (limits.MAX_GENERATION_TIMEOUT_SECONDS + 1, 400)):
-            self.assertEqual(self.request('/v1/runs', {
-                'statement': ': True', 'generation_timeout_seconds': value})[0], expected)
+                    data = {
+                        "statement": ": True",
+                        field: "é" * (maximum // 2) + "x" * extra,
+                    }
+                    self.assertEqual(self.request("/v1/runs", data)[0], expected)
+        for value, expected in (
+            (limits.MAX_OUTPUT_TOKENS, 201),
+            (limits.MAX_OUTPUT_TOKENS + 1, 400),
+        ):
+            self.assertEqual(
+                self.request(
+                    "/v1/runs", {"statement": ": True", "max_output_tokens": value}
+                )[0],
+                expected,
+            )
+        for value, expected in (
+            (limits.MAX_GENERATION_TIMEOUT_SECONDS, 201),
+            (limits.MAX_GENERATION_TIMEOUT_SECONDS + 1, 400),
+        ):
+            self.assertEqual(
+                self.request(
+                    "/v1/runs",
+                    {"statement": ": True", "generation_timeout_seconds": value},
+                )[0],
+                expected,
+            )
 
-        self.request('/v1/runs', {'statement': ': True'})
-        claim = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})[1]
+        self.request("/v1/runs", {"statement": ": True"})
+        claim = self.request("/v1/claim", {"worker_id": "w", "models": ["scripted"]})[1]
         path = f"/v1/assignments/{claim['assignment_id']}/result"
-        for field, maximum in (('text', limits.MAX_CANDIDATE_BYTES),
-                               ('raw_response', limits.MAX_RAW_RESPONSE_BYTES)):
+        for field, maximum in (
+            ("text", limits.MAX_CANDIDATE_BYTES),
+            ("raw_response", limits.MAX_RAW_RESPONSE_BYTES),
+        ):
             for extra, expected in ((0, 200), (1, 400)):
                 with self.subTest(field=field, extra=extra):
-                    value = 'é' * (maximum // 2) + 'x' * extra
-                    data = {'lease_token': claim['lease_token'], 'status': 'completed',
-                            'output': {'text': value if field == 'text' else 'rfl'},
-                            'generation': {'raw_response': value if field == 'raw_response' else ''}}
+                    value = "é" * (maximum // 2) + "x" * extra
+                    data = {
+                        "lease_token": claim["lease_token"],
+                        "status": "completed",
+                        "output": {"text": value if field == "text" else "rfl"},
+                        "generation": {
+                            "raw_response": value if field == "raw_response" else ""
+                        },
+                    }
                     self.assertEqual(self.request(path, data)[0], expected)
-            if field == 'text':
+            if field == "text":
                 # Next claim must belong to a newly submitted run.
-                self.request('/v1/runs', {'statement': ': True'})
-                claim = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})[1]
+                self.request("/v1/runs", {"statement": ": True"})
+                claim = self.request(
+                    "/v1/claim", {"worker_id": "w", "models": ["scripted"]}
+                )[1]
                 path = f"/v1/assignments/{claim['assignment_id']}/result"
 
     def test_request_body_byte_boundaries(self):
-        for path, maximum in (('/v1/claim', limits.MAX_REQUEST_BYTES),
-                              ('/v1/assignments/' + 'a' * 32 + '/result', limits.MAX_RESULT_REQUEST_BYTES)):
+        for path, maximum in (
+            ("/v1/claim", limits.MAX_REQUEST_BYTES),
+            (
+                "/v1/assignments/" + "a" * 32 + "/result",
+                limits.MAX_RESULT_REQUEST_BYTES,
+            ),
+        ):
             for extra, expected in ((0, 400), (1, 413)):
                 # At the cap JSON is decoded and field validation (or routing) applies.
                 if extra:
                     # The server rejects Content-Length before reading; avoid
                     # racing its early close by streaming a multi-MiB body.
-                    connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
-                    connection.request('POST', path, b'', {'Content-Length': str(maximum + 1)})
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", self.server.server_port
+                    )
+                    connection.request(
+                        "POST", path, b"", {"Content-Length": str(maximum + 1)}
+                    )
                     response = connection.getresponse()
                     status = response.status
                     response.read()
                     connection.close()
                 else:
-                    body = b'{' + b' ' * (maximum - 2) + b'}'
-                    status = self.method_request('POST', path, body)[0]
+                    body = b"{" + b" " * (maximum - 2) + b"}"
+                    status = self.method_request("POST", path, body)[0]
                 self.assertEqual(status, expected)
 
-    def method_request(self, method, path, body=b''):
-        req = Request(self.url + path, data=body, method=method,
-                      headers={'Content-Type': 'application/json'})
+    def method_request(self, method, path, body=b""):
+        req = Request(
+            self.url + path,
+            data=body,
+            method=method,
+            headers={"Content-Type": "application/json"},
+        )
         try:
             response = urlopen(req, timeout=10)
         except HTTPError as error:
@@ -742,545 +1043,893 @@ class APITests(unittest.TestCase):
             return response.status, json.loads(raw) if raw else None, response.headers
 
     def test_http_lifecycle_and_validation(self):
-        self.assertEqual(self.request('/v1/runs', {'statement': ': True', 'attempts': True})[0], 400)
-        for invalid in (-1, MAX_REPAIRS + 1, True, '2', None, 1.5):
-            self.assertEqual(self.request('/v1/runs', {'statement': ': True', 'max_repairs': invalid})[0], 400)
-        for invalid in (0, 86401, True, '120', None, 1.5):
-            code, error = self.request('/v1/runs', {
-                'statement': ': True', 'generation_timeout_seconds': invalid})
+        self.assertEqual(
+            self.request("/v1/runs", {"statement": ": True", "attempts": True})[0], 400
+        )
+        for invalid in (-1, MAX_REPAIRS + 1, True, "2", None, 1.5):
+            self.assertEqual(
+                self.request(
+                    "/v1/runs", {"statement": ": True", "max_repairs": invalid}
+                )[0],
+                400,
+            )
+        for invalid in (0, 86401, True, "120", None, 1.5):
+            code, error = self.request(
+                "/v1/runs",
+                {"statement": ": True", "generation_timeout_seconds": invalid},
+            )
             self.assertEqual(code, 400)
-            self.assertIn('generation_timeout_seconds', error['error'])
-        for invalid in (0, 101, True, '3', None, 1.5):
-            code, error = self.request('/v1/runs', {
-                'statement': ': True', 'max_assignments': invalid})
+            self.assertIn("generation_timeout_seconds", error["error"])
+        for invalid in (0, 101, True, "3", None, 1.5):
+            code, error = self.request(
+                "/v1/runs", {"statement": ": True", "max_assignments": invalid}
+            )
             self.assertEqual(code, 400)
-            self.assertIn('max_assignments', error['error'])
-        code, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n',
-                                             'attempts': 1, 'generation_timeout_seconds': 321,
-                                             'max_assignments': 2})
+            self.assertIn("max_assignments", error["error"])
+        code, run = self.request(
+            "/v1/runs",
+            {
+                "statement": "(n : Nat) : n + 0 = n",
+                "attempts": 1,
+                "generation_timeout_seconds": 321,
+                "max_assignments": 2,
+            },
+        )
         self.assertEqual(code, 201)
-        self.assertEqual(self.request('/v1/claim', {'worker_id': 'w', 'models': ['unknown']})[0], 204)
-        _, a = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})
-        self.assertEqual(a['job']['timeout_seconds'], 321)
-        route = '/v1/assignments/' + a['assignment_id']
-        self.assertEqual(self.request(route + '/heartbeat', {'lease_token': a['lease_token']})[0], 200)
-        payload = {'lease_token': a['lease_token'], 'status': 'completed', 'output': {'text': 'rfl'}}
-        self.assertEqual(self.request(route + '/result', payload)[0], 200)
-        self.assertEqual(self.request(route + '/result', payload)[0], 200)
+        self.assertEqual(
+            self.request("/v1/claim", {"worker_id": "w", "models": ["unknown"]})[0], 204
+        )
+        _, a = self.request("/v1/claim", {"worker_id": "w", "models": ["scripted"]})
+        self.assertEqual(a["job"]["timeout_seconds"], 321)
+        route = "/v1/assignments/" + a["assignment_id"]
+        self.assertEqual(
+            self.request(route + "/heartbeat", {"lease_token": a["lease_token"]})[0],
+            200,
+        )
+        payload = {
+            "lease_token": a["lease_token"],
+            "status": "completed",
+            "output": {"text": "rfl"},
+        }
+        self.assertEqual(self.request(route + "/result", payload)[0], 200)
+        self.assertEqual(self.request(route + "/result", payload)[0], 200)
         self.coordinator.tick()
-        outcome = self.request('/v1/runs/' + run['run_id'])[1]
-        self.assertEqual(outcome['status'], 'solved')
-        self.assertEqual(outcome['generation_timeout_seconds'], 321)
-        self.assertEqual(outcome['max_assignments'], 2)
-        self.assertEqual(outcome['jobs'][0]['generation_timeout_seconds'], 321)
-        self.assertEqual(outcome['jobs'][0]['max_assignments'], 2)
+        outcome = self.request("/v1/runs/" + run["run_id"])[1]
+        self.assertEqual(outcome["status"], "solved")
+        self.assertEqual(outcome["generation_timeout_seconds"], 321)
+        self.assertEqual(outcome["max_assignments"], 2)
+        self.assertEqual(outcome["jobs"][0]["generation_timeout_seconds"], 321)
+        self.assertEqual(outcome["jobs"][0]["max_assignments"], 2)
 
     def test_unexpected_store_type_error_is_internal_error(self):
-        with patch.object(self.store, 'submit', side_effect=TypeError('store bug')):
-            with patch('solvenet.server.LOG'):
-                self.assertEqual(self.request('/v1/runs', {'statement': ': True'}),
-                                 (500, {'error': 'Internal coordinator error'}))
+        with patch.object(self.store, "submit", side_effect=TypeError("store bug")):
+            with patch("solvenet.server.LOG"):
+                self.assertEqual(
+                    self.request("/v1/runs", {"statement": ": True"}),
+                    (500, {"error": "Internal coordinator error"}),
+                )
 
     def test_initial_jobs_api_compatibility_and_bounds(self):
-        base = {'statement': ': True'}
-        groups = [{'model': 'a', 'count': 2, 'max_output_tokens': 64},
-                  {'model': 'b', 'count': 1}]
-        code, submitted = self.request('/v1/runs', {**base, 'initial_jobs': groups})
+        base = {"statement": ": True"}
+        groups = [
+            {"model": "a", "count": 2, "max_output_tokens": 64},
+            {"model": "b", "count": 1},
+        ]
+        code, submitted = self.request("/v1/runs", {**base, "initial_jobs": groups})
         self.assertEqual(code, 201)
-        run = self.request('/v1/runs/' + submitted['run_id'])[1]
-        expected = [{'model': 'a', 'count': 2, 'max_output_tokens': 64},
-                    {'model': 'b', 'count': 1, 'max_output_tokens': 2048}]
-        self.assertEqual(run['initial_jobs'], expected)
-        self.assertEqual([j['model'] for j in run['jobs']], ['a', 'a', 'b'])
-        self.assertEqual(self.request('/v1/claim', {'worker_id': 'w', 'models': ['b']})[1]['job']['model'], 'b')
-        code, old = self.request('/v1/runs', {**base, 'model': 'legacy', 'attempts': 2,
-                                              'max_output_tokens': 32})
+        run = self.request("/v1/runs/" + submitted["run_id"])[1]
+        expected = [
+            {"model": "a", "count": 2, "max_output_tokens": 64},
+            {"model": "b", "count": 1, "max_output_tokens": 2048},
+        ]
+        self.assertEqual(run["initial_jobs"], expected)
+        self.assertEqual([j["model"] for j in run["jobs"]], ["a", "a", "b"])
+        self.assertEqual(
+            self.request("/v1/claim", {"worker_id": "w", "models": ["b"]})[1]["job"][
+                "model"
+            ],
+            "b",
+        )
+        code, old = self.request(
+            "/v1/runs",
+            {**base, "model": "legacy", "attempts": 2, "max_output_tokens": 32},
+        )
         self.assertEqual(code, 201)
-        self.assertEqual(self.request('/v1/runs/' + old['run_id'])[1]['initial_jobs'],
-                         [{'model': 'legacy', 'count': 2, 'max_output_tokens': 32}])
+        self.assertEqual(
+            self.request("/v1/runs/" + old["run_id"])[1]["initial_jobs"],
+            [{"model": "legacy", "count": 2, "max_output_tokens": 32}],
+        )
 
-        for key, value in (('attempts', 3), ('model', 'scripted'), ('max_output_tokens', 2048)):
-            code, error = self.request('/v1/runs', {**base, 'initial_jobs': groups, key: value})
+        for key, value in (
+            ("attempts", 3),
+            ("model", "scripted"),
+            ("max_output_tokens", 2048),
+        ):
+            code, error = self.request(
+                "/v1/runs", {**base, "initial_jobs": groups, key: value}
+            )
             self.assertEqual(code, 400)
-            self.assertIn('initial_jobs cannot be combined', error['error'])
-        invalid_groups = (None, [], {}, 'a', [None], [{'model': 'a'}],
-                          [{'model': 'a', 'count': True}], [{'model': 'a', 'count': 0}],
-                          [{'model': 'a', 'count': 101}], [{'model': '', 'count': 1}],
-                          [{'model': 'é' * 129, 'count': 1}],
-                          [{'model': 'a', 'count': 1, 'max_output_tokens': 0}],
-                          [{'model': 'a', 'count': 1, 'max_output_tokens': True}],
-                          [{'model': 'a', 'count': 1, 'max_output_tokens': 32769}],
-                          [{'model': 'a', 'count': 1, 'extra': 1}],
-                          [{'model': 'a', 'count': 51}, {'model': 'b', 'count': 50}],
-                          [{'model': 'a', 'count': 1}] * 101)
+            self.assertIn("initial_jobs cannot be combined", error["error"])
+        invalid_groups = (
+            None,
+            [],
+            {},
+            "a",
+            [None],
+            [{"model": "a"}],
+            [{"model": "a", "count": True}],
+            [{"model": "a", "count": 0}],
+            [{"model": "a", "count": 101}],
+            [{"model": "", "count": 1}],
+            [{"model": "é" * 129, "count": 1}],
+            [{"model": "a", "count": 1, "max_output_tokens": 0}],
+            [{"model": "a", "count": 1, "max_output_tokens": True}],
+            [{"model": "a", "count": 1, "max_output_tokens": 32769}],
+            [{"model": "a", "count": 1, "extra": 1}],
+            [{"model": "a", "count": 51}, {"model": "b", "count": 50}],
+            [{"model": "a", "count": 1}] * 101,
+        )
         for groups_value in invalid_groups:
             with self.subTest(groups=groups_value):
-                code, error = self.request('/v1/runs', {**base, 'initial_jobs': groups_value})
+                code, error = self.request(
+                    "/v1/runs", {**base, "initial_jobs": groups_value}
+                )
                 self.assertEqual(code, 400)
-                self.assertIn('initial_jobs', error['error'])
-        self.assertEqual(self.request('/v1/runs', {
-            **base, 'initial_jobs': [{'model': 'a', 'count': 100,
-                                      'max_output_tokens': limits.MAX_OUTPUT_TOKENS}]})[0], 201)
+                self.assertIn("initial_jobs", error["error"])
+        self.assertEqual(
+            self.request(
+                "/v1/runs",
+                {
+                    **base,
+                    "initial_jobs": [
+                        {
+                            "model": "a",
+                            "count": 100,
+                            "max_output_tokens": limits.MAX_OUTPUT_TOKENS,
+                        }
+                    ],
+                },
+            )[0],
+            201,
+        )
 
     def test_max_repairs_api_upper_bound_is_accepted(self):
         code, submitted = self.request(
-            '/v1/runs', {'statement': ': True', 'max_repairs': MAX_REPAIRS})
+            "/v1/runs", {"statement": ": True", "max_repairs": MAX_REPAIRS}
+        )
         self.assertEqual(code, 201)
-        outcome = self.request('/v1/runs/' + submitted['run_id'])[1]
-        self.assertEqual(outcome['max_repairs'], MAX_REPAIRS)
+        outcome = self.request("/v1/runs/" + submitted["run_id"])[1]
+        self.assertEqual(outcome["max_repairs"], MAX_REPAIRS)
 
     def test_run_queries_and_percent_encoded_identifiers(self):
-        _, submitted = self.request('/v1/runs?client=test', {'statement': ': True'})
-        run_id = submitted['run_id']
-        code, queried = self.request(f'/v1/runs/{run_id}?include=all')
+        _, submitted = self.request("/v1/runs?client=test", {"statement": ": True"})
+        run_id = submitted["run_id"]
+        code, queried = self.request(f"/v1/runs/{run_id}?include=all")
         self.assertEqual(code, 200)
-        self.assertEqual(queried['id'], run_id)
+        self.assertEqual(queried["id"], run_id)
 
-        encoded_id = f'%{ord(run_id[0]):02X}{run_id[1:]}'
-        code, encoded = self.request(f'/v1/runs/{encoded_id}')
+        encoded_id = f"%{ord(run_id[0]):02X}{run_id[1:]}"
+        code, encoded = self.request(f"/v1/runs/{encoded_id}")
         self.assertEqual(code, 200)
-        self.assertEqual(encoded['id'], run_id)
+        self.assertEqual(encoded["id"], run_id)
 
     def test_liveness_is_independent_from_verifier_readiness(self):
         self.coordinator.verifier.readiness_result = VerifierReadiness(
-            False, 'Lean toolchain is unavailable')
-        self.assertEqual(self.request('/health'), (200, {'status': 'ok'}))
+            False, "Lean toolchain is unavailable"
+        )
+        self.assertEqual(self.request("/health"), (200, {"status": "ok"}))
 
     def test_readiness_reports_verifier_availability(self):
-        self.assertEqual(self.request('/ready'), (200, {'status': 'ready'}))
+        self.assertEqual(self.request("/ready"), (200, {"status": "ready"}))
 
         self.coordinator.verifier.readiness_result = VerifierReadiness(
-            False, 'Docker image is missing')
-        self.assertEqual(self.request('/ready'), (
-            503,
-            {'status': 'unavailable', 'diagnostics': 'Docker image is missing'},
-        ))
+            False, "Docker image is missing"
+        )
+        self.assertEqual(
+            self.request("/ready"),
+            (
+                503,
+                {"status": "unavailable", "diagnostics": "Docker image is missing"},
+            ),
+        )
 
     def test_malformed_paths_return_json_errors(self):
         paths = (
-            '/v1/runs/',
-            '/v1/runs/not-an-id',
-            '/v1/runs/' + 'a' * 32 + '/extra',
-            '/v1//runs/' + 'a' * 32,
-            '/v1/runs/%',
-            '/v1/runs/%2F',
-            '/v1/assignments//result',
+            "/v1/runs/",
+            "/v1/runs/not-an-id",
+            "/v1/runs/" + "a" * 32 + "/extra",
+            "/v1//runs/" + "a" * 32,
+            "/v1/runs/%",
+            "/v1/runs/%2F",
+            "/v1/assignments//result",
         )
         for path in paths:
             with self.subTest(path=path):
-                status, error, headers = self.method_request('GET', path)
+                status, error, headers = self.method_request("GET", path)
                 self.assertIn(status, (400, 404))
-                self.assertEqual(headers.get_content_type(), 'application/json')
-                self.assertEqual(set(error), {'error'})
+                self.assertEqual(headers.get_content_type(), "application/json")
+                self.assertEqual(set(error), {"error"})
 
         status, error, headers = self.method_request(
-            'POST', '/v1/assignments/not-an-id/result', b'{}')
+            "POST", "/v1/assignments/not-an-id/result", b"{}"
+        )
         self.assertEqual(status, 404)
-        self.assertEqual(headers.get_content_type(), 'application/json')
-        self.assertEqual(error, {'error': 'Unknown endpoint'})
+        self.assertEqual(headers.get_content_type(), "application/json")
+        self.assertEqual(error, {"error": "Unknown endpoint"})
         status, error, _ = self.method_request(
-            'POST', '/v1/assignments/' + 'a' * 32 + '/unknown', b'{}')
+            "POST", "/v1/assignments/" + "a" * 32 + "/unknown", b"{}"
+        )
         self.assertEqual(status, 404)
-        self.assertEqual(error, {'error': 'Unknown endpoint'})
+        self.assertEqual(error, {"error": "Unknown endpoint"})
 
     def test_unsupported_methods_return_json_405(self):
-        for method in ('PUT', 'DELETE', 'PATCH'):
+        for method in ("PUT", "DELETE", "PATCH"):
             with self.subTest(method=method):
                 status, error, headers = self.method_request(
-                    method, '/v1/runs', json.dumps({'statement': ': True'}).encode())
+                    method, "/v1/runs", json.dumps({"statement": ": True"}).encode()
+                )
                 self.assertEqual(status, 405)
-                self.assertEqual(error, {'error': 'Method not allowed'})
-                self.assertEqual(headers.get_content_type(), 'application/json')
-                self.assertEqual(headers['Allow'], 'GET, HEAD, POST')
+                self.assertEqual(error, {"error": "Method not allowed"})
+                self.assertEqual(headers.get_content_type(), "application/json")
+                self.assertEqual(headers["Allow"], "GET, HEAD, POST")
 
     def test_malformed_content_length_and_json_return_json(self):
-        status, error, headers = self.method_request('POST', '/v1/runs', b'{bad json')
+        status, error, headers = self.method_request("POST", "/v1/runs", b"{bad json")
         self.assertEqual(status, 400)
-        self.assertEqual(error, {'error': 'Body must be valid UTF-8 JSON'})
-        self.assertEqual(headers.get_content_type(), 'application/json')
+        self.assertEqual(error, {"error": "Body must be valid UTF-8 JSON"})
+        self.assertEqual(headers.get_content_type(), "application/json")
 
-        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=10)
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_port, timeout=10
+        )
         self.addCleanup(connection.close)
-        connection.putrequest('POST', '/v1/runs')
-        connection.putheader('Content-Type', 'application/json')
-        connection.putheader('Content-Length', 'invalid')
+        connection.putrequest("POST", "/v1/runs")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", "invalid")
         connection.endheaders()
         response = connection.getresponse()
         raw = response.read()
         self.assertEqual(response.status, 400)
-        self.assertEqual(response.headers.get_content_type(), 'application/json')
-        self.assertEqual(json.loads(raw), {'error': 'Content-Length must be an integer'})
+        self.assertEqual(response.headers.get_content_type(), "application/json")
+        self.assertEqual(
+            json.loads(raw), {"error": "Content-Length must be an integer"}
+        )
 
     def test_head_uses_get_status_and_sends_no_body(self):
-        status, body, headers = self.method_request('HEAD', '/missing')
+        status, body, headers = self.method_request("HEAD", "/missing")
         self.assertEqual(status, 404)
         self.assertIsNone(body)
-        self.assertEqual(headers.get_content_type(), 'application/json')
-        self.assertGreater(int(headers['Content-Length']), 0)
+        self.assertEqual(headers.get_content_type(), "application/json")
+        self.assertGreater(int(headers["Content-Length"]), 0)
 
     def test_failed_generation_metadata_validation_and_retention(self):
-        _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1})
-        _, a = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})
-        route = '/v1/assignments/' + a['assignment_id'] + '/result'
-        payload = {'lease_token': a['lease_token'], 'status': 'failed', 'error': 'Invalid proof JSON'}
-        for generation in ([], {'raw_response': 3}, {'raw_response': 'x' * (128 * 1024 + 1)},
-                           {'eval_duration_ns': -1}, {'eval_duration_ns': True},
-                           {'raw_response_truncated': 'yes'}, {'model': 'x'*257}):
+        _, run = self.request("/v1/runs", {"statement": ": True", "attempts": 1})
+        _, a = self.request("/v1/claim", {"worker_id": "w", "models": ["scripted"]})
+        route = "/v1/assignments/" + a["assignment_id"] + "/result"
+        payload = {
+            "lease_token": a["lease_token"],
+            "status": "failed",
+            "error": "Invalid proof JSON",
+        }
+        for generation in (
+            [],
+            {"raw_response": 3},
+            {"raw_response": "x" * (128 * 1024 + 1)},
+            {"eval_duration_ns": -1},
+            {"eval_duration_ns": True},
+            {"raw_response_truncated": "yes"},
+            {"model": "x" * 257},
+        ):
             with self.subTest(generation_type=type(generation)):
-                self.assertEqual(self.request(route, {**payload, 'generation': generation})[0], 400)
-        self.assertEqual(self.request(route, {**payload, 'usage': {'output_tokens': -1}})[0], 400)
+                self.assertEqual(
+                    self.request(route, {**payload, "generation": generation})[0], 400
+                )
+        self.assertEqual(
+            self.request(route, {**payload, "usage": {"output_tokens": -1}})[0], 400
+        )
         # Escaped Unicode can exceed the old 256 KiB HTTP envelope limit.
-        payload['generation'] = {'raw_response': 'é' * 60000, 'model': 'reported', 'finish_reason': 'length'}
-        payload['usage'] = {'output_tokens': 2048, 'input_tokens': None}
+        payload["generation"] = {
+            "raw_response": "é" * 60000,
+            "model": "reported",
+            "finish_reason": "length",
+        }
+        payload["usage"] = {"output_tokens": 2048, "input_tokens": None}
         self.assertEqual(self.request(route, payload)[0], 200)
         self.assertEqual(self.request(route, payload)[0], 200)
-        outcome = self.request('/v1/runs/' + run['run_id'])[1]
-        self.assertEqual(outcome['attempts'], [])
-        self.assertEqual(outcome['jobs'][0]['status'], 'queued')
-        self.assertEqual(outcome['assignments'][0]['generation'], payload['generation'])
-        self.assertEqual(outcome['assignments'][0]['usage'], payload['usage'])
-        self.assertEqual(outcome['assignments'][0]['failure_class'], 'transient')
+        outcome = self.request("/v1/runs/" + run["run_id"])[1]
+        self.assertEqual(outcome["attempts"], [])
+        self.assertEqual(outcome["jobs"][0]["status"], "queued")
+        self.assertEqual(outcome["assignments"][0]["generation"], payload["generation"])
+        self.assertEqual(outcome["assignments"][0]["usage"], payload["usage"])
+        self.assertEqual(outcome["assignments"][0]["failure_class"], "transient")
 
     def test_failure_class_validation(self):
-        _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1})
-        _, a = self.request('/v1/claim', {'worker_id': 'w', 'models': ['scripted']})
-        route = '/v1/assignments/' + a['assignment_id'] + '/result'
-        base = {'lease_token': a['lease_token'], 'status': 'failed', 'error': 'bad config'}
-        for invalid in ('retryable', '', None, 1, True):
-            self.assertEqual(self.request(route, {**base, 'failure_class': invalid})[0], 400)
-        self.assertEqual(self.request(route, {**base, 'failure_class': 'permanent'})[0], 200)
-        outcome = self.request('/v1/runs/' + run['run_id'])[1]
-        self.assertEqual(outcome['status'], 'exhausted')
-        self.assertEqual(outcome['assignments'][0]['failure_class'], 'permanent')
+        _, run = self.request("/v1/runs", {"statement": ": True", "attempts": 1})
+        _, a = self.request("/v1/claim", {"worker_id": "w", "models": ["scripted"]})
+        route = "/v1/assignments/" + a["assignment_id"] + "/result"
+        base = {
+            "lease_token": a["lease_token"],
+            "status": "failed",
+            "error": "bad config",
+        }
+        for invalid in ("retryable", "", None, 1, True):
+            self.assertEqual(
+                self.request(route, {**base, "failure_class": invalid})[0], 400
+            )
+        self.assertEqual(
+            self.request(route, {**base, "failure_class": "permanent"})[0], 200
+        )
+        outcome = self.request("/v1/runs/" + run["run_id"])[1]
+        self.assertEqual(outcome["status"], "exhausted")
+        self.assertEqual(outcome["assignments"][0]["failure_class"], "permanent")
 
     def test_rejection_validation_and_token_authentication(self):
-        _, run = self.request('/v1/runs', {
-            'statement': ': True', 'attempts': 1, 'max_assignments': 1})
+        _, run = self.request(
+            "/v1/runs", {"statement": ": True", "attempts": 1, "max_assignments": 1}
+        )
         _, assignment = self.request(
-            '/v1/claim', {'worker_id': 'w', 'models': ['scripted']})
-        route = '/v1/assignments/' + assignment['assignment_id'] + '/result'
+            "/v1/claim", {"worker_id": "w", "models": ["scripted"]}
+        )
+        route = "/v1/assignments/" + assignment["assignment_id"] + "/result"
         base = {
-            'status': 'rejected',
-            'error': 'job.kind must be model.generate',
-            'rejection_kind': 'malformed_assignment',
+            "status": "rejected",
+            "error": "job.kind must be model.generate",
+            "rejection_kind": "malformed_assignment",
         }
-        self.assertEqual(self.request(route, {
-            **base, 'lease_token': assignment['lease_token'],
-            'rejection_kind': 'other'})[0], 400)
-        self.assertEqual(self.request(route, {
-            **base, 'lease_token': 'wrong'})[0], 409)
-        self.assertEqual(self.request(route, {
-            **base, 'lease_token': assignment['lease_token']})[0], 200)
-        self.assertEqual(self.request(route, {
-            **base, 'lease_token': assignment['lease_token']})[0], 200)
+        self.assertEqual(
+            self.request(
+                route,
+                {
+                    **base,
+                    "lease_token": assignment["lease_token"],
+                    "rejection_kind": "other",
+                },
+            )[0],
+            400,
+        )
+        self.assertEqual(self.request(route, {**base, "lease_token": "wrong"})[0], 409)
+        self.assertEqual(
+            self.request(route, {**base, "lease_token": assignment["lease_token"]})[0],
+            200,
+        )
+        self.assertEqual(
+            self.request(route, {**base, "lease_token": assignment["lease_token"]})[0],
+            200,
+        )
 
         _, replacement = self.request(
-            '/v1/claim', {'worker_id': 'replacement', 'models': ['scripted']})
-        self.assertEqual(replacement['job']['id'], assignment['job']['id'])
-        outcome = self.request('/v1/runs/' + run['run_id'])[1]
-        self.assertEqual(outcome['assignments'][0]['status'], 'rejected')
+            "/v1/claim", {"worker_id": "replacement", "models": ["scripted"]}
+        )
+        self.assertEqual(replacement["job"]["id"], assignment["job"]["id"])
+        outcome = self.request("/v1/runs/" + run["run_id"])[1]
+        self.assertEqual(outcome["assignments"][0]["status"], "rejected")
         self.assertEqual(
-            outcome['assignments'][0]['rejection_kind'], 'malformed_assignment')
+            outcome["assignments"][0]["rejection_kind"], "malformed_assignment"
+        )
 
-    @unittest.skipUnless(shutil.which('go'), 'Go required')
+    @unittest.skipUnless(shutil.which("go"), "Go required")
     def test_go_ollama_unavailable_does_not_claim_and_recovers(self):
         available = False
 
         class OllamaHandler(BaseHTTPRequestHandler):
             def do_GET(handler):
-                self.assertEqual(handler.path, '/api/tags')
-                body = (b'{"models":[{"name":"test:7b"}]}' if available else b'{"models":[]}')
+                self.assertEqual(handler.path, "/api/tags")
+                body = (
+                    b'{"models":[{"name":"test:7b"}]}'
+                    if available
+                    else b'{"models":[]}'
+                )
                 handler.send_response(200)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
 
             def do_POST(handler):
                 self.assertTrue(available)
-                handler.rfile.read(int(handler.headers['Content-Length']))
-                body = json.dumps({'done': True, 'message': {'content': '{"proof":"rfl"}'}}).encode()
+                handler.rfile.read(int(handler.headers["Content-Length"]))
+                body = json.dumps(
+                    {"done": True, "message": {"content": '{"proof":"rfl"}'}}
+                ).encode()
                 handler.send_response(200)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
 
-        ollama = ThreadingHTTPServer(('127.0.0.1', 0), OllamaHandler)
+        ollama = ThreadingHTTPServer(("127.0.0.1", 0), OllamaHandler)
         thread = threading.Thread(target=ollama.serve_forever)
         thread.start()
         try:
             self.coordinator.verifier = FakeVerifier()
-            _, submitted = self.request('/v1/runs', {'statement': ': True', 'attempts': 1,
-                                                     'model': 'ollama/test:7b', 'max_output_tokens': 64})
+            _, submitted = self.request(
+                "/v1/runs",
+                {
+                    "statement": ": True",
+                    "attempts": 1,
+                    "model": "ollama/test:7b",
+                    "max_output_tokens": 64,
+                },
+            )
 
             def worker():
-                subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url,
-                                '-provider', 'ollama', '-model', 'test:7b', '-ollama-url',
-                                f'http://127.0.0.1:{ollama.server_port}', '-once'],
-                               cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True)
+                subprocess.run(
+                    [
+                        "go",
+                        "run",
+                        "./cmd/solvenet-worker",
+                        "-coordinator",
+                        self.url,
+                        "-provider",
+                        "ollama",
+                        "-model",
+                        "test:7b",
+                        "-ollama-url",
+                        f"http://127.0.0.1:{ollama.server_port}",
+                        "-once",
+                    ],
+                    cwd=ROOT / "worker",
+                    timeout=120,
+                    check=True,
+                    capture_output=True,
+                )
 
             worker()
-            run_id = submitted['run_id']
-            self.assertEqual(self.request('/v1/runs/' + run_id)[1]['assignments'], [])
-            activity = self.request('/v1/model-activity?model=ollama%2Ftest%3A7b')[1]['items'][0]
-            self.assertEqual(activity['status'], 'unavailable')
-            self.assertEqual(activity['reason'], 'Ollama model not installed')
+            run_id = submitted["run_id"]
+            self.assertEqual(self.request("/v1/runs/" + run_id)[1]["assignments"], [])
+            activity = self.request("/v1/model-activity?model=ollama%2Ftest%3A7b")[1][
+                "items"
+            ][0]
+            self.assertEqual(activity["status"], "unavailable")
+            self.assertEqual(activity["reason"], "Ollama model not installed")
             available = True
             worker()
             self.coordinator.tick()
-            self.assertEqual(self.request('/v1/runs/' + run_id)[1]['status'], 'solved')
+            self.assertEqual(self.request("/v1/runs/" + run_id)[1]["status"], "solved")
         finally:
             ollama.shutdown()
             thread.join()
             ollama.server_close()
 
-    @unittest.skipUnless(shutil.which('go'), 'Go required')
+    @unittest.skipUnless(shutil.which("go"), "Go required")
     def test_go_ollama_worker_success_and_format_failure(self):
-        replies = [json.dumps({'proof': '```lean\nrfl\n```'}), json.dumps({'proof': 'refl'}), 'not valid JSON']
+        replies = [
+            json.dumps({"proof": "```lean\nrfl\n```"}),
+            json.dumps({"proof": "refl"}),
+            "not valid JSON",
+        ]
 
         class OllamaHandler(BaseHTTPRequestHandler):
             def do_GET(handler):
-                self.assertEqual(handler.path, '/api/tags')
+                self.assertEqual(handler.path, "/api/tags")
                 body = b'{"models":[{"name":"test:7b"}]}'
                 handler.send_response(200)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
 
             def do_POST(handler):
-                self.assertEqual(handler.path, '/api/chat')
-                request = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
-                self.assertEqual(request['model'], 'test:7b')
-                self.assertEqual(request['options']['num_predict'], 64)
-                body = json.dumps({'done': True, 'model': 'test:7b-reported', 'done_reason': 'stop',
-                                   'message': {'content': replies.pop(0)}, 'prompt_eval_count': 52,
-                                   'eval_count': 10, 'eval_duration': 2000000}).encode()
+                self.assertEqual(handler.path, "/api/chat")
+                request = json.loads(
+                    handler.rfile.read(int(handler.headers["Content-Length"]))
+                )
+                self.assertEqual(request["model"], "test:7b")
+                self.assertEqual(request["options"]["num_predict"], 64)
+                body = json.dumps(
+                    {
+                        "done": True,
+                        "model": "test:7b-reported",
+                        "done_reason": "stop",
+                        "message": {"content": replies.pop(0)},
+                        "prompt_eval_count": 52,
+                        "eval_count": 10,
+                        "eval_duration": 2000000,
+                    }
+                ).encode()
                 handler.send_response(200)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
 
-        ollama = ThreadingHTTPServer(('127.0.0.1', 0), OllamaHandler)
+        ollama = ThreadingHTTPServer(("127.0.0.1", 0), OllamaHandler)
         thread = threading.Thread(target=ollama.serve_forever)
         thread.start()
         try:
-            self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
-            for index, expected in enumerate(('solved', 'exhausted', 'exhausted')):
-                _, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n', 'attempts': 1,
-                                                 'model': 'ollama/test:7b', 'max_output_tokens': 64})
-                subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url,
-                                '-provider', 'ollama', '-model', 'test:7b', '-ollama-url',
-                                f'http://127.0.0.1:{ollama.server_port}', '-once'],
-                               cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True)
+            self.coordinator.verifier = LeanVerifier(ROOT / "lean")
+            for index, expected in enumerate(("solved", "exhausted", "exhausted")):
+                _, run = self.request(
+                    "/v1/runs",
+                    {
+                        "statement": "(n : Nat) : n + 0 = n",
+                        "attempts": 1,
+                        "model": "ollama/test:7b",
+                        "max_output_tokens": 64,
+                    },
+                )
+                subprocess.run(
+                    [
+                        "go",
+                        "run",
+                        "./cmd/solvenet-worker",
+                        "-coordinator",
+                        self.url,
+                        "-provider",
+                        "ollama",
+                        "-model",
+                        "test:7b",
+                        "-ollama-url",
+                        f"http://127.0.0.1:{ollama.server_port}",
+                        "-once",
+                    ],
+                    cwd=ROOT / "worker",
+                    timeout=120,
+                    check=True,
+                    capture_output=True,
+                )
                 self.coordinator.tick()
-                outcome = self.request('/v1/runs/' + run['run_id'])[1]
-                self.assertEqual(outcome['status'], expected, outcome)
-                assignment = outcome['assignments'][0]
-                self.assertEqual(assignment['generation']['model'], 'test:7b-reported')
-                self.assertEqual(assignment['usage']['output_tokens'], 10)
+                outcome = self.request("/v1/runs/" + run["run_id"])[1]
+                self.assertEqual(outcome["status"], expected, outcome)
+                assignment = outcome["assignments"][0]
+                self.assertEqual(assignment["generation"]["model"], "test:7b-reported")
+                self.assertEqual(assignment["usage"]["output_tokens"], 10)
                 if index < 2:
-                    attempt = outcome['attempts'][0]
-                    self.assertEqual(attempt['candidate'], 'rfl' if expected == 'solved' else 'refl')
-                    self.assertEqual(attempt['verification_status'], 'verified' if expected == 'solved' else 'rejected')
-                    self.assertEqual(attempt['model'], 'ollama/test:7b')
-                    self.assertEqual(attempt['generation']['eval_duration_ns'], 2000000)
+                    attempt = outcome["attempts"][0]
+                    self.assertEqual(
+                        attempt["candidate"], "rfl" if expected == "solved" else "refl"
+                    )
+                    self.assertEqual(
+                        attempt["verification_status"],
+                        "verified" if expected == "solved" else "rejected",
+                    )
+                    self.assertEqual(attempt["model"], "ollama/test:7b")
+                    self.assertEqual(attempt["generation"]["eval_duration_ns"], 2000000)
                 else:
-                    self.assertEqual(assignment['generation']['raw_response'], 'not valid JSON')
-                    self.assertIn('proof format', assignment['error'])
-                    self.assertEqual(assignment['failure_class'], 'permanent')
-                    self.assertEqual(outcome['attempts'], [])
+                    self.assertEqual(
+                        assignment["generation"]["raw_response"], "not valid JSON"
+                    )
+                    self.assertIn("proof format", assignment["error"])
+                    self.assertEqual(assignment["failure_class"], "permanent")
+                    self.assertEqual(outcome["attempts"], [])
         finally:
             ollama.shutdown()
             thread.join()
             ollama.server_close()
 
-    @unittest.skipUnless(shutil.which('go') and shutil.which('lake'), 'Go and Lake required')
+    @unittest.skipUnless(
+        shutil.which("go") and shutil.which("lake"), "Go and Lake required"
+    )
     def test_go_openai_worker_verifies_via_job_protocol(self):
         class OpenAIHandler(BaseHTTPRequestHandler):
             def do_POST(handler):
-                self.assertEqual(handler.path, '/v1/chat/completions')
-                self.assertEqual(handler.headers['Authorization'], 'Bearer fake-worker-key')
-                request = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
-                self.assertEqual(request['model'], 'gpt-4o-mini')
-                self.assertEqual(request['max_tokens'], 64)
-                self.assertEqual(request['response_format']['type'], 'json_object')
-                body = json.dumps({'model': 'gpt-4o-mini-reported', 'choices': [
-                    {'finish_reason': 'stop', 'message': {'content': '{"proof":"rfl"}'}}],
-                    'usage': {'prompt_tokens': 55, 'completion_tokens': 8}}).encode()
+                self.assertEqual(handler.path, "/v1/chat/completions")
+                self.assertEqual(
+                    handler.headers["Authorization"], "Bearer fake-worker-key"
+                )
+                request = json.loads(
+                    handler.rfile.read(int(handler.headers["Content-Length"]))
+                )
+                self.assertEqual(request["model"], "gpt-4o-mini")
+                self.assertEqual(request["max_tokens"], 64)
+                self.assertEqual(request["response_format"]["type"], "json_object")
+                body = json.dumps(
+                    {
+                        "model": "gpt-4o-mini-reported",
+                        "choices": [
+                            {
+                                "finish_reason": "stop",
+                                "message": {"content": '{"proof":"rfl"}'},
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 55, "completion_tokens": 8},
+                    }
+                ).encode()
                 handler.send_response(200)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
 
-        server = ThreadingHTTPServer(('127.0.0.1', 0), OpenAIHandler)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), OpenAIHandler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
-            self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
-            _, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n',
-                                              'attempts': 1, 'model': 'openai/gpt-4o-mini',
-                                              'max_output_tokens': 64})
-            subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url,
-                            '-provider', 'openai', '-model', 'gpt-4o-mini', '-openai-url',
-                            f'http://127.0.0.1:{server.server_port}/v1', '-once'],
-                           cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True,
-                           env={**os.environ, 'OPENAI_API_KEY': 'fake-worker-key', 'OPENAI_API_KEY_FILE': ''})
+            self.coordinator.verifier = LeanVerifier(ROOT / "lean")
+            _, run = self.request(
+                "/v1/runs",
+                {
+                    "statement": "(n : Nat) : n + 0 = n",
+                    "attempts": 1,
+                    "model": "openai/gpt-4o-mini",
+                    "max_output_tokens": 64,
+                },
+            )
+            subprocess.run(
+                [
+                    "go",
+                    "run",
+                    "./cmd/solvenet-worker",
+                    "-coordinator",
+                    self.url,
+                    "-provider",
+                    "openai",
+                    "-model",
+                    "gpt-4o-mini",
+                    "-openai-url",
+                    f"http://127.0.0.1:{server.server_port}/v1",
+                    "-once",
+                ],
+                cwd=ROOT / "worker",
+                timeout=120,
+                check=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "OPENAI_API_KEY": "fake-worker-key",
+                    "OPENAI_API_KEY_FILE": "",
+                },
+            )
             self.coordinator.tick()
-            outcome = self.request('/v1/runs/' + run['run_id'])[1]
-            self.assertEqual(outcome['status'], 'solved', outcome)
-            attempt = outcome['attempts'][0]
-            self.assertEqual(attempt['candidate'], 'rfl')
-            self.assertEqual(attempt['verification_status'], 'verified')
-            self.assertEqual(attempt['model'], 'openai/gpt-4o-mini')
-            self.assertEqual(attempt['usage']['input_tokens'], 55)
-            self.assertEqual(attempt['usage']['output_tokens'], 8)
-            self.assertEqual(attempt['generation']['model'], 'gpt-4o-mini-reported')
-            self.assertNotIn('fake-worker-key', json.dumps(outcome))
+            outcome = self.request("/v1/runs/" + run["run_id"])[1]
+            self.assertEqual(outcome["status"], "solved", outcome)
+            attempt = outcome["attempts"][0]
+            self.assertEqual(attempt["candidate"], "rfl")
+            self.assertEqual(attempt["verification_status"], "verified")
+            self.assertEqual(attempt["model"], "openai/gpt-4o-mini")
+            self.assertEqual(attempt["usage"]["input_tokens"], 55)
+            self.assertEqual(attempt["usage"]["output_tokens"], 8)
+            self.assertEqual(attempt["generation"]["model"], "gpt-4o-mini-reported")
+            self.assertNotIn("fake-worker-key", json.dumps(outcome))
         finally:
             server.shutdown()
             thread.join()
             server.server_close()
 
-    @unittest.skipUnless(shutil.which('go'), 'Go required')
+    @unittest.skipUnless(shutil.which("go"), "Go required")
     def test_compiled_openai_health_revocation_restart_and_no_credential_storage(self):
         calls = []
+
         class Provider(BaseHTTPRequestHandler):
             def do_POST(handler):
-                handler.rfile.read(int(handler.headers['Content-Length']))
-                valid = handler.headers['Authorization'] == 'Bearer mock-corrected-key'
+                handler.rfile.read(int(handler.headers["Content-Length"]))
+                valid = handler.headers["Authorization"] == "Bearer mock-corrected-key"
                 calls.append(valid)
-                body = (b'{"choices":[{"finish_reason":"stop","message":{"content":"{\\"proof\\":\\"rfl\\"}"}}]}'
-                        if valid else b'{"error":{"message":"mock-revoked\\u002dkey"}}')
+                body = (
+                    b'{"choices":[{"finish_reason":"stop","message":{"content":"{\\"proof\\":\\"rfl\\"}"}}]}'
+                    if valid
+                    else b'{"error":{"message":"mock-revoked\\u002dkey"}}'
+                )
                 handler.send_response(200 if valid else 401)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
-        server = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
-            binary = Path(self.temp.name) / 'worker'
-            subprocess.run(['go', 'build', '-o', str(binary), './cmd/solvenet-worker'],
-                           cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True)
-            key_path = Path(self.temp.name) / 'mock-key'
-            key_path.write_text('mock-revoked-key\n')
+            binary = Path(self.temp.name) / "worker"
+            subprocess.run(
+                ["go", "build", "-o", str(binary), "./cmd/solvenet-worker"],
+                cwd=ROOT / "worker",
+                timeout=120,
+                check=True,
+                capture_output=True,
+            )
+            key_path = Path(self.temp.name) / "mock-key"
+            key_path.write_text("mock-revoked-key\n")
             key_path.chmod(0o600)
-            env = {**os.environ, 'OPENAI_API_KEY': '', 'OPENAI_API_KEY_FILE': str(key_path)}
-            command = [str(binary), '-coordinator', self.url, '-provider', 'openai',
-                       '-model', 'gpt-4o-mini', '-openai-url', f'http://127.0.0.1:{server.server_port}']
-            checked = subprocess.run(command + ['-openai-check'], env=env, check=True,
-                                     capture_output=True, text=True, timeout=10)
-            self.assertEqual(json.loads(checked.stdout), {'status': 'unobserved'})
-            subprocess.run(command + ['-once'], env=env, check=True, capture_output=True, timeout=10)
-            activity_url = '/v1/model-activity?model=openai%2Fgpt-4o-mini'
-            self.assertNotIn('ready', self.request(activity_url)[1]['items'][0])
+            env = {
+                **os.environ,
+                "OPENAI_API_KEY": "",
+                "OPENAI_API_KEY_FILE": str(key_path),
+            }
+            command = [
+                str(binary),
+                "-coordinator",
+                self.url,
+                "-provider",
+                "openai",
+                "-model",
+                "gpt-4o-mini",
+                "-openai-url",
+                f"http://127.0.0.1:{server.server_port}",
+            ]
+            checked = subprocess.run(
+                [*command, "-openai-check"],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(json.loads(checked.stdout), {"status": "unobserved"})
+            subprocess.run(
+                [*command, "-once"],
+                env=env,
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+            activity_url = "/v1/model-activity?model=openai%2Fgpt-4o-mini"
+            self.assertNotIn("ready", self.request(activity_url)[1]["items"][0])
             self.assertEqual(calls, [])
             self.coordinator.verifier = FakeVerifier()
-            _, run = self.request('/v1/runs', {'statement': ': True', 'attempts': 1,
-                                               'model': 'openai/gpt-4o-mini', 'max_output_tokens': 64})
-            revoked = subprocess.run(command, env=env, check=True, capture_output=True,
-                                     text=True, timeout=10)
+            _, run = self.request(
+                "/v1/runs",
+                {
+                    "statement": ": True",
+                    "attempts": 1,
+                    "model": "openai/gpt-4o-mini",
+                    "max_output_tokens": 64,
+                },
+            )
+            revoked = subprocess.run(
+                command, env=env, check=True, capture_output=True, text=True, timeout=10
+            )
             self.assertEqual(calls, [False])
-            activity = self.request(activity_url)[1]['items'][0]
-            self.assertEqual(activity['reason'], 'OpenAI credential rejected')
-            key_path.write_text('mock-corrected-key\n')
-            self.request('/v1/runs', {'statement': ': True', 'attempts': 1,
-                                     'model': 'openai/gpt-4o-mini', 'max_output_tokens': 64})
-            worker = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            activity = self.request(activity_url)[1]["items"][0]
+            self.assertEqual(activity["reason"], "OpenAI credential rejected")
+            key_path.write_text("mock-corrected-key\n")
+            self.request(
+                "/v1/runs",
+                {
+                    "statement": ": True",
+                    "attempts": 1,
+                    "model": "openai/gpt-4o-mini",
+                    "max_output_tokens": 64,
+                },
+            )
+            worker = subprocess.Popen(
+                command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
             try:
                 for _ in range(100):
-                    if self.request(activity_url)[1]['items'][0].get('ready') is True:
+                    if self.request(activity_url)[1]["items"][0].get("ready") is True:
                         break
-                    threading.Event().wait(.05)
+                    threading.Event().wait(0.05)
                 else:
-                    self.fail('corrected worker never became ready')
+                    self.fail("corrected worker never became ready")
             finally:
                 worker.terminate()
                 stdout, stderr = worker.communicate(timeout=10)
             self.assertEqual(calls, [False, True])
-            public = json.dumps(self.request('/v1/runs/' + run['run_id'])[1])
-            for key in ('mock-revoked-key', 'mock-corrected-key', 'mock-revoked\\u002dkey'):
+            public = json.dumps(self.request("/v1/runs/" + run["run_id"])[1])
+            for key in (
+                "mock-revoked-key",
+                "mock-corrected-key",
+                "mock-revoked\\u002dkey",
+            ):
                 self.assertNotIn(key, public + revoked.stdout + revoked.stderr)
                 self.assertNotIn(key.encode(), stdout + stderr)
-                self.assertNotIn(key.encode(), (Path(self.temp.name) / 'state.db').read_bytes())
+                self.assertNotIn(
+                    key.encode(), (Path(self.temp.name) / "state.db").read_bytes()
+                )
         finally:
             server.shutdown()
             thread.join()
             server.server_close()
 
-    @unittest.skipUnless(shutil.which('go') and shutil.which('lake'), 'Go and Lake required')
+    @unittest.skipUnless(
+        shutil.which("go") and shutil.which("lake"), "Go and Lake required"
+    )
     def test_go_ollama_repairs_with_real_lean_feedback(self):
-        self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
-        _, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n', 'attempts': 1,
-                                         'max_repairs': 2, 'model': 'ollama/test:7b', 'max_output_tokens': 64})
-        replies = ['rw zero_add', 'rw [Nat.zero_add]', 'rfl']
+        self.coordinator.verifier = LeanVerifier(ROOT / "lean")
+        _, run = self.request(
+            "/v1/runs",
+            {
+                "statement": "(n : Nat) : n + 0 = n",
+                "attempts": 1,
+                "max_repairs": 2,
+                "model": "ollama/test:7b",
+                "max_output_tokens": 64,
+            },
+        )
+        replies = ["rw zero_add", "rw [Nat.zero_add]", "rfl"]
         requests = []
 
         class OllamaHandler(BaseHTTPRequestHandler):
             def do_GET(handler):
-                self.assertEqual(handler.path, '/api/tags')
+                self.assertEqual(handler.path, "/api/tags")
                 body = b'{"models":[{"name":"test:7b"}]}'
                 handler.send_response(200)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
 
             def do_POST(handler):
-                request = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
+                request = json.loads(
+                    handler.rfile.read(int(handler.headers["Content-Length"]))
+                )
                 requests.append(request)
-                body = json.dumps({'done': True, 'model': 'test:7b', 'done_reason': 'stop',
-                                   'message': {'content': json.dumps({'proof': replies[len(requests)-1]})},
-                                   'eval_count': 12}).encode()
+                body = json.dumps(
+                    {
+                        "done": True,
+                        "model": "test:7b",
+                        "done_reason": "stop",
+                        "message": {
+                            "content": json.dumps({"proof": replies[len(requests) - 1]})
+                        },
+                        "eval_count": 12,
+                    }
+                ).encode()
                 handler.send_response(200)
-                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header("Content-Length", str(len(body)))
                 handler.end_headers()
                 handler.wfile.write(body)
 
-        ollama = ThreadingHTTPServer(('127.0.0.1', 0), OllamaHandler)
+        ollama = ThreadingHTTPServer(("127.0.0.1", 0), OllamaHandler)
         thread = threading.Thread(target=ollama.serve_forever)
         thread.start()
         try:
             previous = None
             for depth in range(3):
-                subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url,
-                                '-provider', 'ollama', '-model', 'test:7b', '-ollama-url',
-                                f'http://127.0.0.1:{ollama.server_port}', '-once'],
-                               cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True)
-                messages = requests[-1]['messages']
+                subprocess.run(
+                    [
+                        "go",
+                        "run",
+                        "./cmd/solvenet-worker",
+                        "-coordinator",
+                        self.url,
+                        "-provider",
+                        "ollama",
+                        "-model",
+                        "test:7b",
+                        "-ollama-url",
+                        f"http://127.0.0.1:{ollama.server_port}",
+                        "-once",
+                    ],
+                    cwd=ROOT / "worker",
+                    timeout=120,
+                    check=True,
+                    capture_output=True,
+                )
+                messages = requests[-1]["messages"]
                 if previous:
-                    prompt = '\n'.join(m['content'] for m in messages)
-                    self.assertIn(previous['candidate'], prompt)
-                    self.assertIn(previous['diagnostics'], prompt)
-                    self.assertIn(previous['candidate'], messages[-1]['content'])
-                    self.assertIn(previous['diagnostics'], messages[-1]['content'])
-                    self.assertIn('Do not repeat', messages[-1]['content'])
+                    prompt = "\n".join(m["content"] for m in messages)
+                    self.assertIn(previous["candidate"], prompt)
+                    self.assertIn(previous["diagnostics"], prompt)
+                    self.assertIn(previous["candidate"], messages[-1]["content"])
+                    self.assertIn(previous["diagnostics"], messages[-1]["content"])
+                    self.assertIn("Do not repeat", messages[-1]["content"])
                 self.coordinator.tick()
-                current = self.request('/v1/runs/' + run['run_id'])[1]
-                attempt = current['attempts'][-1]
-                self.assertEqual(attempt['repair_depth'], depth)
-                self.assertEqual(attempt['parent_attempt_id'], previous['id'] if previous else None)
-                self.assertEqual(attempt['verification_status'], 'verified' if depth == 2 else 'rejected')
-                self.assertEqual(requests[-1]['options']['num_predict'], 64)
+                current = self.request("/v1/runs/" + run["run_id"])[1]
+                attempt = current["attempts"][-1]
+                self.assertEqual(attempt["repair_depth"], depth)
+                self.assertEqual(
+                    attempt["parent_attempt_id"], previous["id"] if previous else None
+                )
+                self.assertEqual(
+                    attempt["verification_status"],
+                    "verified" if depth == 2 else "rejected",
+                )
+                self.assertEqual(requests[-1]["options"]["num_predict"], 64)
                 previous = attempt
-            self.assertEqual(current['status'], 'solved')
-            self.assertEqual(len(current['jobs']), 3)
-            self.assertEqual(current['max_repairs'], 2)
-            self.assertIsNone(self.store.claim('extra', ['ollama/test:7b']))
+            self.assertEqual(current["status"], "solved")
+            self.assertEqual(len(current["jobs"]), 3)
+            self.assertEqual(current["max_repairs"], 2)
+            self.assertIsNone(self.store.claim("extra", ["ollama/test:7b"]))
         finally:
             ollama.shutdown()
             thread.join()
             ollama.server_close()
 
-    @unittest.skipUnless(shutil.which('go') and shutil.which('lake'), 'Go and Lake required')
+    @unittest.skipUnless(
+        shutil.which("go") and shutil.which("lake"), "Go and Lake required"
+    )
     def test_go_worker_to_real_lean(self):
-        self.coordinator.verifier = LeanVerifier(ROOT / 'lean')
-        _, run = self.request('/v1/runs', {'statement': '(n : Nat) : n + 0 = n', 'attempts': 1})
-        subprocess.run(['go', 'run', './cmd/solvenet-worker', '-coordinator', self.url, '-once'],
-                       cwd=ROOT / 'worker', timeout=120, check=True, capture_output=True)
+        self.coordinator.verifier = LeanVerifier(ROOT / "lean")
+        _, run = self.request(
+            "/v1/runs", {"statement": "(n : Nat) : n + 0 = n", "attempts": 1}
+        )
+        subprocess.run(
+            ["go", "run", "./cmd/solvenet-worker", "-coordinator", self.url, "-once"],
+            cwd=ROOT / "worker",
+            timeout=120,
+            check=True,
+            capture_output=True,
+        )
         self.coordinator.tick()
-        outcome = self.request('/v1/runs/' + run['run_id'])[1]
-        self.assertEqual(outcome['status'], 'solved', outcome)
-        self.assertEqual(outcome['attempts'][0]['verification_status'], 'verified')
+        outcome = self.request("/v1/runs/" + run["run_id"])[1]
+        self.assertEqual(outcome["status"], "solved", outcome)
+        self.assertEqual(outcome["attempts"][0]["verification_status"], "verified")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

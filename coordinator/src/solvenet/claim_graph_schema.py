@@ -89,8 +89,15 @@ PRAGMA user_version = 19;
 """
 
 # Triggers also cover writes performed inside the existing fixed loop.
-for table in ('group_claims', 'claim_publications', 'claim_relationships',
-              'claim_relationship_reviews', 'claim_tasks', 'claim_messages', 'claim_artifacts'):
+for table in (
+    "group_claims",
+    "claim_publications",
+    "claim_relationships",
+    "claim_relationship_reviews",
+    "claim_tasks",
+    "claim_messages",
+    "claim_artifacts",
+):
     MIGRATION_19 += f"""
 CREATE TRIGGER {table}_revision AFTER INSERT ON {table}
  BEGIN UPDATE group_graphs SET revision=revision+1 WHERE group_id=NEW.group_id; END;

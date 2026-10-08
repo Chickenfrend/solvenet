@@ -1,13 +1,12 @@
 """Small Lean stand-in used to test process handling, not proof correctness."""
 
-import pathlib
-import os
-import signal
-import re
 import json
+import os
+import pathlib
+import re
+import signal
 import sys
 import time
-
 
 source = pathlib.Path(sys.argv[-1]).read_text(encoding="utf-8")
 if pathlib.Path(sys.argv[-1]).name == "Preflight.lean":

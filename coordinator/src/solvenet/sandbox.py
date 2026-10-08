@@ -1,5 +1,6 @@
 """Docker transport for the local Lean verifier; no Docker socket in the guest."""
 
+import contextlib
 import json
 import math
 import os
@@ -16,28 +17,28 @@ from uuid import uuid4
 from .verifier import (
     DIAGNOSTICS_TRUNCATION_MARKER,
     MAX_DIAGNOSTICS_BYTES,
-    LeanVerifierConfig,
     LeanVerifier,
-    VerifierReadiness,
+    LeanVerifierConfig,
     VerificationResult,
     VerificationStatus,
+    VerifierReadiness,
     truncate_diagnostics,
     unavailable_readiness,
 )
 
-
 DEFAULT_CONTAINER_TIMEOUT_SECONDS = 30.0
 MIN_CONTAINER_OVERHEAD_SECONDS = 1.0
 MAX_DOCKER_STDERR_BYTES = 8 * 1024
-DOCKER_STDERR_TRUNCATION_MARKER = '\n[Docker stderr truncated]'
+DOCKER_STDERR_TRUNCATION_MARKER = "\n[Docker stderr truncated]"
 
 
 def _max_container_result_bytes(max_diagnostics_bytes):
     # JSON control characters may occupy six bytes (for example, ``\u0000``).
     # The fixed allowance covers field names, status, elapsed time, and the marker.
-    return 6 * (
-        max_diagnostics_bytes + len(DIAGNOSTICS_TRUNCATION_MARKER.encode('utf-8'))
-    ) + 1024
+    return (
+        6 * (max_diagnostics_bytes + len(DIAGNOSTICS_TRUNCATION_MARKER.encode("utf-8")))
+        + 1024
+    )
 
 
 MAX_CONTAINER_RESULT_BYTES = _max_container_result_bytes(MAX_DIAGNOSTICS_BYTES)
@@ -47,7 +48,9 @@ def _run_docker(command, timeout):
     """Run Docker while draining stderr and retaining only a bounded prefix."""
     retained = bytearray()
     process = subprocess.Popen(
-        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
     deadline = time.monotonic() + timeout
@@ -72,18 +75,14 @@ def _run_docker(command, timeout):
             returncode = process.wait(timeout=remaining)
         return subprocess.CompletedProcess(command, returncode, stderr=bytes(retained))
     except subprocess.TimeoutExpired:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             process.kill()
-        except ProcessLookupError:
-            pass
         process.wait()
         raise
     finally:
         if process.poll() is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 process.kill()
-            except ProcessLookupError:
-                pass
             process.wait()
         if process.stderr is not None:
             process.stderr.close()
@@ -92,13 +91,13 @@ def _run_docker(command, timeout):
 def _docker_error_diagnostics(message, stderr, workspace):
     """Add a safe, UTF-8-valid Docker stderr excerpt to an infrastructure error."""
     clipped = stderr[:MAX_DOCKER_STDERR_BYTES]
-    excerpt = clipped.decode('utf-8', errors='ignore').strip()
+    excerpt = clipped.decode("utf-8", errors="ignore").strip()
     if workspace is not None:
-        excerpt = excerpt.replace(str(workspace), '[verification workspace]')
+        excerpt = excerpt.replace(str(workspace), "[verification workspace]")
     if len(stderr) > MAX_DOCKER_STDERR_BYTES:
         excerpt += DOCKER_STDERR_TRUNCATION_MARKER
     if excerpt:
-        return f'{message}\nDocker stderr: {excerpt}'
+        return f"{message}\nDocker stderr: {excerpt}"
     return message
 
 
@@ -107,11 +106,11 @@ class DockerResourceLimits:
     """Named Docker limits; intentionally not a general Docker option bag."""
 
     cpus: float = 1.0
-    memory: str = '1g'
-    memory_swap: str = '1g'
+    memory: str = "1g"
+    memory_swap: str = "1g"
     pids: int = 64
     file_size_bytes: int = 1024 * 1024
-    tmpfs_size: str = '128m'
+    tmpfs_size: str = "128m"
 
     def __post_init__(self):
         if (
@@ -120,9 +119,9 @@ class DockerResourceLimits:
             or self.pids <= 0
             or self.file_size_bytes <= 0
         ):
-            raise ValueError('Docker numeric resource limits must be positive')
+            raise ValueError("Docker numeric resource limits must be positive")
         if not self.memory or not self.memory_swap or not self.tmpfs_size:
-            raise ValueError('Docker size resource limits must be nonempty')
+            raise ValueError("Docker size resource limits must be nonempty")
 
 
 @dataclass(frozen=True)
@@ -137,61 +136,70 @@ class ContainerVerifierConfig:
             or self.deadline_seconds <= 0
             or self.overhead_seconds < 0
         ):
-            raise ValueError('Container deadline must be positive and overhead nonnegative')
+            raise ValueError(
+                "Container deadline must be positive and overhead nonnegative"
+            )
         minimum = lean.timeout_seconds + self.overhead_seconds
         if self.deadline_seconds < minimum:
             raise ValueError(
-                'Container timeout must be at least the Lean timeout plus container '
-                f'overhead (minimum {self.overhead_seconds:g} second(s))'
+                "Container timeout must be at least the Lean timeout plus container "
+                f"overhead (minimum {self.overhead_seconds:g} second(s))"
             )
 
 
 def _encode_result(
-    result: VerificationResult, max_diagnostics_bytes=MAX_DIAGNOSTICS_BYTES,
+    result: VerificationResult,
+    max_diagnostics_bytes=MAX_DIAGNOSTICS_BYTES,
 ) -> bytes:
     fields = asdict(result)
-    fields['diagnostics'] = truncate_diagnostics(
-        fields['diagnostics'], max_diagnostics_bytes,
+    fields["diagnostics"] = truncate_diagnostics(
+        fields["diagnostics"],
+        max_diagnostics_bytes,
     )
     encoded = json.dumps(
-        fields, ensure_ascii=False, separators=(',', ':'),
-    ).encode('utf-8')
+        fields,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
     if len(encoded) > _max_container_result_bytes(max_diagnostics_bytes):
-        raise ValueError('Container result exceeded size limit')
+        raise ValueError("Container result exceeded size limit")
     return encoded
 
 
 def _decode_result(
-    raw: bytes, max_diagnostics_bytes=MAX_DIAGNOSTICS_BYTES,
+    raw: bytes,
+    max_diagnostics_bytes=MAX_DIAGNOSTICS_BYTES,
 ) -> VerificationResult:
     result = json.loads(raw)
     if not isinstance(result, dict):
-        raise ValueError('Invalid container result')
+        raise ValueError("Invalid container result")
     try:
-        status_value = result['status']
-        diagnostics = result['diagnostics']
-        elapsed_ms = result['elapsed_ms']
+        status_value = result["status"]
+        diagnostics = result["diagnostics"]
+        elapsed_ms = result["elapsed_ms"]
     except KeyError as error:
-        raise ValueError(f'Missing container result field: {error.args[0]}') from error
+        raise ValueError(f"Missing container result field: {error.args[0]}") from error
     if not isinstance(status_value, str):
-        raise ValueError('Invalid container status')
+        raise ValueError("Invalid container status")
     try:
         status = VerificationStatus(status_value)
     except ValueError as error:
-        raise ValueError('Invalid container status') from error
+        raise ValueError("Invalid container status") from error
     if not isinstance(diagnostics, str):
-        raise ValueError('Invalid container diagnostics')
+        raise ValueError("Invalid container diagnostics")
     if type(elapsed_ms) is not int or elapsed_ms < 0:
-        raise ValueError('Invalid container elapsed_ms')
+        raise ValueError("Invalid container elapsed_ms")
     return VerificationResult(
-        status, truncate_diagnostics(diagnostics, max_diagnostics_bytes), elapsed_ms,
+        status,
+        truncate_diagnostics(diagnostics, max_diagnostics_bytes),
+        elapsed_ms,
     )
 
 
 class ContainerVerifier:
     def __init__(
         self,
-        image='solvenet-verifier:local',
+        image="solvenet-verifier:local",
         timeout_seconds=None,
         *,
         verifier_config=None,
@@ -199,7 +207,7 @@ class ContainerVerifier:
         resources=None,
     ):
         if timeout_seconds is not None and container_config is not None:
-            raise ValueError('Use either container config or timeout_seconds')
+            raise ValueError("Use either container config or timeout_seconds")
         self.image = image
         self.verifier_config = verifier_config or LeanVerifierConfig()
         self.container_config = container_config or ContainerVerifierConfig(
@@ -216,85 +224,116 @@ class ContainerVerifier:
     def artifact_identity(self):
         """Resolve the local image tag to its content ID before trusting artifacts."""
         try:
-            result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', self.image],
-                                    capture_output=True, check=True, timeout=5)
+            result = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", self.image],
+                capture_output=True,
+                check=True,
+                timeout=5,
+            )
             image_id = result.stdout.decode().strip()
-            return 'docker:' + image_id if re.fullmatch(r'sha256:[0-9a-f]{64}', image_id) else None
+            return (
+                "docker:" + image_id
+                if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id)
+                else None
+            )
         except (OSError, ValueError, subprocess.SubprocessError):
             return None
 
     def verify_artifact(self, statement, candidate, *, imports, identity):
         """Run an artifact under the exact image ID recorded for this check."""
-        image_id = identity.removeprefix('docker:') if isinstance(identity, str) else ''
-        if not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id):
-            return VerificationResult(VerificationStatus.VERIFIER_ERROR,
-                                      'Artifact verifier image identity unavailable', 0)
+        image_id = identity.removeprefix("docker:") if isinstance(identity, str) else ""
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            return VerificationResult(
+                VerificationStatus.VERIFIER_ERROR,
+                "Artifact verifier image identity unavailable",
+                0,
+            )
         return self._verify(statement, candidate, imports=imports, image=image_id)
 
     def verify_composed(self, bundle):
         from .composed import validate_bundle
+
         try:
             validate_bundle(bundle)
-            image_id = bundle['verifier_identity'].removeprefix('docker:')
-            if not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id):
-                raise ValueError('Composed verifier image identity unavailable')
+            image_id = bundle["verifier_identity"].removeprefix("docker:")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                raise ValueError("Composed verifier image identity unavailable")
         except (ValueError, KeyError, TypeError) as error:
-            return VerificationResult(VerificationStatus.REJECTED, str(error), 0), {'status': 'usage_unknown'}
-        return self._verify(bundle['statement'], bundle['proof'], imports=bundle['imports'],
-                            image=image_id, bundle=bundle)
+            return VerificationResult(VerificationStatus.REJECTED, str(error), 0), {
+                "status": "usage_unknown"
+            }
+        return self._verify(
+            bundle["statement"],
+            bundle["proof"],
+            imports=bundle["imports"],
+            image=image_id,
+            bundle=bundle,
+        )
 
     def _docker_base_command(self, name):
         return [
-            'docker', 'run', '--rm', '--pull=never', '--name', name,
-            '--network=none', '--read-only', '--cap-drop=ALL',
-            '--security-opt=no-new-privileges',
-            f'--pids-limit={self.resources.pids}',
-            f'--memory={self.resources.memory}',
-            f'--memory-swap={self.resources.memory_swap}',
-            f'--cpus={self.resources.cpus:g}',
-            '--ulimit',
-            f'fsize={self.resources.file_size_bytes}:{self.resources.file_size_bytes}',
-            '--user', f'{os.getuid()}:{os.getgid()}',
-            '--tmpfs',
-            f'/tmp:rw,noexec,nosuid,size={self.resources.tmpfs_size},mode=1777',
+            "docker",
+            "run",
+            "--rm",
+            "--pull=never",
+            "--name",
+            name,
+            "--network=none",
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            f"--pids-limit={self.resources.pids}",
+            f"--memory={self.resources.memory}",
+            f"--memory-swap={self.resources.memory_swap}",
+            f"--cpus={self.resources.cpus:g}",
+            "--ulimit",
+            f"fsize={self.resources.file_size_bytes}:{self.resources.file_size_bytes}",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--tmpfs",
+            f"/tmp:rw,noexec,nosuid,size={self.resources.tmpfs_size},mode=1777",  # noqa: S108 -- isolated container tmpfs, not a host temporary file
         ]
 
-    def verify(self, statement, candidate, *, imports=('Init',)):
+    def verify(self, statement, candidate, *, imports=("Init",)):
         return self._verify(statement, candidate, imports=imports, image=self.image)
 
     def _verify(self, statement, candidate, *, imports, image, bundle=None):
         started = time.monotonic()
-        name = 'solvenet-verify-' + uuid4().hex
+        name = "solvenet-verify-" + uuid4().hex
         status = VerificationStatus.VERIFIER_ERROR
-        diagnostics = 'Container verifier did not complete'
+        diagnostics = "Container verifier did not complete"
         elapsed_ms = None
-        docker_stderr = b''
+        docker_stderr = b""
         workspace = None
-        usage = {'status': 'usage_unknown'}
+        usage = {"status": "usage_unknown"}
         try:
-            with tempfile.TemporaryDirectory(prefix='solvenet-container-') as directory:
+            with tempfile.TemporaryDirectory(prefix="solvenet-container-") as directory:
                 path = Path(directory)
                 workspace = path
-                (path / 'request.json').write_text(
+                (path / "request.json").write_text(
                     json.dumps(
                         {
-                            'statement': statement,
-                            'candidate': candidate,
-                            'imports': imports,
-                            'timeout_seconds': self.verifier_config.timeout_seconds,
-                             'max_diagnostics_bytes': self.verifier_config.max_diagnostics_bytes,
-                             **({'bundle': bundle} if bundle is not None else {}),
+                            "statement": statement,
+                            "candidate": candidate,
+                            "imports": imports,
+                            "timeout_seconds": self.verifier_config.timeout_seconds,
+                            "max_diagnostics_bytes": self.verifier_config.max_diagnostics_bytes,
+                            **({"bundle": bundle} if bundle is not None else {}),
                         },
                         ensure_ascii=False,
                     ),
-                    encoding='utf-8',
+                    encoding="utf-8",
                 )
-                command = self._docker_base_command(name) + [
-                    '--mount', f'type=bind,src={path},dst=/work', image,
+                command = [
+                    *self._docker_base_command(name),
+                    "--mount",
+                    f"type=bind,src={path},dst=/work",
+                    image,
                 ]
                 try:
                     completed = _run_docker(
-                        command, self.container_config.deadline_seconds,
+                        command,
+                        self.container_config.deadline_seconds,
                     )
                     docker_stderr = completed.stderr
                 except (OSError, subprocess.TimeoutExpired):
@@ -303,43 +342,52 @@ class ContainerVerifier:
                     raise
                 if completed.returncode != 0:
                     diagnostics = _docker_error_diagnostics(
-                        f'Container exited with code {completed.returncode}; '
-                        f'check Docker and image {self.image}',
+                        f"Container exited with code {completed.returncode}; "
+                        f"check Docker and image {self.image}",
                         docker_stderr,
                         workspace,
                     )
                 else:
-                    with (path / 'result.json').open('rb') as output:
+                    with (path / "result.json").open("rb") as output:
                         result_limit = _max_container_result_bytes(
                             self.verifier_config.max_diagnostics_bytes
                         )
                         raw = output.read(result_limit + 1)
                     if len(raw) > result_limit:
-                        raise ValueError('Container result exceeded size limit')
+                        raise ValueError("Container result exceeded size limit")
                     result = _decode_result(
-                        raw, self.verifier_config.max_diagnostics_bytes,
+                        raw,
+                        self.verifier_config.max_diagnostics_bytes,
                     )
                     status = result.status
                     diagnostics = result.diagnostics
                     elapsed_ms = result.elapsed_ms
                     if bundle is not None:
-                        with (path / 'usage.json').open('rb') as output:
+                        with (path / "usage.json").open("rb") as output:
                             raw_usage = output.read(8193)
                         if len(raw_usage) > 8192:
-                            raise ValueError('Composed use receipt exceeded size limit')
+                            raise ValueError("Composed use receipt exceeded size limit")
                         usage = json.loads(raw_usage)
-                        names = {item['name'] for item in bundle['declarations']}
-                        if (result.verified and (not isinstance(usage, dict) or usage.get('status') != 'known' or any(
-                                not isinstance(usage.get(k), list) or not set(usage[k]) <= names
-                                for k in ('direct', 'type', 'transitive')))):
-                            raise ValueError('Invalid composed use receipt')
+                        names = {item["name"] for item in bundle["declarations"]}
+                        if result.verified and (
+                            not isinstance(usage, dict)
+                            or usage.get("status") != "known"
+                            or any(
+                                not isinstance(usage.get(k), list)
+                                or not set(usage[k]) <= names
+                                for k in ("direct", "type", "transitive")
+                            )
+                        ):
+                            raise ValueError("Invalid composed use receipt")
         except subprocess.TimeoutExpired:
             status = VerificationStatus.TIMEOUT
-            diagnostics = 'Container verification deadline exceeded'
+            diagnostics = "Container verification deadline exceeded"
         except (OSError, ValueError, KeyError) as error:
             status = VerificationStatus.VERIFIER_ERROR
             diagnostics = _docker_error_diagnostics(
-                f'Container verifier error: {error}', docker_stderr, workspace,
+                f"Container verifier error: {error}",
+                docker_stderr,
+                workspace,
             )
         finally:
             # Killing the Docker CLI alone does not stop the container.
@@ -351,65 +399,72 @@ class ContainerVerifier:
 
     def readiness(self):
         """Check Docker, the configured image, and its trusted Lean smoke test."""
-        name = 'solvenet-ready-' + uuid4().hex
-        command = self._docker_base_command(name) + [
-            self.image, '--readiness',
-        ]
+        name = "solvenet-ready-" + uuid4().hex
+        command = [*self._docker_base_command(name), self.image, "--readiness"]
         try:
             completed = _run_docker(command, self.container_config.deadline_seconds)
             if completed.returncode == 0:
                 return VerifierReadiness(True)
             diagnostics = _docker_error_diagnostics(
-                f'Verifier image readiness failed with code {completed.returncode}; '
-                f'check Docker and image {self.image}',
+                f"Verifier image readiness failed with code {completed.returncode}; "
+                f"check Docker and image {self.image}",
                 completed.stderr,
                 None,
             )
             return unavailable_readiness(diagnostics)
         except subprocess.TimeoutExpired:
-            return unavailable_readiness('Verifier image readiness check timed out')
+            return unavailable_readiness("Verifier image readiness check timed out")
         except OSError as error:
-            return unavailable_readiness(f'Could not run Docker: {error}')
+            return unavailable_readiness(f"Could not run Docker: {error}")
         finally:
             self._remove(name)
 
     @staticmethod
     def _remove(name):
-        try:
-            subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=5, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                ["docker", "rm", "-f", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
 
 
 def main():
-    if sys.argv[1:] == ['--readiness']:
+    if sys.argv[1:] == ["--readiness"]:
         result = LeanVerifier(
-            Path('/opt/solvenet/lean'), command=('lean',),
+            Path("/opt/solvenet/lean"),
+            command=("lean",),
         ).readiness()
         if not result.ready:
             print(result.diagnostics, file=sys.stderr)
         raise SystemExit(0 if result.ready else 1)
-    request = json.loads(Path('/work/request.json').read_text(encoding='utf-8'))
+    request = json.loads(Path("/work/request.json").read_text(encoding="utf-8"))
     config = LeanVerifierConfig(
-        timeout_seconds=request['timeout_seconds'],
-        max_diagnostics_bytes=request['max_diagnostics_bytes'],
+        timeout_seconds=request["timeout_seconds"],
+        max_diagnostics_bytes=request["max_diagnostics_bytes"],
     )
     verifier = LeanVerifier(
-        Path('/opt/solvenet/lean'), command=('lean',), config=config,
+        Path("/opt/solvenet/lean"),
+        command=("lean",),
+        config=config,
     )
-    if 'bundle' in request:
+    if "bundle" in request:
         # The host selected an immutable image ID; the in-image local runtime
         # fingerprint is a different identity namespace.
         from .composed import verify_composed
-        result, usage = verify_composed(verifier, request['bundle'])
-        Path('/work/usage.json').write_text(json.dumps(usage), encoding='utf-8')
+
+        result, usage = verify_composed(verifier, request["bundle"])
+        Path("/work/usage.json").write_text(json.dumps(usage), encoding="utf-8")
     else:
-        result = verifier.verify(request['statement'], request['candidate'], imports=request['imports'])
-    Path('/work/result.json').write_bytes(
+        result = verifier.verify(
+            request["statement"], request["candidate"], imports=request["imports"]
+        )
+    Path("/work/result.json").write_bytes(
         _encode_result(result, config.max_diagnostics_bytes)
     )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

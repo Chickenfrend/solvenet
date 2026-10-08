@@ -128,9 +128,17 @@ previews a packet. It is not a reservation. Dispatch with:
 
 ```python
 job_id = coordinator.enqueue_group_context_job(
-    group_id, task_id, agent_id, request_key, environment,
-    model, 'finding', [{'role': 'user', 'content': 'Investigate the focused claim.'}],
-    cost=2, max_output_tokens=512, context_limit=8192,
+    group_id,
+    task_id,
+    agent_id,
+    request_key,
+    environment,
+    model,
+    "finding",
+    [{"role": "user", "content": "Investigate the focused claim."}],
+    cost=2,
+    max_output_tokens=512,
+    context_limit=8192,
 )
 snapshot = coordinator.job_context_packet(job_id)
 ```

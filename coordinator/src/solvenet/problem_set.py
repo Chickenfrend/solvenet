@@ -6,10 +6,10 @@ import argparse
 import hashlib
 import json
 import re
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-
 
 DEFAULT_SET = Path(__file__).resolve().parents[3] / "problems" / "core-v1.json"
 # Only these checked-in files can be selected through the experiment API.
@@ -32,8 +32,9 @@ class Problem:
     description: str | None = None
     difficulty: str | None = None
 
-    def submission(self, *, model: str, attempts: int, max_repairs: int,
-                   max_output_tokens: int) -> dict:
+    def submission(
+        self, *, model: str, attempts: int, max_repairs: int, max_output_tokens: int
+    ) -> dict:
         """Only public problem fields cross the HTTP/model boundary."""
         return {
             "statement": self.statement,
@@ -92,25 +93,43 @@ def load(path: Path = DEFAULT_SET) -> ProblemSet:
         statement = _nonempty(entry.get("statement"), f"{problem_id}.statement")
         # The verifier inserts the statement after a theorem/axiom name.
         # Disallow extra commands here; elaboration catches invalid Lean types.
-        if ("\n" in statement or "\r" in statement or not statement.strip().startswith(("(", ":"))
-                or " : " not in statement and not statement.strip().startswith(": ")):
+        if (
+            "\n" in statement
+            or "\r" in statement
+            or not statement.strip().startswith(("(", ":"))
+            or (" : " not in statement and not statement.strip().startswith(": "))
+        ):
             raise ValueError(f"Malformed statement: {problem_id}")
         imports = entry.get("imports")
-        if (not isinstance(imports, list) or not imports or
-                any(not isinstance(m, str) or not MODULE.fullmatch(m) for m in imports)):
+        if (
+            not isinstance(imports, list)
+            or not imports
+            or any(not isinstance(m, str) or not MODULE.fullmatch(m) for m in imports)
+        ):
             raise ValueError(f"Malformed imports: {problem_id}")
         optional = {}
         for field in ("category", "description", "difficulty"):
             if field in entry:
                 optional[field] = _nonempty(entry[field], f"{problem_id}.{field}")
-        problems.append(Problem(
-            id=problem_id, title=_nonempty(entry.get("title"), f"{problem_id}.title"),
-            statement=statement, imports=tuple(imports),
-            reference_proof=_nonempty(entry.get("reference_proof"), f"{problem_id}.reference_proof"),
-            **optional,
-        ))
-    return ProblemSet(set_id, version, environment, hashlib.sha256(content).hexdigest(),
-                      tuple(problems))
+        problems.append(
+            Problem(
+                id=problem_id,
+                title=_nonempty(entry.get("title"), f"{problem_id}.title"),
+                statement=statement,
+                imports=tuple(imports),
+                reference_proof=_nonempty(
+                    entry.get("reference_proof"), f"{problem_id}.reference_proof"
+                ),
+                **optional,
+            )
+        )
+    return ProblemSet(
+        set_id,
+        version,
+        environment,
+        hashlib.sha256(content).hexdigest(),
+        tuple(problems),
+    )
 
 
 def load_experiment_set(set_id: object, version: object, sha256: object) -> ProblemSet:
@@ -128,43 +147,67 @@ def load_experiment_set(set_id: object, version: object, sha256: object) -> Prob
 
 def public_set(fixture: ProblemSet) -> dict:
     """Explicit allowlist of fixture fields safe to expose over HTTP."""
-    return {'set_id': fixture.set_id, 'version': fixture.version,
-            'sha256': fixture.sha256, 'environment': fixture.environment,
-            'problem_count': len(fixture.problems)}
+    return {
+        "set_id": fixture.set_id,
+        "version": fixture.version,
+        "sha256": fixture.sha256,
+        "environment": fixture.environment,
+        "problem_count": len(fixture.problems),
+    }
 
 
-def public_problem(problem: Problem, *, detail: bool = False, preview: bool = False) -> dict:
-    result = {'id': problem.id, 'title': problem.title,
-              'category': problem.category, 'description': problem.description,
-              'difficulty': problem.difficulty}
+def public_problem(
+    problem: Problem, *, detail: bool = False, preview: bool = False
+) -> dict:
+    result = {
+        "id": problem.id,
+        "title": problem.title,
+        "category": problem.category,
+        "description": problem.description,
+        "difficulty": problem.difficulty,
+    }
     if detail:
         result.update(statement=problem.statement, imports=list(problem.imports))
     if preview:
         # Bound the list response even when a checked-in fixture has long text.
-        limits = {'title': 200, 'category': 100, 'description': 400,
-                  'difficulty': 100, 'statement': 2048}
+        limits = {
+            "title": 200,
+            "category": 100,
+            "description": 400,
+            "difficulty": 100,
+            "statement": 2048,
+        }
         truncated = False
         for key, maximum in limits.items():
             if result.get(key) is not None and len(result[key]) > maximum:
                 result[key] = result[key][:maximum]
                 truncated = True
-        imports = result['imports']
-        result['imports'] = [module[:128] for module in imports[:8]]
-        result['preview_truncated'] = (truncated or len(imports) > 8 or
-                                       any(len(module) > 128 for module in imports[:8]))
+        imports = result["imports"]
+        result["imports"] = [module[:128] for module in imports[:8]]
+        result["preview_truncated"] = (
+            truncated
+            or len(imports) > 8
+            or any(len(module) > 128 for module in imports[:8])
+        )
     return result
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Submit versioned Lean fixtures to a local coordinator")
+    parser = argparse.ArgumentParser(
+        description="Submit versioned Lean fixtures to a local coordinator"
+    )
     parser.add_argument("--set", type=Path, default=DEFAULT_SET)
     parser.add_argument("--url", default="http://127.0.0.1:8080")
-    parser.add_argument("--id", action="append", help="Problem ID (repeatable; default: all)")
+    parser.add_argument(
+        "--id", action="append", help="Problem ID (repeatable; default: all)"
+    )
     parser.add_argument("--model", default="scripted")
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--max-repairs", type=int, default=0)
     parser.add_argument("--max-output-tokens", type=int, default=2048)
-    parser.add_argument("--output", type=Path, help="Save the run-to-fixture manifest as JSON")
+    parser.add_argument(
+        "--output", type=Path, help="Save the run-to-fixture manifest as JSON"
+    )
     args = parser.parse_args()
     fixture = load(args.set)
     selected = set(args.id or (p.id for p in fixture.problems))
@@ -175,20 +218,29 @@ def main() -> int:
     for problem in fixture.problems:
         if problem.id not in selected:
             continue
-        payload = problem.submission(model=args.model, attempts=args.attempts,
-                                     max_repairs=args.max_repairs,
-                                     max_output_tokens=args.max_output_tokens)
-        request = urllib.request.Request(
+        payload = problem.submission(
+            model=args.model,
+            attempts=args.attempts,
+            max_repairs=args.max_repairs,
+            max_output_tokens=args.max_output_tokens,
+        )
+        if urllib.parse.urlsplit(args.url).scheme not in ("http", "https"):
+            parser.error("Coordinator URL must use HTTP(S)")
+        request = urllib.request.Request(  # noqa: S310 -- scheme validated above
             args.url.rstrip("/") + "/v1/runs",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 -- validated HTTP(S) request
             run_id = json.load(response)["run_id"]
         runs.append({"problem_id": problem.id, "run_id": run_id})
-    manifest = {"set_id": fixture.set_id, "version": fixture.version,
-                "environment": fixture.environment, "sha256": fixture.sha256,
-                "runs": runs}
+    manifest = {
+        "set_id": fixture.set_id,
+        "version": fixture.version,
+        "environment": fixture.environment,
+        "sha256": fixture.sha256,
+        "runs": runs,
+    }
     output = json.dumps(manifest, indent=2) + "\n"
     if args.output:
         args.output.write_text(output, encoding="utf-8")

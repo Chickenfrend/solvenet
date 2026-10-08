@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -12,11 +13,10 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Sequence
-
 
 MAX_DIAGNOSTICS_BYTES = 64 * 1024
 DIAGNOSTICS_TRUNCATION_MARKER = "\n[diagnostics truncated]"
@@ -96,9 +96,7 @@ class LeanVerifier:
     malicious tactic IO; acceptance retains the existing local execution assumption.
     """
 
-    DEFAULT_ALLOWED_AXIOMS = frozenset(
-        {"propext", "Classical.choice", "Quot.sound"}
-    )
+    DEFAULT_ALLOWED_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
 
     def __init__(
         self,
@@ -153,7 +151,9 @@ class LeanVerifier:
             with tempfile.TemporaryDirectory(prefix="solvenet-verify-") as temp_dir:
                 source_path = Path(temp_dir) / "Candidate.lean"
                 receipt = Path(temp_dir) / "accepted"
-                source = self._build_source(statement, candidate, imports, receipt=receipt)
+                source = self._build_source(
+                    statement, candidate, imports, receipt=receipt
+                )
                 source_path.write_text(source, encoding="utf-8")
                 # Check the toolchain, imports and trusted statement separately.
                 # Their failures are infrastructure/problem errors, not bad proofs.
@@ -165,12 +165,15 @@ class LeanVerifier:
                 if status is not VerificationStatus.VERIFIED:
                     return self._result(
                         VerificationStatus.VERIFIER_ERROR,
-                        f"Environment/problem preflight failed: {diagnostics}", started,
+                        f"Environment/problem preflight failed: {diagnostics}",
+                        started,
                     )
                 status, diagnostics = self._run(source_path, started)
                 if status is VerificationStatus.VERIFIED and not receipt.is_file():
                     status = VerificationStatus.VERIFIER_ERROR
-                    diagnostics += "\nLean exited without completing the verification checks"
+                    diagnostics += (
+                        "\nLean exited without completing the verification checks"
+                    )
         except (OSError, ValueError) as error:
             return self._result(
                 VerificationStatus.VERIFIER_ERROR,
@@ -182,9 +185,11 @@ class LeanVerifier:
 
     def verify_composed(self, bundle):
         from .composed import verify_composed
-        if bundle.get('verifier_identity') != self.artifact_identity():
-            return VerificationResult(VerificationStatus.REJECTED,
-                                      'Composed verifier identity is stale', 0), {'status': 'usage_unknown'}
+
+        if bundle.get("verifier_identity") != self.artifact_identity():
+            return VerificationResult(
+                VerificationStatus.REJECTED, "Composed verifier identity is stale", 0
+            ), {"status": "usage_unknown"}
         return verify_composed(self, bundle)
 
     def artifact_identity(self) -> str | None:
@@ -194,6 +199,7 @@ class LeanVerifier:
         not idle ticks. Over-budget or unavailable probes fail closed.
         """
         from .verifier_identity import local_identity
+
         return local_identity(self.project_dir, self.command, self.allowed_axioms)
 
     def readiness(self) -> VerifierReadiness:
@@ -201,7 +207,8 @@ class LeanVerifier:
         if not self.project_dir.is_dir():
             return unavailable_readiness("Lean project directory is missing")
         missing = [
-            name for name in ("lean-toolchain", "lakefile.toml")
+            name
+            for name in ("lean-toolchain", "lakefile.toml")
             if not (self.project_dir / name).is_file()
         ]
         if missing:
@@ -213,7 +220,9 @@ class LeanVerifier:
         try:
             with tempfile.TemporaryDirectory(prefix="solvenet-ready-") as temp_dir:
                 source = Path(temp_dir) / "Readiness.lean"
-                source.write_text("import Lean\nimport Init\n#check True\n", encoding="utf-8")
+                source.write_text(
+                    "import Lean\nimport Init\n#check True\n", encoding="utf-8"
+                )
                 status, diagnostics = self._run(source, started)
         except (OSError, ValueError) as error:
             return unavailable_readiness(f"Could not run Lean: {error}")
@@ -225,9 +234,12 @@ class LeanVerifier:
     def _run(self, path: Path, started: float) -> tuple[VerificationStatus, str]:
         output = bytearray()
         with subprocess.Popen(
-            [*self.command, str(path)], cwd=self.project_dir,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, start_new_session=True,
+            [*self.command, str(path)],
+            cwd=self.project_dir,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         ) as process:
             try:
                 with selectors.DefaultSelector() as selector:
@@ -235,7 +247,9 @@ class LeanVerifier:
                     while selector.get_map():
                         remaining = self.timeout_seconds - (time.monotonic() - started)
                         if remaining <= 0:
-                            return VerificationStatus.TIMEOUT, self._decode_output(output) + "\nLean timed out"
+                            return VerificationStatus.TIMEOUT, self._decode_output(
+                                output
+                            ) + "\nLean timed out"
                         for key, _ in selector.select(min(remaining, 0.1)):
                             chunk = os.read(key.fileobj.fileno(), 8192)
                             if not chunk:
@@ -244,15 +258,24 @@ class LeanVerifier:
                             available = self.max_diagnostics_bytes - len(output)
                             output.extend(chunk[:available])
                             if len(chunk) > available:
-                                return VerificationStatus.REJECTED, self._output_limit_diagnostics(output)
+                                return (
+                                    VerificationStatus.REJECTED,
+                                    self._output_limit_diagnostics(output),
+                                )
                     remaining = self.timeout_seconds - (time.monotonic() - started)
                     try:
                         code = process.wait(timeout=max(0, remaining))
                     except subprocess.TimeoutExpired:
-                        return VerificationStatus.TIMEOUT, self._decode_output(output) + "\nLean timed out"
-                status = (VerificationStatus.VERIFIED if code == 0 else
-                          VerificationStatus.REJECTED if code == 1 else
-                          VerificationStatus.VERIFIER_ERROR)
+                        return VerificationStatus.TIMEOUT, self._decode_output(
+                            output
+                        ) + "\nLean timed out"
+                status = (
+                    VerificationStatus.VERIFIED
+                    if code == 0
+                    else VerificationStatus.REJECTED
+                    if code == 1
+                    else VerificationStatus.VERIFIER_ERROR
+                )
                 diagnostics = self._decode_output(output)
                 if status is VerificationStatus.VERIFIER_ERROR:
                     diagnostics = f"Lean exited abnormally ({code})\n{diagnostics}"
@@ -260,10 +283,8 @@ class LeanVerifier:
             finally:
                 # Lake may spawn Lean; terminate the whole process group, including
                 # descendants retaining the output pipe after the parent exits.
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
                 process.wait()
 
     def _validate_input(
@@ -283,18 +304,27 @@ class LeanVerifier:
         return None
 
     def _build_source(
-        self, statement: str, candidate: str | None, imports: Sequence[str],
-        *, receipt: Path | None = None,
-        expected_name: str = 'SolveNetExpected', candidate_name: str = 'SolveNetCandidate',
+        self,
+        statement: str,
+        candidate: str | None,
+        imports: Sequence[str],
+        *,
+        receipt: Path | None = None,
+        expected_name: str = "SolveNetExpected",
+        candidate_name: str = "SolveNetCandidate",
         include_prelude: bool = True,
     ) -> str:
-        import_lines = "\n".join(f"import {module}" for module in dict.fromkeys(["Lean", *imports]))
+        import_lines = "\n".join(
+            f"import {module}" for module in dict.fromkeys(["Lean", *imports])
+        )
         prelude = (
             f"{import_lines}\n\n"
             "set_option autoImplicit false\n"
             "set_option Elab.async false\n"
         )
-        source = (prelude if include_prelude else '') + f"axiom {expected_name} {statement.strip()}\n"
+        source = (
+            prelude if include_prelude else ""
+        ) + f"axiom {expected_name} {statement.strip()}\n"
         if candidate is None:
             return source
         proof = "\n".join(f"  {line}" for line in candidate.splitlines())
@@ -302,7 +332,9 @@ class LeanVerifier:
         # JSON string escaping with literal Unicode is also valid Lean escaping.
         quoted = json.dumps(declaration, ensure_ascii=False)
         allowed = ", ".join(json.dumps(n) for n in sorted(self.allowed_axioms))
-        return source + f'''
+        return (
+            source
+            + f"""
 open Lean Elab Command in
 run_cmd do
   let expected ← getConstInfo `{expected_name}
@@ -319,8 +351,13 @@ run_cmd do
   for axiomName in (← collectAxioms `{candidate_name}) do
     unless allowed.contains axiomName.toString && !axiomName.toString.startsWith "SolveNetExpected" && axiomName.toString != "sorryAx" do
       throwError "Candidate uses disallowed axiom: {{axiomName}}"
-''' + (f'  liftIO <| IO.FS.writeFile {json.dumps(str(receipt))} "accepted"\n'
-       if receipt is not None else '')
+"""
+            + (
+                f'  liftIO <| IO.FS.writeFile {json.dumps(str(receipt))} "accepted"\n'
+                if receipt is not None
+                else ""
+            )
+        )
 
     def _decode_output(self, output: bytes | str | None) -> str:
         if output is None:
@@ -351,7 +388,9 @@ run_cmd do
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify a Lean proof body")
     parser.add_argument("--project", type=Path, required=True)
-    parser.add_argument("--statement", required=True, help="Text after the theorem name")
+    parser.add_argument(
+        "--statement", required=True, help="Text after the theorem name"
+    )
     parser.add_argument("--candidate-file", type=Path, required=True)
     parser.add_argument("--import", dest="imports", action="append", default=[])
     parser.add_argument("--timeout", type=float, default=10)

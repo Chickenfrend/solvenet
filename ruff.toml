@@ -1,0 +1,39 @@
+target-version = "py311"
+line-length = 88
+extend-exclude = ["homelab/build"]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "SIM", "RUF", "C4", "S", "C901"]
+# Lean syntax includes mathematical Unicode characters intentionally.
+allowed-confusables = ["∨"]
+
+[lint.mccabe]
+# Flag large branching functions without forcing small validators to split.
+max-complexity = 20
+
+[lint.per-file-ignores]
+# Tests deliberately assert, invoke local tools, query fixture SQLite tables,
+# and call ephemeral loopback HTTP servers. Other security rules remain active.
+# SQL interpolation contains internal identifiers or '?' placeholder lists;
+# external values are bound parameters. Other security rules remain enabled.
+"coordinator/src/solvenet/claim_graph.py" = ["S608"]
+"coordinator/src/solvenet/claim_graph_read.py" = ["S608"]
+"coordinator/src/solvenet/claim_graph_schema.py" = ["S608"]
+"coordinator/src/solvenet/context_packet.py" = ["S608"]
+"coordinator/src/solvenet/group_state.py" = ["S608"]
+"coordinator/src/solvenet/store.py" = ["S608"]
+# Operator-configured local Lean/Docker execution without shell=True. Candidate
+# safety remains the documented local verifier boundary.
+"coordinator/src/solvenet/verifier.py" = ["S603"]
+"coordinator/src/solvenet/verifier_identity.py" = ["S603"]
+"coordinator/src/solvenet/sandbox.py" = ["S603", "S607"]
+"experiments/*/verifier_bridge.py" = ["S603", "S607"]
+# Read-only hardware inventory and an explicitly selected compiled local worker.
+"integration/live_graph_trial.py" = ["S603", "S607"]
+# Nested fault-injection contexts keep rollback and expected-exception scope
+# clear in tests; combining them can obscure which operation is exercised.
+"**/tests/*.py" = ["S101", "S108", "S310", "S603", "S607", "S608", "SIM117"]
+"integration/test_*.py" = ["S101", "S310", "S603", "S607", "SIM117"]
+
+[lint.isort]
+known-first-party = ["solvenet", "solvenet_homelab"]

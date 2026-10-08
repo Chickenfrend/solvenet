@@ -4,8 +4,7 @@ import threading
 import unittest
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import urlopen
-from urllib.request import Request
+from urllib.request import Request, urlopen
 
 from solvenet.problem_set import EXPERIMENT_SETS, Problem, load, public_problem
 from solvenet.server import Coordinator, make_server
@@ -15,23 +14,30 @@ from solvenet.verifier import VerificationResult, VerificationStatus
 
 class BrowseTests(unittest.TestCase):
     def test_long_problem_previews_fit_bounded_page(self):
-        problem = Problem('long', 'T' * 100000, ': ' + 'x' * 100000,
-                          ('I' * 1000,) * 100, 'secret-reference',
-                          description='D' * 100000)
+        problem = Problem(
+            "long",
+            "T" * 100000,
+            ": " + "x" * 100000,
+            ("I" * 1000,) * 100,
+            "secret-reference",
+            description="D" * 100000,
+        )
         preview = public_problem(problem, detail=True, preview=True)
-        self.assertTrue(preview['preview_truncated'])
-        self.assertLess(len(json.dumps({'problems': [preview] * 10}).encode()), 256 * 1024)
-        self.assertNotIn('secret-reference', json.dumps(preview))
+        self.assertTrue(preview["preview_truncated"])
+        self.assertLess(
+            len(json.dumps({"problems": [preview] * 10}).encode()), 256 * 1024
+        )
+        self.assertNotIn("secret-reference", json.dumps(preview))
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.store = Store(Path(self.temp.name) / 'browse.db')
-        self.server = make_server(Coordinator(self.store, None), ('127.0.0.1', 0))
+        self.store = Store(Path(self.temp.name) / "browse.db")
+        self.server = make_server(Coordinator(self.store, None), ("127.0.0.1", 0))
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
         self.addCleanup(self.close)
-        self.url = f'http://127.0.0.1:{self.server.server_port}'
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
 
     def close(self):
         self.server.shutdown()
@@ -47,8 +53,11 @@ class BrowseTests(unittest.TestCase):
             return response.status, json.load(response)
 
     def post(self, path, payload):
-        request = Request(self.url + path, data=json.dumps(payload).encode(),
-                          headers={'Content-Type': 'application/json'})
+        request = Request(
+            self.url + path,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
         try:
             response = urlopen(request, timeout=10)
         except HTTPError as error:
@@ -57,313 +66,506 @@ class BrowseTests(unittest.TestCase):
             return response.status, json.load(response)
 
     def test_proof_routes_exclude_queued_job_context_and_fresh_pending_attempt(self):
-        models = {r: 'scripted' for r in ('planner', 'investigator', 'critic', 'synthesizer')}
-        group = self.store.start_group_loop('proof-route', ': True', ['Init'], 'lean-test', models, mode='graph')
-        binding = self.store.bind_group_artifact_verifier('test:fixture')
+        models = dict.fromkeys(
+            ("planner", "investigator", "critic", "synthesizer"), "scripted"
+        )
+        group = self.store.start_group_loop(
+            "proof-route", ": True", ["Init"], "lean-test", models, mode="graph"
+        )
+        binding = self.store.bind_group_artifact_verifier("test:fixture")
         self.store.advance_group(group)
-        planner = self.store.group(group)['jobs'][0]['job_id']
-        self.assertIsNotNone(self.store.export_proof_bundle(planner))  # Internal context still works.
+        planner = self.store.group(group)["jobs"][0]["job_id"]
+        self.assertIsNotNone(
+            self.store.export_proof_bundle(planner)
+        )  # Internal context still works.
 
         def unavailable(owner):
-            for suffix in ('bundle', 'evidence'):
-                self.assertEqual(self.get(f'/v1/proofs/{owner}/{suffix}')[0], 404)
+            for suffix in ("bundle", "evidence"):
+                self.assertEqual(self.get(f"/v1/proofs/{owner}/{suffix}")[0], 404)
 
         unavailable(planner)
-        unavailable('0' * 32)
-        lease = self.store.claim('worker', ['scripted'], supports_model_respond=True)
-        self.store.result(lease['assignment_id'], dict(lease_token=lease['lease_token'], status='completed',
-            output=dict(type='plan', text='No decomposition')))
+        unavailable("0" * 32)
+        lease = self.store.claim("worker", ["scripted"], supports_model_respond=True)
+        self.store.result(
+            lease["assignment_id"],
+            {
+                "lease_token": lease["lease_token"],
+                "status": "completed",
+                "output": {"type": "plan", "text": "No decomposition"},
+            },
+        )
         self.store.advance_group(group)
-        target = self.store.group(group)['jobs'][-1]['job_id']
+        target = self.store.group(group)["jobs"][-1]["job_id"]
         self.assertNotEqual(target, planner)
         self.assertIsNotNone(self.store.export_proof_bundle(target))
         unavailable(target)
-        lease = self.store.claim('worker', ['scripted'], supports_model_respond=True)
-        self.store.result(lease['assignment_id'], dict(lease_token=lease['lease_token'], status='completed',
-            output=dict(text='exact True.intro')))
+        lease = self.store.claim("worker", ["scripted"], supports_model_respond=True)
+        self.store.result(
+            lease["assignment_id"],
+            {
+                "lease_token": lease["lease_token"],
+                "status": "completed",
+                "output": {"text": "exact True.intro"},
+            },
+        )
         pending = self.store.pending()
         self.assertIsNotNone(pending)
-        unavailable(pending['id'])
+        unavailable(pending["id"])
         state = self.store.group(group)
-        task = state['tasks'][0]
-        artifact = self.store.propose_group_artifact(group, 'pending-proof', task['owner_id'],
-            task['id'], ': True ∧ True', ['Init'], 'lean-test', 'constructor <;> trivial')
+        task = state["tasks"][0]
+        artifact = self.store.propose_group_artifact(
+            group,
+            "pending-proof",
+            task["owner_id"],
+            task["id"],
+            ": True ∧ True",
+            ["Init"],
+            "lean-test",
+            "constructor <;> trivial",
+        )
         self.store.ensure_artifact_context(artifact, binding)
         self.assertIsNotNone(self.store.export_proof_bundle(artifact))
         unavailable(artifact)
 
-    def test_proof_routes_export_rejection_and_prior_receipt_during_pending_recheck(self):
-        group = self.store.create_group('checked-route', ': True', ['Init'], 'lean-test')
-        agent = self.store.add_agent(group, 'investigator', 'investigator')
-        task = self.store.add_group_task(group, 'proof-task', agent, agent, 'Prove lemma', 4)
-        binding = self.store.bind_group_artifact_verifier('test:first')
+    def test_proof_routes_export_rejection_and_prior_receipt_during_pending_recheck(
+        self,
+    ):
+        group = self.store.create_group(
+            "checked-route", ": True", ["Init"], "lean-test"
+        )
+        agent = self.store.add_agent(group, "investigator", "investigator")
+        task = self.store.add_group_task(
+            group, "proof-task", agent, agent, "Prove lemma", 4
+        )
+        binding = self.store.bind_group_artifact_verifier("test:first")
 
         def checked(key, status, proof, diagnostics):
-            owner = self.store.propose_group_artifact(group, key, agent, task,
-                ': True ∧ True', ['Init'], 'lean-test', proof)
+            owner = self.store.propose_group_artifact(
+                group, key, agent, task, ": True ∧ True", ["Init"], "lean-test", proof
+            )
             bundle = self.store.ensure_artifact_context(owner, binding)
-            check_id = self.store.begin_composed_check(owner, 'artifact', bundle)
+            check_id = self.store.begin_composed_check(owner, "artifact", bundle)
             result = VerificationResult(status, diagnostics, 3)
-            self.store.checked_group_artifact(owner, status.value, diagnostics, binding=binding,
-                bundle=bundle, result=result, usage={'status': 'known', 'direct': [],
-                    'transitive': [], 'subprocesses': 2}, check_id=check_id)
+            self.store.checked_group_artifact(
+                owner,
+                status.value,
+                diagnostics,
+                binding=binding,
+                bundle=bundle,
+                result=result,
+                usage={
+                    "status": "known",
+                    "direct": [],
+                    "transitive": [],
+                    "subprocesses": 2,
+                },
+                check_id=check_id,
+            )
             return owner, bundle
 
-        rejected, rejected_bundle = checked('rejected', VerificationStatus.REJECTED,
-            'exact True.intro', 'candidate has type True, expected True ∧ True')
-        status, bundle = self.get(f'/v1/proofs/{rejected}/bundle')
+        rejected, rejected_bundle = checked(
+            "rejected",
+            VerificationStatus.REJECTED,
+            "exact True.intro",
+            "candidate has type True, expected True ∧ True",
+        )
+        status, bundle = self.get(f"/v1/proofs/{rejected}/bundle")
         self.assertEqual((status, bundle), (200, rejected_bundle))
-        status, evidence = self.get(f'/v1/proofs/{rejected}/evidence')
+        status, evidence = self.get(f"/v1/proofs/{rejected}/evidence")
         self.assertEqual(status, 200)
         self.assertEqual(len(evidence), 1)
-        self.assertEqual(evidence[0]['status'], 'rejected')
-        self.assertEqual(evidence[0]['committed'], 1)
-        self.assertIn('expected True ∧ True', evidence[0]['diagnostics'])
-        self.assertEqual(evidence[0]['bundle']['proof'], 'exact True.intro')
+        self.assertEqual(evidence[0]["status"], "rejected")
+        self.assertEqual(evidence[0]["committed"], 1)
+        self.assertIn("expected True ∧ True", evidence[0]["diagnostics"])
+        self.assertEqual(evidence[0]["bundle"]["proof"], "exact True.intro")
 
-        verified, original = checked('verified', VerificationStatus.VERIFIED,
-            'constructor <;> trivial', '')
-        new_binding = self.store.bind_group_artifact_verifier('test:second')
-        self.assertEqual(next(a for a in self.store.group(group)['artifacts']
-            if a['id'] == verified)['status'], 'pending')
+        verified, original = checked(
+            "verified", VerificationStatus.VERIFIED, "constructor <;> trivial", ""
+        )
+        new_binding = self.store.bind_group_artifact_verifier("test:second")
+        self.assertEqual(
+            next(
+                a for a in self.store.group(group)["artifacts"] if a["id"] == verified
+            )["status"],
+            "pending",
+        )
         recheck_bundle = self.store.ensure_artifact_context(verified, new_binding)
-        self.assertNotEqual(recheck_bundle['verifier_revision'], original['verifier_revision'])
-        self.store.begin_composed_check(verified, 'artifact', recheck_bundle)
-        status, bundle = self.get(f'/v1/proofs/{verified}/bundle')
+        self.assertNotEqual(
+            recheck_bundle["verifier_revision"], original["verifier_revision"]
+        )
+        self.store.begin_composed_check(verified, "artifact", recheck_bundle)
+        status, bundle = self.get(f"/v1/proofs/{verified}/bundle")
         self.assertEqual((status, bundle), (200, original))
-        status, evidence = self.get(f'/v1/proofs/{verified}/evidence')
+        status, evidence = self.get(f"/v1/proofs/{verified}/evidence")
         self.assertEqual(status, 200)
-        self.assertEqual([(e['status'], e['committed']) for e in evidence],
-            [('verified', 1), ('checking', 0)])
-        self.assertEqual(evidence[0]['bundle'], original)
-        self.assertEqual(evidence[1]['bundle'], recheck_bundle)
+        self.assertEqual(
+            [(e["status"], e["committed"]) for e in evidence],
+            [("verified", 1), ("checking", 0)],
+        )
+        self.assertEqual(evidence[0]["bundle"], original)
+        self.assertEqual(evidence[1]["bundle"], recheck_bundle)
 
     def test_single_fixture_run_identity_and_no_reference_proof(self):
         fixture = load()
         problem = fixture.problems[0]
-        payload = {'set_id': fixture.set_id, 'version': fixture.version, 'sha256': fixture.sha256,
-                   'problem_id': problem.id, 'model': 'local', 'attempts': 2,
-                   'max_repairs': 2, 'max_output_tokens': 512, 'generation_timeout_seconds': 60}
-        status, created = self.post('/v1/fixture-runs', payload)
+        payload = {
+            "set_id": fixture.set_id,
+            "version": fixture.version,
+            "sha256": fixture.sha256,
+            "problem_id": problem.id,
+            "model": "local",
+            "attempts": 2,
+            "max_repairs": 2,
+            "max_output_tokens": 512,
+            "generation_timeout_seconds": 60,
+        }
+        status, created = self.post("/v1/fixture-runs", payload)
         self.assertEqual(status, 201)
-        detail = self.get('/v1/runs/' + created['run_id'])[1]
-        status, compact = self.get('/v1/runs/' + created['run_id'] + '/status')
+        detail = self.get("/v1/runs/" + created["run_id"])[1]
+        status, compact = self.get("/v1/runs/" + created["run_id"] + "/status")
         self.assertEqual(status, 200)
-        self.assertEqual(compact, {'id': created['run_id'], 'status': 'running',
-                                    'jobs': 2, 'assignments': 0, 'attempts': 0,
-                                    'active_assignment': None})
+        self.assertEqual(
+            compact,
+            {
+                "id": created["run_id"],
+                "status": "running",
+                "jobs": 2,
+                "assignments": 0,
+                "attempts": 0,
+                "active_assignment": None,
+            },
+        )
         self.assertNotIn(problem.reference_proof, json.dumps(compact))
-        self.assertEqual(self.get('/v1/runs/' + 'a' * 32 + '/status')[0], 404)
-        self.assertEqual((detail['fixture_set_id'], detail['fixture_version'], detail['fixture_sha256'],
-                          detail['fixture_problem_id']), (fixture.set_id, fixture.version, fixture.sha256, problem.id))
-        self.assertEqual(detail['problem']['statement'], problem.statement)
-        self.assertEqual(detail['initial_jobs'], [{'model': 'local', 'count': 2, 'max_output_tokens': 512}])
-        self.assertEqual(detail['max_repairs'], 2)
-        self.assertEqual(detail['generation_timeout_seconds'], 60)
-        row = self.get('/v1/runs?limit=1')[1]['items'][0]
-        self.assertEqual(row['fixture_problem_id'], problem.id)
-        self.assertEqual(row['fixture_set_id'], fixture.set_id)
+        self.assertEqual(self.get("/v1/runs/" + "a" * 32 + "/status")[0], 404)
+        self.assertEqual(
+            (
+                detail["fixture_set_id"],
+                detail["fixture_version"],
+                detail["fixture_sha256"],
+                detail["fixture_problem_id"],
+            ),
+            (fixture.set_id, fixture.version, fixture.sha256, problem.id),
+        )
+        self.assertEqual(detail["problem"]["statement"], problem.statement)
+        self.assertEqual(
+            detail["initial_jobs"],
+            [{"model": "local", "count": 2, "max_output_tokens": 512}],
+        )
+        self.assertEqual(detail["max_repairs"], 2)
+        self.assertEqual(detail["generation_timeout_seconds"], 60)
+        row = self.get("/v1/runs?limit=1")[1]["items"][0]
+        self.assertEqual(row["fixture_problem_id"], problem.id)
+        self.assertEqual(row["fixture_set_id"], fixture.set_id)
         self.assertNotIn(problem.reference_proof, json.dumps(detail))
-        claim = self.store.claim('worker', ['local'])
-        self.assertEqual(claim['job']['statement'], problem.statement)
-        self.assertEqual(claim['job']['run_id'], detail['id'])
+        claim = self.store.claim("worker", ["local"])
+        self.assertEqual(claim["job"]["statement"], problem.statement)
+        self.assertEqual(claim["job"]["run_id"], detail["id"])
         self.assertNotIn(problem.reference_proof, json.dumps(claim))
-        for bad in ({**payload, 'sha256': '0' * 64}, {**payload, 'problem_id': 'missing'},
-                    {**payload, 'reference_proof': problem.reference_proof},
-                    {**payload, 'statement': ': False'}):
-            self.assertEqual(self.post('/v1/fixture-runs', bad)[0], 400)
-        self.assertEqual(len(self.get('/v1/runs?limit=10')[1]['items']), 1)
+        for bad in (
+            {**payload, "sha256": "0" * 64},
+            {**payload, "problem_id": "missing"},
+            {**payload, "reference_proof": problem.reference_proof},
+            {**payload, "statement": ": False"},
+        ):
+            self.assertEqual(self.post("/v1/fixture-runs", bad)[0], 400)
+        self.assertEqual(len(self.get("/v1/runs?limit=10")[1]["items"]), 1)
 
     def test_fixture_catalog_pages_and_proof_exclusion(self):
-        status, catalog = self.get('/v1/fixture-sets')
+        status, catalog = self.get("/v1/fixture-sets")
         self.assertEqual(status, 200)
-        self.assertEqual([(item['set_id'], item['version']) for item in catalog['items']],
-                         sorted(EXPERIMENT_SETS))
+        self.assertEqual(
+            [(item["set_id"], item["version"]) for item in catalog["items"]],
+            sorted(EXPERIMENT_SETS),
+        )
         for (set_id, version), path in EXPERIMENT_SETS.items():
             fixture = load(path)
-            base = f'/v1/fixture-sets/{set_id}/versions/{version}'
-            first = self.get(base + '?limit=2')[1]
-            second = self.get(base + f'?limit=2&offset={first["next_offset"]}')[1]
-            self.assertEqual([p['id'] for p in first['problems'] + second['problems']],
-                             [p.id for p in fixture.problems[:4]])
-            self.assertEqual(first['sha256'], fixture.sha256)
-            self.assertEqual(first['problem_count'], len(fixture.problems))
-            self.assertNotIn('statement', first['problems'][0])
-            preview = self.get(base + '?limit=2&offset=0&preview=1')[1]
-            self.assertEqual(preview['problems'][0]['statement'], fixture.problems[0].statement)
-            self.assertEqual(preview['problems'][0]['imports'], list(fixture.problems[0].imports))
-            self.assertEqual(preview['next_offset'], first['next_offset'])
-            self.assertEqual(self.get(base + '?preview=2')[0], 400)
-            self.assertEqual(self.get(base + '?preview=1&limit=11')[0], 400)
-            self.assertEqual(self.get(base + '?offset=999')[1]['problems'], [])
-            self.assertIsNone(self.get(base + '?offset=999')[1]['next_offset'])
+            base = f"/v1/fixture-sets/{set_id}/versions/{version}"
+            first = self.get(base + "?limit=2")[1]
+            second = self.get(base + f"?limit=2&offset={first['next_offset']}")[1]
+            self.assertEqual(
+                [p["id"] for p in first["problems"] + second["problems"]],
+                [p.id for p in fixture.problems[:4]],
+            )
+            self.assertEqual(first["sha256"], fixture.sha256)
+            self.assertEqual(first["problem_count"], len(fixture.problems))
+            self.assertNotIn("statement", first["problems"][0])
+            preview = self.get(base + "?limit=2&offset=0&preview=1")[1]
+            self.assertEqual(
+                preview["problems"][0]["statement"], fixture.problems[0].statement
+            )
+            self.assertEqual(
+                preview["problems"][0]["imports"], list(fixture.problems[0].imports)
+            )
+            self.assertEqual(preview["next_offset"], first["next_offset"])
+            self.assertEqual(self.get(base + "?preview=2")[0], 400)
+            self.assertEqual(self.get(base + "?preview=1&limit=11")[0], 400)
+            self.assertEqual(self.get(base + "?offset=999")[1]["problems"], [])
+            self.assertIsNone(self.get(base + "?offset=999")[1]["next_offset"])
             for problem in fixture.problems:
-                detail = self.get(base + '/problems/' + problem.id)[1]
-                self.assertEqual(detail['title'], problem.title)
-                self.assertEqual(detail['statement'], problem.statement)
-                self.assertEqual(detail['imports'], list(problem.imports))
+                detail = self.get(base + "/problems/" + problem.id)[1]
+                self.assertEqual(detail["title"], problem.title)
+                self.assertEqual(detail["statement"], problem.statement)
+                self.assertEqual(detail["imports"], list(problem.imports))
                 for response in (catalog, first, second, preview, detail):
                     encoded = json.dumps(response)
-                    self.assertNotIn('reference_proof', encoded)
+                    self.assertNotIn("reference_proof", encoded)
                     self.assertNotIn(problem.reference_proof, encoded)
-            self.assertEqual(self.get(base + '/problems/unknown')[0], 404)
-        for path in ('/v1/fixture-sets/unknown/versions/1',
-                     '/v1/fixture-sets/core/versions/2',
-                     '/v1/fixture-sets/core/versions/true'):
+            self.assertEqual(self.get(base + "/problems/unknown")[0], 404)
+        for path in (
+            "/v1/fixture-sets/unknown/versions/1",
+            "/v1/fixture-sets/core/versions/2",
+            "/v1/fixture-sets/core/versions/true",
+        ):
             self.assertEqual(self.get(path)[0], 404)
 
     def test_recent_activity_cursor_bound_order_and_linkage(self):
         fixture = load()
-        run_ids = [self.store.submit(f': True -- {i}', ['Init'], attempts=1)['run_id']
-                   for i in range(4)]
-        config = {'set_id': fixture.set_id, 'version': fixture.version,
-                  'sha256': fixture.sha256, 'environment': fixture.environment,
-                  'strategy': 'independent', 'initial_jobs': [
-                      {'model': 'scripted', 'count': 1, 'max_output_tokens': 128}],
-                  'max_repairs': 0, 'generation_timeout_seconds': 120, 'max_assignments': 3}
-        experiments = [self.store.create_experiment(f'key-{i}', config, fixture.problems[:1])[0]
-                       for i in range(3)]
-        latest = experiments[-1]['runs'][0]['run_id']
-        expected = [e['runs'][0]['run_id'] for e in reversed(experiments)] + list(reversed(run_ids))
-        page = self.get('/v1/runs?limit=2')[1]
-        self.assertEqual([r['run_id'] for r in page['items']], expected[:2])
-        self.assertEqual(page['items'][0]['fixture_problem_id'], fixture.problems[0].id)
-        self.assertEqual(page['items'][0]['fixture_set_id'], fixture.set_id)
-        self.assertEqual(page['items'][0]['fixture_version'], fixture.version)
-        self.assertEqual(page['items'][0]['experiment_id'], experiments[-1]['id'])
-        self.assertEqual(page['items'][0]['models'], ['scripted'])
-        self.assertIsNone(self.get('/v1/runs?limit=100')[1]['items'][-1]['fixture_problem_id'])
-        self.assertEqual(self.get('/v1/runs/' + latest)[0], 200)
+        run_ids = [
+            self.store.submit(f": True -- {i}", ["Init"], attempts=1)["run_id"]
+            for i in range(4)
+        ]
+        config = {
+            "set_id": fixture.set_id,
+            "version": fixture.version,
+            "sha256": fixture.sha256,
+            "environment": fixture.environment,
+            "strategy": "independent",
+            "initial_jobs": [
+                {"model": "scripted", "count": 1, "max_output_tokens": 128}
+            ],
+            "max_repairs": 0,
+            "generation_timeout_seconds": 120,
+            "max_assignments": 3,
+        }
+        experiments = [
+            self.store.create_experiment(f"key-{i}", config, fixture.problems[:1])[0]
+            for i in range(3)
+        ]
+        latest = experiments[-1]["runs"][0]["run_id"]
+        expected = [e["runs"][0]["run_id"] for e in reversed(experiments)] + list(
+            reversed(run_ids)
+        )
+        page = self.get("/v1/runs?limit=2")[1]
+        self.assertEqual([r["run_id"] for r in page["items"]], expected[:2])
+        self.assertEqual(page["items"][0]["fixture_problem_id"], fixture.problems[0].id)
+        self.assertEqual(page["items"][0]["fixture_set_id"], fixture.set_id)
+        self.assertEqual(page["items"][0]["fixture_version"], fixture.version)
+        self.assertEqual(page["items"][0]["experiment_id"], experiments[-1]["id"])
+        self.assertEqual(page["items"][0]["models"], ["scripted"])
+        self.assertIsNone(
+            self.get("/v1/runs?limit=100")[1]["items"][-1]["fixture_problem_id"]
+        )
+        self.assertEqual(self.get("/v1/runs/" + latest)[0], 200)
         # Inserting a newer run between pages must not repeat or displace old entries.
-        self.store.submit(': True', ['Init'], attempts=1)
-        seen = [r['run_id'] for r in page['items']]
-        while page['next_cursor'] is not None:
-            page = self.get(f'/v1/runs?limit=2&before={page["next_cursor"]}')[1]
-            self.assertLessEqual(len(page['items']), 2)
-            seen.extend(r['run_id'] for r in page['items'])
+        self.store.submit(": True", ["Init"], attempts=1)
+        seen = [r["run_id"] for r in page["items"]]
+        while page["next_cursor"] is not None:
+            page = self.get(f"/v1/runs?limit=2&before={page['next_cursor']}")[1]
+            self.assertLessEqual(len(page["items"]), 2)
+            seen.extend(r["run_id"] for r in page["items"])
         self.assertEqual(seen, expected)
 
-        page = self.get('/v1/experiments?limit=1')[1]
-        self.assertEqual(page['items'][0]['id'], experiments[-1]['id'])
-        self.assertEqual(page['items'][0]['run_count'], 1)
-        self.assertEqual(page['items'][0]['strategy'], 'independent')
-        self.assertEqual(page['items'][0]['set_id'], fixture.set_id)
-        self.assertNotIn('config', page['items'][0])
+        page = self.get("/v1/experiments?limit=1")[1]
+        self.assertEqual(page["items"][0]["id"], experiments[-1]["id"])
+        self.assertEqual(page["items"][0]["run_count"], 1)
+        self.assertEqual(page["items"][0]["strategy"], "independent")
+        self.assertEqual(page["items"][0]["set_id"], fixture.set_id)
+        self.assertNotIn("config", page["items"][0])
         ids = []
         while True:
-            ids.extend(e['id'] for e in page['items'])
-            if page['next_cursor'] is None:
+            ids.extend(e["id"] for e in page["items"])
+            if page["next_cursor"] is None:
                 break
-            page = self.get(f'/v1/experiments?limit=1&before={page["next_cursor"]}')[1]
-        self.assertEqual(ids, [e['id'] for e in reversed(experiments)])
-        self.assertEqual(self.get('/v1/experiments/' + experiments[-1]['id'])[0], 200)
+            page = self.get(f"/v1/experiments?limit=1&before={page['next_cursor']}")[1]
+        self.assertEqual(ids, [e["id"] for e in reversed(experiments)])
+        self.assertEqual(self.get("/v1/experiments/" + experiments[-1]["id"])[0], 200)
 
     def test_invalid_pagination_and_unknown_ids(self):
-        for path in ('/v1/runs', '/v1/experiments', '/v1/fixture-sets/core/versions/1'):
-            for query in ('limit=0', 'limit=101', 'limit=-1', 'limit=true',
-                          'limit=1&limit=2', 'bogus=1'):
+        for path in ("/v1/runs", "/v1/experiments", "/v1/fixture-sets/core/versions/1"):
+            for query in (
+                "limit=0",
+                "limit=101",
+                "limit=-1",
+                "limit=true",
+                "limit=1&limit=2",
+                "bogus=1",
+            ):
                 with self.subTest(path=path, query=query):
-                    self.assertEqual(self.get(path + '?' + query)[0], 400)
-        self.assertEqual(self.get('/v1/runs?before=0')[0], 400)
-        self.assertEqual(self.get('/v1/experiments?before=-1')[0], 400)
-        self.assertEqual(self.get('/v1/fixture-sets/core/versions/1?offset=-1')[0], 400)
-        self.assertEqual(self.get('/v1/runs/' + 'a' * 32)[0], 404)
-        self.assertEqual(self.get('/v1/experiments/' + 'a' * 32)[0], 404)
+                    self.assertEqual(self.get(path + "?" + query)[0], 400)
+        self.assertEqual(self.get("/v1/runs?before=0")[0], 400)
+        self.assertEqual(self.get("/v1/experiments?before=-1")[0], 400)
+        self.assertEqual(self.get("/v1/fixture-sets/core/versions/1?offset=-1")[0], 400)
+        self.assertEqual(self.get("/v1/runs/" + "a" * 32)[0], 404)
+        self.assertEqual(self.get("/v1/experiments/" + "a" * 32)[0], 404)
 
     def test_model_activity_uses_recent_contact_and_live_lease(self):
         now = [1000.0]
         self.store.clock = lambda: now[0]
-        first = self.store.submit(': True', ['Init'], model='ollama/a', attempts=1)['run_id']
-        second = self.store.submit(': True', ['Init'], model='ollama/b', attempts=1)['run_id']
+        first = self.store.submit(": True", ["Init"], model="ollama/a", attempts=1)[
+            "run_id"
+        ]
+        second = self.store.submit(": True", ["Init"], model="ollama/b", attempts=1)[
+            "run_id"
+        ]
+
         def activity():
-            return self.get('/v1/model-activity?model=ollama%2Fa&model=ollama%2Fb&model=missing')[1]['items']
-        self.assertEqual([row['status'] for row in activity()], ['unknown', 'unknown', 'unknown'])
+            return self.get(
+                "/v1/model-activity?model=ollama%2Fa&model=ollama%2Fb&model=missing"
+            )[1]["items"]
+
+        self.assertEqual(
+            [row["status"] for row in activity()], ["unknown", "unknown", "unknown"]
+        )
+
         def claim(worker, model):
-            payload = json.dumps({'worker_id': worker, 'models': [model]}).encode()
-            with urlopen(Request(self.url + '/v1/claim', payload,
-                                 {'Content-Type': 'application/json'}), timeout=10) as response:
+            payload = json.dumps({"worker_id": worker, "models": [model]}).encode()
+            with urlopen(
+                Request(
+                    self.url + "/v1/claim",
+                    payload,
+                    {"Content-Type": "application/json"},
+                ),
+                timeout=10,
+            ) as response:
                 return json.load(response) if response.status == 200 else None
-        a = claim('worker-a', 'ollama/a')
-        b = claim('worker-b', 'ollama/b')
+
+        a = claim("worker-a", "ollama/a")
+        b = claim("worker-b", "ollama/b")
         rows = activity()
-        self.assertEqual([row['status'] for row in rows], ['working', 'working', 'unknown'])
-        self.assertEqual([(row['job_id'], row['run_id']) for row in rows[:2]],
-                         [(a['job']['id'], first), (b['job']['id'], second)])
-        self.assertNotIn('worker_id', json.dumps(rows))
+        self.assertEqual(
+            [row["status"] for row in rows], ["working", "working", "unknown"]
+        )
+        self.assertEqual(
+            [(row["job_id"], row["run_id"]) for row in rows[:2]],
+            [(a["job"]["id"], first), (b["job"]["id"], second)],
+        )
+        self.assertNotIn("worker_id", json.dumps(rows))
         now[0] += 20
-        payload = json.dumps({'lease_token': a['lease_token']}).encode()
-        with urlopen(Request(self.url + '/v1/assignments/' + a['assignment_id'] + '/heartbeat', payload,
-                             {'Content-Type': 'application/json'}), timeout=10):
+        payload = json.dumps({"lease_token": a["lease_token"]}).encode()
+        with urlopen(
+            Request(
+                self.url + "/v1/assignments/" + a["assignment_id"] + "/heartbeat",
+                payload,
+                {"Content-Type": "application/json"},
+            ),
+            timeout=10,
+        ):
             pass
         now[0] += 11
-        self.assertEqual([row['status'] for row in activity()], ['working', 'offline', 'unknown'])
+        self.assertEqual(
+            [row["status"] for row in activity()], ["working", "offline", "unknown"]
+        )
         now[0] += 20
-        self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'unknown'])
+        self.assertEqual(
+            [row["status"] for row in activity()], ["offline", "offline", "unknown"]
+        )
         # A claim with no available job is positive worker contact, but no assignment.
-        self.assertIsNone(claim('worker-c', 'missing'))
-        self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'idle'])
+        self.assertIsNone(claim("worker-c", "missing"))
+        self.assertEqual(
+            [row["status"] for row in activity()], ["offline", "offline", "idle"]
+        )
         now[0] += 86401
-        self.assertIsNone(claim('worker-c', 'missing'))
-        self.assertEqual([row['status'] for row in activity()], ['offline', 'offline', 'idle'])
-        self.assertEqual(self.get('/v1/model-activity?model=ollama%2Fa&model=ollama%2Fa')[0], 400)
+        self.assertIsNone(claim("worker-c", "missing"))
+        self.assertEqual(
+            [row["status"] for row in activity()], ["offline", "offline", "idle"]
+        )
+        self.assertEqual(
+            self.get("/v1/model-activity?model=ollama%2Fa&model=ollama%2Fa")[0], 400
+        )
 
     def test_openai_public_health_unobserved_checked_ready_and_unavailable(self):
         def claim(health):
-            payload = {'worker_id': 'mock-openai', 'models': ['openai/mock-model'],
-                       'capabilities': ['model_respond'], 'provider_health': health}
-            with urlopen(Request(self.url + '/v1/claim', json.dumps(payload).encode(),
-                                 {'Content-Type': 'application/json'})) as response:
+            payload = {
+                "worker_id": "mock-openai",
+                "models": ["openai/mock-model"],
+                "capabilities": ["model_respond"],
+                "provider_health": health,
+            }
+            with urlopen(
+                Request(
+                    self.url + "/v1/claim",
+                    json.dumps(payload).encode(),
+                    {"Content-Type": "application/json"},
+                )
+            ) as response:
                 return response.status
+
         def activity():
-            return self.get('/v1/model-activity?model=openai%2Fmock-model')[1]['items'][0]
-        self.assertEqual(claim({'status': 'unobserved'}), 204)
-        self.assertEqual(activity()['status'], 'idle')
-        self.assertNotIn('ready', activity())
-        self.assertEqual(claim({'status': 'ready'}), 204)
-        self.assertTrue(activity()['ready'])
-        for reason in ('OpenAI compatibility check inconclusive', 'OpenAI deadline exceeded',
-                       'OpenAI rate limited (recovering via scheduled jobs)',
-                       'OpenAI service unavailable (recovering via scheduled jobs)',
-                       'OpenAI network unavailable (recovering via scheduled jobs)'):
-            self.assertEqual(claim({'status': 'unobserved', 'reason': reason}), 204)
-            self.assertEqual(activity()['status'], 'idle')
-            self.assertNotIn('ready', activity())
-        for reason in ('OpenAI credential rejected', 'OpenAI model unavailable',
-                       'OpenAI profile or model access unsupported', 'OpenAI rate limited',
-                       'OpenAI service unavailable', 'OpenAI network unavailable',
-                       'OpenAI deadline exceeded', 'OpenAI compatibility check inconclusive'):
-            self.assertEqual(claim({'status': 'unavailable', 'reason': reason}), 204)
-            self.assertEqual(activity()['reason'], reason)
+            return self.get("/v1/model-activity?model=openai%2Fmock-model")[1]["items"][
+                0
+            ]
+
+        self.assertEqual(claim({"status": "unobserved"}), 204)
+        self.assertEqual(activity()["status"], "idle")
+        self.assertNotIn("ready", activity())
+        self.assertEqual(claim({"status": "ready"}), 204)
+        self.assertTrue(activity()["ready"])
+        for reason in (
+            "OpenAI compatibility check inconclusive",
+            "OpenAI deadline exceeded",
+            "OpenAI rate limited (recovering via scheduled jobs)",
+            "OpenAI service unavailable (recovering via scheduled jobs)",
+            "OpenAI network unavailable (recovering via scheduled jobs)",
+        ):
+            self.assertEqual(claim({"status": "unobserved", "reason": reason}), 204)
+            self.assertEqual(activity()["status"], "idle")
+            self.assertNotIn("ready", activity())
+        for reason in (
+            "OpenAI credential rejected",
+            "OpenAI model unavailable",
+            "OpenAI profile or model access unsupported",
+            "OpenAI rate limited",
+            "OpenAI service unavailable",
+            "OpenAI network unavailable",
+            "OpenAI deadline exceeded",
+            "OpenAI compatibility check inconclusive",
+        ):
+            self.assertEqual(claim({"status": "unavailable", "reason": reason}), 204)
+            self.assertEqual(activity()["reason"], reason)
         with self.assertRaises(HTTPError) as caught:
-            claim({'status': 'unavailable', 'reason': 'mock-secret-key'})
+            claim({"status": "unavailable", "reason": "mock-secret-key"})
         self.assertEqual(caught.exception.code, 400)
-        self.assertNotIn('mock-secret-key', caught.exception.read().decode())
+        self.assertNotIn("mock-secret-key", caught.exception.read().decode())
         caught.exception.close()
-        self.assertNotIn('mock-secret-key', json.dumps(activity()))
+        self.assertNotIn("mock-secret-key", json.dumps(activity()))
         with self.assertRaises(HTTPError) as caught:
-            claim({'status': 'unobserved', 'reason': 'mock-secret-key'})
+            claim({"status": "unobserved", "reason": "mock-secret-key"})
         self.assertEqual(caught.exception.code, 400)
         caught.exception.close()
 
     def test_provider_health_prevents_claim_and_recovers_with_legacy_worker(self):
-        self.store.submit(': True', ['Init'], model='ollama/test', attempts=1)
+        self.store.submit(": True", ["Init"], model="ollama/test", attempts=1)
+
         def claim(worker, health=None):
-            payload = {'worker_id': worker, 'models': ['ollama/test']}
+            payload = {"worker_id": worker, "models": ["ollama/test"]}
             if health is not None:
-                payload['provider_health'] = health
-            with urlopen(Request(self.url + '/v1/claim', json.dumps(payload).encode(),
-                                 {'Content-Type': 'application/json'})) as response:
+                payload["provider_health"] = health
+            with urlopen(
+                Request(
+                    self.url + "/v1/claim",
+                    json.dumps(payload).encode(),
+                    {"Content-Type": "application/json"},
+                )
+            ) as response:
                 return response.status
+
         def activity():
-            return self.get('/v1/model-activity?model=ollama%2Ftest')[1]['items'][0]
-        self.assertEqual(claim('worker', {'status': 'unavailable', 'reason': 'Ollama service unreachable'}), 204)
-        self.assertEqual(activity()['status'], 'unavailable')
-        self.assertEqual(activity()['reason'], 'Ollama service unreachable')
-        self.assertEqual(claim('worker', {'status': 'ready'}), 200)
-        self.assertEqual(activity()['status'], 'working')
-        self.assertEqual(claim('older-worker'), 204)
-        self.assertNotIn('ready', activity())
+            return self.get("/v1/model-activity?model=ollama%2Ftest")[1]["items"][0]
+
+        self.assertEqual(
+            claim(
+                "worker",
+                {"status": "unavailable", "reason": "Ollama service unreachable"},
+            ),
+            204,
+        )
+        self.assertEqual(activity()["status"], "unavailable")
+        self.assertEqual(activity()["reason"], "Ollama service unreachable")
+        self.assertEqual(claim("worker", {"status": "ready"}), 200)
+        self.assertEqual(activity()["status"], "working")
+        self.assertEqual(claim("older-worker"), 204)
+        self.assertNotIn("ready", activity())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

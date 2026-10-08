@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import shutil
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 from solvenet.verifier import (
     DIAGNOSTICS_TRUNCATION_MARKER,
@@ -18,7 +18,6 @@ from solvenet.verifier import (
     truncate_diagnostics,
     unavailable_readiness,
 )
-
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE_LEAN = Path(__file__).with_name("fake_lean.py")
@@ -59,7 +58,9 @@ class LeanVerifierUnitTests(unittest.TestCase):
         self.assertEqual(result.status, VerificationStatus.REJECTED)
 
     def test_output_is_bounded(self) -> None:
-        result = self.verifier(max_diagnostics_bytes=1024).verify(": True", "FAKE_FLOOD")
+        result = self.verifier(max_diagnostics_bytes=1024).verify(
+            ": True", "FAKE_FLOOD"
+        )
         self.assertEqual(result.status, VerificationStatus.REJECTED)
         self.assertIn("output limit exceeded", result.diagnostics)
         self.assertLess(len(result.diagnostics), 1100)
@@ -84,9 +85,10 @@ class LeanVerifierUnitTests(unittest.TestCase):
         self.assertTrue(result.ready, result.diagnostics)
 
     def test_readiness_detects_missing_project_files_without_running_lean(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, patch(
-            "solvenet.verifier.subprocess.Popen"
-        ) as run:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("solvenet.verifier.subprocess.Popen") as run,
+        ):
             result = LeanVerifier(Path(directory)).readiness()
         self.assertFalse(result.ready)
         self.assertIn("lean-toolchain", result.diagnostics)
@@ -133,8 +135,12 @@ class LeanVerifierIntegrationTests(unittest.TestCase):
         self.assertIn("expected end of input", result.diagnostics)
 
     def test_placeholders_and_spoofed_diagnostics(self) -> None:
-        for proof in ("sorry", "admit", "exact sorryAx False true",
-                      'trace "does not depend on any axioms"\nexact sorryAx False true'):
+        for proof in (
+            "sorry",
+            "admit",
+            "exact sorryAx False true",
+            'trace "does not depend on any axioms"\nexact sorryAx False true',
+        ):
             with self.subTest(proof=proof):
                 result = self.verifier.verify(": False", proof)
                 self.assertEqual(result.status, VerificationStatus.REJECTED)
@@ -150,7 +156,9 @@ class LeanVerifierIntegrationTests(unittest.TestCase):
         self.assertIn("disallowed axiom: SolveNetExpected", result.diagnostics)
 
     def test_broken_import_is_verifier_error(self) -> None:
-        result = self.verifier.verify(": True", "trivial", imports=("MissingSolveNetModule",))
+        result = self.verifier.verify(
+            ": True", "trivial", imports=("MissingSolveNetModule",)
+        )
         self.assertEqual(result.status, VerificationStatus.VERIFIER_ERROR)
 
     def test_axiom_spoofing_regression(self) -> None:
@@ -161,11 +169,14 @@ class LeanVerifierIntegrationTests(unittest.TestCase):
             (project / "Unsound.lean").write_text("axiom unsound : False\n")
             subprocess.run(
                 ["lake", "env", "lean", "-o", "Unsound.olean", "Unsound.lean"],
-                cwd=project, check=True, capture_output=True,
+                cwd=project,
+                check=True,
+                capture_output=True,
             )
             with patch.dict(os.environ, {"LEAN_PATH": directory}):
                 result = LeanVerifier(project).verify(
-                    ": False", 'trace "does not depend on any axioms"\nexact unsound',
+                    ": False",
+                    'trace "does not depend on any axioms"\nexact unsound',
                     imports=("Unsound",),
                 )
             self.assertEqual(result.status, VerificationStatus.REJECTED)
@@ -176,7 +187,9 @@ class LeanVerifierIntegrationTests(unittest.TestCase):
         self.assertTrue(result.verified, result.diagnostics)
 
     def test_early_process_exit_is_not_acceptance(self) -> None:
-        result = self.verifier.verify(": False", "run_tac (IO.Process.exit 0 : IO Unit)")
+        result = self.verifier.verify(
+            ": False", "run_tac (IO.Process.exit 0 : IO Unit)"
+        )
         self.assertEqual(result.status, VerificationStatus.VERIFIER_ERROR)
         self.assertIn("without completing", result.diagnostics)
 
