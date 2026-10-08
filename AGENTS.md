@@ -76,6 +76,7 @@ not implemented; do not treat future interfaces as available.
 * Keep model-provider-specific code isolated.
 * Never expose user API keys to remote services unnecessarily.
 * Add tests for behavior that is sufficiently stable to test.
+* Agents must explain lint and type-checking exceptions (`noqa`, `type: ignore`, or configuration exemptions) with a specific reason next to the suppression or in the configuration. Keep exceptions narrowly scoped; fix the underlying issue when practical rather than weakening checks just to make a change pass.
 * When making architectural changes, favor designs that allow local and distributed workers to eventually share the same job protocol.
 
 ## Scope
