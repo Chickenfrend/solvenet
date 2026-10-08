@@ -50,6 +50,14 @@ is to choose a model/profile and explicit projected-spend cap before a capped
 live collaboration observation. Mocked contracts and schema acceptance do not
 establish real-model effectiveness.
 
+### Planned knowledge-store direction
+
+SolveNet will first add a local mathlib-backed catalog, then an optional shared
+knowledge API backed by Postgres. Local coordinator SQLite remains the private
+research store; homelab site SQLite keeps UI settings. Shared queries, caching and
+publication are explicit. These features are planned, not implemented. See the
+[agreed knowledge architecture](docs/knowledge-architecture.md).
+
 ### Python code quality
 
 Install the development tools from the repository root:

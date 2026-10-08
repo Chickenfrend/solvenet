@@ -46,6 +46,25 @@ unmeasured. See [the G6 record](docs/graph-demonstration.md). Public untrusted
 contributors still require the separate trusted-checker gate: malicious tactic
 IO can forge candidate-writable in-process completion/use receipts.
 
+## Agreed knowledge architecture (planned)
+
+Knowledge-centered research is an explicit direction. Deliver a local mathlib-backed
+catalog first, then a separate shared knowledge service backed by Postgres.
+
+- Homelab site SQLite owns UI/operator settings, not research knowledge.
+- Local coordinator SQLite owns workspace/history and initially the reusable
+  catalog and selected shared caches, accessed through service APIs.
+- Shared Postgres owns admitted shared knowledge and publication/check evidence;
+  it does not replace SQLite or automatically own network-wide scheduling.
+- Workspace and reusable catalog have distinct lifecycles. Adding to the local
+  catalog is separate from publishing to the shared service.
+- Remote participation is explicit; local existence or verification never implies
+  upload. Preserve sources, licenses, environments and verification evidence.
+
+See [knowledge architecture](docs/knowledge-architecture.md) for agreed boundaries,
+delivery order and plan locations. Catalog/shared-service features are planned,
+not implemented; do not treat future interfaces as available.
+
 ## Engineering Guidelines
 
 * Keep implementations small and easy to replace.

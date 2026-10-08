@@ -7,6 +7,12 @@ The homelab site is a separate Python process and keeps only local operator
 settings in its own SQLite database. Models and Problems read fixture sets,
 recent runs and model activity via the coordinator HTTP API.
 
+The agreed [knowledge architecture](../docs/knowledge-architecture.md) keeps
+research knowledge in local coordinator SQLite, initially including the planned
+reusable catalog and shared caches. Site SQLite remains a settings store. The
+later Postgres-backed shared service is optional; publishing to it is distinct
+from adding to the local catalog. These features are planned, not implemented.
+
 From the repository root, with Python 3.11+:
 
 ```sh
