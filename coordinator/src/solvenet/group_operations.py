@@ -4,8 +4,14 @@ Callers retain admission, idempotency, budget and lifecycle policy. These helper
 neither open transactions nor refresh run state.
 """
 
+import sqlite3
 
-def create_group_run(db, group, created_at):
+from .contracts import GroupRunFields, JobKind, TaskType
+
+
+def create_group_run(
+    db: sqlite3.Connection, group: sqlite3.Row | GroupRunFields, created_at: float
+) -> str:
     from .store import identifier
 
     problem_id, run_id = identifier(), identifier()
@@ -26,23 +32,23 @@ def create_group_run(db, group, created_at):
 
 
 def insert_group_job(
-    db,
-    job_id,
-    run_id,
-    group_id,
-    request_key,
-    task_id,
-    agent_id,
-    environment,
-    cost,
+    db: sqlite3.Connection,
+    job_id: str,
+    run_id: str,
+    group_id: str,
+    request_key: str,
+    task_id: str,
+    agent_id: str,
+    environment: str,
+    cost: int,
     *,
-    model,
-    max_output_tokens,
-    max_assignments,
-    kind,
-    task_type,
-    messages,
-):
+    model: str,
+    max_output_tokens: int,
+    max_assignments: int,
+    kind: JobKind,
+    task_type: TaskType | None,
+    messages: str,
+) -> None:
     """Insert a queued job and its binding; cost need not equal retry capacity."""
     db.execute(
         """INSERT INTO jobs
@@ -68,7 +74,7 @@ def insert_group_job(
     )
 
 
-def stop_group_jobs(db, group_id, reason):
+def stop_group_jobs(db: sqlite3.Connection, group_id: str, reason: str) -> None:
     """Stop new dispatch and cancel queued jobs, leaving dispatched work to drain."""
     db.execute(
         "UPDATE group_loops SET phase='stopped',reason=? WHERE group_id=?",
@@ -81,13 +87,15 @@ def stop_group_jobs(db, group_id, reason):
     )
 
 
-def group_job_source(db, group_id, task_id, agent_id, job_id):
+def group_job_source(
+    db: sqlite3.Connection, group_id: str, task_id: str, agent_id: str, job_id: str
+) -> sqlite3.Row | None:
     """Look up the latest completed assignment for an exact group/job binding.
 
     A binding without a completed assignment still returns a row. Callers check
     completion and validate the output against their message/artifact contract.
     """
-    return db.execute(
+    row: sqlite3.Row | None = db.execute(
         """SELECT j.status,j.kind,j.task_type,a.result,a.id AS assignment_id
         FROM group_jobs gj JOIN jobs j ON j.id=gj.job_id
         LEFT JOIN assignments a ON a.job_id=j.id AND a.status='completed'
@@ -95,3 +103,4 @@ def group_job_source(db, group_id, task_id, agent_id, job_id):
         ORDER BY a.rowid DESC LIMIT 1""",
         (job_id, group_id, task_id, agent_id),
     ).fetchone()
+    return row

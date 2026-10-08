@@ -77,6 +77,34 @@ class ComposedTests(unittest.TestCase):
             ).fetchone()[0]
             return selected_bundle(db, self.group, root, proof, prerequisites)
 
+    def test_malformed_usage_receipt_is_rejected_without_losing_check_count(self):
+        bundle = self.target_bundle([], "exact ⟨⟨True.intro, True.intro⟩, True.intro⟩")
+        malformed_receipts = (
+            None,
+            [],
+            {"status": "known", "direct": [], "type": [], "transitive": [42]},
+            {"status": "known", "direct": {}, "type": [], "transitive": []},
+            {
+                "status": "known",
+                "direct": ["InventedLemma"],
+                "type": [],
+                "transitive": [],
+            },
+        )
+        for receipt in malformed_receipts:
+            with self.subTest(receipt=receipt):
+
+                def run(path, started, *, receipt=receipt):
+                    (path.parent / "receipt.json").write_text(json.dumps(receipt))
+                    return VerificationStatus.VERIFIED, ""
+
+                with patch.object(self.verifier, "_run", side_effect=run):
+                    result, usage = self.verifier.verify_composed(bundle)
+                self.assertEqual(result.status, VerificationStatus.REJECTED)
+                self.assertIn("Invalid composed use receipt", result.diagnostics)
+                self.assertEqual(usage["status"], "usage_unknown")
+                self.assertEqual(usage["subprocesses"], 2)
+
     def test_chain_actual_use_alternative_proofs_and_restart_replay(self):
         a, b = self.chain()
         standalone = self.checked(

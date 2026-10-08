@@ -67,6 +67,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
+.venv/bin/mypy
 ```
 
 Run `.venv/bin/ruff check --fix .` to apply safe lint fixes and
@@ -82,6 +83,13 @@ and other deliberately explicit large operations. Security exceptions in
 `ruff.toml` cover reviewed parameterized SQL, operator-configured tool execution,
 and intentional test operations; they do not disable all security checks.
 CI runs the same lint and format checks using the pinned Ruff version.
+
+Type checking is incremental: `mypy.ini` enforces strict checks on the typed
+contracts, composed verifier, graph instruction generator, shared group SQL
+operations, and protocol limits. Imported modules outside that initial set are
+inferred but do not yet produce diagnostics. CI runs `.venv/bin/mypy`'s
+equivalent after installing the pinned development tools. See
+[the typing policy](docs/python-typing.md) for how to expand coverage.
 
 ### Run it locally
 

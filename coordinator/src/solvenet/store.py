@@ -266,7 +266,7 @@ def repair_feedback(candidate, diagnostics):
     )
 
 
-def identifier():
+def identifier() -> str:
     return uuid4().hex
 
 

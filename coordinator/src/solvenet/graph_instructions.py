@@ -1,22 +1,28 @@
 """Coordinator-owned examples; no provider-specific prompt or reference proofs."""
 
 from .composed import encode
+from .contracts import ClaimFields, GraphPromptPacket, TextEnvelope
 from .graph_response import SCHEMA
 
 
-def graph_example(packet, task_type):
+def graph_example(packet: GraphPromptPacket, task_type: str) -> TextEnvelope:
     """An accepted proposal shape instantiated solely from the received packet.
 
     The proof slot is intentionally a placeholder, not a suggested proof. A
     parser-accepted artifact is still pending and must pass the Lean checker.
     """
     focus = packet["focus"]
-    batch = {"graph_schema": SCHEMA}
+    context: ClaimFields = {
+        "statement": focus["statement"],
+        "imports": focus["imports"],
+        "environment": focus["environment"],
+    }
+    batch: dict[str, object] = {"graph_schema": SCHEMA}
     if task_type == "plan":
         batch["claims"] = [
             dict(
                 key="c",
-                **{k: focus[k] for k in ("statement", "imports", "environment")},
+                **context,
             )
         ]
         batch["findings"] = [
@@ -27,7 +33,7 @@ def graph_example(packet, task_type):
             dict(
                 key="p",
                 claim=focus["id"],
-                **{k: focus[k] for k in ("statement", "imports", "environment")},
+                **context,
                 proof="YOUR_LEAN_PROOF_BODY",
                 prerequisite_proof_ids=[],
             )
@@ -56,7 +62,7 @@ def graph_example(packet, task_type):
     return {"text": encode(batch)}
 
 
-def graph_instructions(packet, task_type):
+def graph_instructions(packet: GraphPromptPacket, task_type: str) -> str:
     return (
         f'GRAPH_RESPONSE ({task_type}): Return outer JSON {{"text":string}}; text is serialized '
         "graph JSON, not an object, prose or Markdown. Shape example (not a mathematical solution):\n"
