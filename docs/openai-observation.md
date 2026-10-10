@@ -48,3 +48,48 @@ The opt-in procedure is documented in [integration instructions](../integration/
 The runner and its bounds received separate build-agent review; fourteen offline
 trial tests, fake-provider graph integrations with real Lean, Go worker/provider
 tests, Ruff and the configured incremental mypy scope passed.
+
+## Consecutive-product trial
+
+Later on 2026-10-09, the operator authorized a fresh $1 projected cap for
+`(n : Nat) : 6 ∣ n * (n + 1) * (n + 2)`, again using Sol 6.1 and `Init`.
+An offline reference proof established feasibility but was not supplied to the
+model. The selectable fixture contains only statement, imports and environment.
+
+The first planner call exhausted its 512-token output allowance and returned
+incomplete output. It used 981 input and 512 output tokens, conservatively
+estimated at $0.0075725. No Lean checks ran. This motivated a configurable
+`graph_limits.response_output_tokens`: the production default remains 512, while
+the trial requests 2,048. Synthesis still requests 2,048. Admission and persisted
+job allowances agree, and the existing cost bound already reserves this amount.
+
+The second run reserved the prior $0.0075725 and projected at most $0.8192 more,
+for a combined ceiling of $0.8267725. It made four calls without retries:
+
+1. The planner proposed `2 ∣ n * (n + 1)` and a polynomial increment identity,
+   with target-to-lemma suggestions supporting an induction strategy.
+2. The investigator produced a candidate for each lemma.
+3. The synthesizer attempted the target after receiving the rejected-artifact
+   context. No checked lemma was available for composition.
+
+Both auxiliary candidates and the target were rejected. Both auxiliary proof
+strings began with `by`, but the verifier wraps a tactic body beneath `:= by`,
+causing a parse failure. Offline diagnostic copies with only the leading `by`
+removed and indentation adjusted showed that the polynomial identity verifies;
+the even-product candidate still leaves an arithmetic goal unsolved. The original
+observed proofs and statuses remain unchanged. The target similarly left a goal
+unsolved and included a tactic after its goal was already closed. Lean rejected
+the resulting candidate, including its disallowed `sorryAx` dependency.
+
+The second run stopped at `no_useful_frontier`, with three Lean checks and no
+verified target, critique, or checked-lemma reuse. Its reported usage was 5,439
+input and 2,862 output tokens, estimated conservatively at $0.0422175. Combined
+paid usage across both attempts was 6,420 input and 3,374 output tokens, estimated
+at **$0.04979**. All counters were known; these estimates are not invoices.
+
+Evidence is preserved in `/tmp/opencode/solvenet-openai-consecutive-product-observation.json`
+and `/tmp/opencode/solvenet-openai-consecutive-product-retry-observation.json`,
+with adjacent SQLite and worker-log directories. This demonstrates structured
+decomposition and attempted lemma work, not successful composed proof reuse.
+The next prompt improvement should explicitly specify the artifact tactic-body
+format; a later experiment should also provide sufficient critique/repair budget.

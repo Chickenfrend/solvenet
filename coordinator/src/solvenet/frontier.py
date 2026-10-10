@@ -3,6 +3,7 @@
 import hashlib
 import json
 
+from . import protocol_limits
 from .composed import encode
 from .context_packet import build_packet, freeze_packet
 from .group_operations import create_group_run, insert_group_job, stop_group_jobs
@@ -17,6 +18,7 @@ DEFAULT_LIMITS = {
     "source_bytes": 32768,
     "packet_bytes": 6144,
     "retries": 1,
+    "response_output_tokens": 512,
 }
 
 MIGRATION_23 = """
@@ -55,6 +57,8 @@ def validate_limits(value):
         raise ValueError("Invalid graph limits")
     result = DEFAULT_LIMITS | value
     for key, maximum in DEFAULT_LIMITS.items():
+        if key == "response_output_tokens":
+            maximum = protocol_limits.MAX_OUTPUT_TOKENS
         if (
             type(result[key]) is not int
             or not (0 if key == "retries" else 1) <= result[key] <= maximum
@@ -358,7 +362,11 @@ def _admit_candidate(
             if action == "synthesize"
             else "finding"
         )
-        output_tokens = 2048 if action == "synthesize" else 512
+        output_tokens = (
+            2048
+            if action == "synthesize"
+            else limits.get("response_output_tokens", 512)
+        )
         messages = [
             {
                 "role": "user",
@@ -560,7 +568,7 @@ def _dispatch_frontier_task(
         group["environment"],
         cost,
         model=model,
-        max_output_tokens=2048 if kind == "model.generate" else 512,
+        max_output_tokens=built["budget"]["output_token_allowance"],
         max_assignments=min(2, limits["planning_calls"] - planning)
         if c["action"] in ("plan", "critique")
         else 2,

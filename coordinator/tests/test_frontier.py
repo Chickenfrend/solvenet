@@ -7,8 +7,9 @@ from unittest.mock import patch
 
 from solvenet.composed import declaration_name
 from solvenet.context_packet import build_packet
-from solvenet.frontier import FrontierLimit
+from solvenet.frontier import FrontierLimit, validate_limits
 from solvenet.proof_context import VerificationBusy
+from solvenet.protocol_limits import MAX_OUTPUT_TOKENS
 from solvenet.server import Coordinator
 from solvenet.store import Conflict, Store
 from solvenet.verifier import LeanVerifier, VerificationResult, VerificationStatus
@@ -1060,6 +1061,88 @@ class FrontierTests(unittest.TestCase):
             self.start("bad", graph_limits={"verification_operations": 25})
         with self.assertRaises(Conflict):
             self.start(graph_limits={"planning_calls": 2})
+
+    def test_response_output_limit_validation(self):
+        self.assertEqual(validate_limits(None)["response_output_tokens"], 512)
+        for value in (1, 2048, MAX_OUTPUT_TOKENS):
+            self.assertEqual(
+                validate_limits({"response_output_tokens": value})[
+                    "response_output_tokens"
+                ],
+                value,
+            )
+        for value in (0, -1, True, 2048.0, "2048", MAX_OUTPUT_TOKENS + 1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.start(
+                    "invalid-output", graph_limits={"response_output_tokens": value}
+                )
+
+    def test_response_output_allowance_matches_packet_and_requested_job(self):
+        for output in (512, 2048):
+            with self.subTest(output=output):
+                group = self.start(
+                    "output-" + str(output),
+                    graph_limits={"response_output_tokens": output},
+                )
+                plan, _ = self.next(group)
+                packet = self.store.job_context_packet(plan["job"]["id"])
+                self.assertEqual(plan["job"]["max_output_tokens"], output)
+                self.assertEqual(packet["budget"]["output_token_allowance"], output)
+                self.assertEqual(
+                    packet["budget"]["admission_upper_bound"],
+                    packet["budget"]["input_byte_upper_bound"] + output,
+                )
+                self.complete(plan, {"graph_schema": "solvenet.graph.v1"})
+                synthesis, decision = self.next(group)
+                self.assertEqual(decision["action"], "synthesize")
+                self.assertEqual(synthesis["job"]["max_output_tokens"], 2048)
+                self.assertEqual(
+                    self.store.job_context_packet(synthesis["job"]["id"])["budget"][
+                        "output_token_allowance"
+                    ],
+                    2048,
+                )
+                self.store.stop_frontier(group, "test_complete")
+
+    def test_response_output_allowance_can_prevent_context_admission(self):
+        group = self.start(graph_limits={"response_output_tokens": MAX_OUTPUT_TOKENS})
+        self.coordinator.tick()
+        self.assertEqual(
+            self.store.group_loop(group)["reason"], "capacity_or_model_budget"
+        )
+        self.assertEqual(len(self.store.group(group)["jobs"]), 0)
+        deferred = self.store.frontier_trace(group)["decisions"][0]["deferred"]
+        self.assertTrue(any(d["reason"].startswith("context_unfit:") for d in deferred))
+
+    def test_configured_response_output_applies_to_investigation_and_critique(self):
+        group = self.start(graph_limits={"response_output_tokens": 2048})
+        _, edges = self.plan(group)
+        investigation, decision = self.next(group)
+        self.assertEqual(decision["action"], "investigate")
+        self.complete(
+            investigation,
+            {
+                "graph_schema": "solvenet.graph.v1",
+                "reviews": [
+                    {
+                        "key": "challenge",
+                        "relationship": edges["edge-a"],
+                        "status": "challenged",
+                        "reason": "Reconsider this branch",
+                    }
+                ],
+            },
+        )
+        critique, decision = self.next(group)
+        self.assertEqual(decision["action"], "critique")
+        for lease in (investigation, critique):
+            self.assertEqual(lease["job"]["max_output_tokens"], 2048)
+            self.assertEqual(
+                self.store.job_context_packet(lease["job"]["id"])["budget"][
+                    "output_token_allowance"
+                ],
+                2048,
+            )
 
     def test_failed_verifier_cost_is_unknown_and_recheck_is_reserved(self):
         group = self.start()

@@ -13,8 +13,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from live_openai_graph_trial import (
+    ROOT,
     Budget,
     TrialStore,
+    api,
+    main,
     observe,
     structured_result,
     terminate_at_cutoff,
@@ -74,6 +77,12 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
             Decimal(json.loads(result.stdout)["projected_total_usd"]), Decimal(".89920")
         )
 
+    def test_retry_budget_includes_first_consecutive_product_observation(self):
+        cap = replace(budget(), prior_reserved_usd=Decimal(".0075725"))
+        cap.validate()
+        self.assertEqual(cap.projected_usd, Decimal(".8267725"))
+        self.assertEqual(Decimal(cap.record()["projected_graph_usd"]), Decimal(".8192"))
+
     def test_structured_stage_requires_actual_graph_envelope(self):
         for text, expected in (
             ("plain prose", False),
@@ -85,6 +94,52 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
                 expected,
             )
         self.assertFalse(structured_result({"status": "failed"}))
+
+    def test_cli_selects_fixture_and_preserves_default(self):
+        for fixture in (
+            None,
+            "integration/fixtures/graph-nat-consecutive-product.json",
+        ):
+            argv = [
+                "trial",
+                "--model",
+                "synthetic",
+                "--profile",
+                "responses-reasoning",
+                "--worker",
+                "/does-not-exist",
+                "--key-file",
+                "/does-not-exist",
+                "--output",
+                "/does-not-exist/result.json",
+                "--total-budget-usd",
+                "1",
+                "--prior-reserved-usd",
+                "0",
+                "--input-usd-per-million",
+                "2.5",
+                "--output-usd-per-million",
+                "10",
+                "--execute-paid",
+            ]
+            if fixture:
+                argv.extend(["--fixture", fixture])
+            with (
+                self.subTest(fixture=fixture),
+                patch.object(sys, "argv", argv),
+                patch("live_openai_graph_trial.observe") as observation,
+                patch("builtins.print"),
+            ):
+                main()
+            args, cap = observation.call_args.args
+            self.assertEqual(
+                args.fixture,
+                Path(fixture)
+                if fixture
+                else ROOT / "integration/fixtures/graph-nat-reorder.json",
+            )
+            self.assertEqual(cap.max_calls, 10)
+            self.assertEqual(cap.projected_usd, Decimal(".81920"))
 
     def test_unknown_usage_is_not_zero_or_a_total_price(self):
         estimate = usage_estimate(
@@ -223,6 +278,8 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
             output = Path(temp) / "observation.json"
             args = SimpleNamespace(
                 worker=Path(sys.executable),
+                fixture=ROOT
+                / "integration/fixtures/graph-nat-consecutive-product.json",
                 output=output,
                 model="synthetic",
                 profile="responses-reasoning",
@@ -238,9 +295,22 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
                     "live_openai_graph_trial.subprocess.Popen", return_value=worker
                 ) as launch,
                 patch("live_openai_graph_trial.LeanVerifier", return_value=verifier),
+                patch("live_openai_graph_trial.api", wraps=api) as requests,
             ):
                 observe(args, budget())
+            target = json.loads(args.fixture.read_text())
+            self.assertEqual(set(target), {"statement", "imports", "environment"})
+            self.assertEqual(
+                target["statement"],
+                "(n : Nat) : 6 ∣ n * (n + 1) * (n + 2)",  # noqa: RUF001 -- Lean divisibility notation
+            )
+            submitted = requests.call_args_list[0].args[2]
+            self.assertEqual(submitted["graph_limits"]["response_output_tokens"], 2048)
+            self.assertEqual({key: submitted[key] for key in target}, target)
+            self.assertFalse(any("proof" in key for key in submitted))
             observation = json.loads(output.read_text())
+            self.assertEqual(observation["budget"]["response_output_tokens"], 2048)
+            self.assertEqual(observation["budget"]["synthesis_output_tokens"], 2048)
             self.assertEqual(observation["terminal_reason"], "worker_exited")
             self.assertEqual(observation["snapshot"]["loop"]["reason"], "worker_exited")
             self.assertEqual(observation["snapshot"]["group"]["cost"]["leases"], 0)
@@ -257,6 +327,7 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
             output = Path(temp) / "observation.json"
             args = SimpleNamespace(
                 worker=Path(sys.executable),
+                fixture=ROOT / "integration/fixtures/graph-nat-reorder.json",
                 output=output,
                 model="synthetic",
                 profile="responses-reasoning",

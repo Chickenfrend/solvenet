@@ -94,7 +94,8 @@ reserved planning/critique assignment caps still apply.
 
 ## Separate ceilings and cost accounting
 
-`graph_limits` may configure smaller values than these defaults:
+`graph_limits` may configure smaller values than these defaults, except
+`response_output_tokens`, which accepts 1–32768 (the protocol output ceiling):
 
 | Limit | Default |
 | --- | ---: |
@@ -105,6 +106,10 @@ reserved planning/critique assignment caps still apply.
 | `source_bytes` (encoded replay inputs and generated Lean source) | 32768 |
 | `packet_bytes` (full encoded graph packet) | 6144 |
 | `retries` (independent retries per strategy) | 1 |
+| `response_output_tokens` (non-synthesis plan/finding/critique output) | 512 |
+
+Synthesis continues to request 2048 output tokens. The configured response
+allowance is included in packet/context admission and the queued job request.
 
 Existing group `max_work` remains the weighted model reservation ceiling (two
 assignments at configured model cost); it is distinct from measured model calls,

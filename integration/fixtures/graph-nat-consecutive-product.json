@@ -1,0 +1,5 @@
+{
+  "environment": "lean/lean-toolchain:leanprover/lean4:v4.19.0; imports=Init",
+  "imports": ["Init"],
+  "statement": "(n : Nat) : 6 ∣ n * (n + 1) * (n + 2)"
+}

@@ -79,9 +79,12 @@ class Budget:
             "max_jobs": self.max_jobs,
             "max_attempted_calls_including_retries": self.max_calls,
             "projected_total_usd": str(self.projected_usd),
+            "projected_graph_usd": str(self.projected_usd - self.prior_reserved_usd),
             "billing_guarantee": False,
             "input_bound": "Full request bytes plus framing upper-bound input tokens",
-            "output_bound": "Includes reasoning; existing graph jobs use 512/2048",
+            "response_output_tokens": 2048,
+            "synthesis_output_tokens": 2048,
+            "output_bound": "Includes reasoning; trial graph jobs request 2048",
         }
 
 
@@ -218,9 +221,7 @@ def observe(args, budget):
     readiness = coordinator.verifier.readiness()
     if not readiness.ready:
         raise RuntimeError(readiness.diagnostics)
-    fixture = json.loads(
-        (ROOT / "integration/fixtures/graph-nat-reorder.json").read_text()
-    )
+    fixture = json.loads(args.fixture.read_text())
     model = "openai/" + args.model
     with (
         args.output.open("x") as output,
@@ -280,6 +281,7 @@ def worker_session(
                         }
                     },
                     "graph_limits": {
+                        "response_output_tokens": 2048,
                         "planning_calls": 2,
                         "verification_operations": 4,
                         "lean_elapsed_ms": 40000,
@@ -417,6 +419,12 @@ def main():
     parser.add_argument("--worker", required=True, type=Path)
     parser.add_argument("--key-file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--fixture",
+        type=Path,
+        default=ROOT / "integration/fixtures/graph-nat-reorder.json",
+        help="target JSON; only statement/imports/environment are submitted",
+    )
     parser.add_argument("--total-budget-usd", required=True, type=Decimal)
     parser.add_argument("--prior-reserved-usd", required=True, type=Decimal)
     parser.add_argument("--input-usd-per-million", required=True, type=Decimal)

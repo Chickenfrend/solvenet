@@ -28,16 +28,46 @@ the $0.08 reservation for an earlier probe whose usage is unknown. The graph
 reserves 20 work units at model cost 2: at most five jobs, each with at most two
 assignments, hence at most ten attempted calls including retries. Every attempt
 reserves 24,576 input tokens (full request bytes plus framing bounded by the
-worker) and 2,048 output tokens including reasoning. Existing graph jobs request
-512 tokens for plan/finding/critique and 2,048 for target proofs; the projection
-uses 2,048 for every attempt. It refuses a projection above the total allowance.
+worker) and 2,048 output tokens including reasoning. This runner sets
+`graph_limits.response_output_tokens` to 2,048 for plan/finding/critique;
+target proofs also request 2,048. Production graph defaults remain 512 for
+non-synthesis replies. It refuses a projection above the total allowance.
 
 The claim gate independently caps assignments and pauses on expired assignments
 or missing input/output usage, including failures. A structured planning reply
-is required before further graph expansion. It uses the multi-step natural-number
-reordering target from `fixtures/graph-nat-reorder.json`, supplying only its
-statement/imports/environment, never fixture proofs. All roles use one model
+is required before further graph expansion. `--fixture` selects a target JSON;
+the default is `fixtures/graph-nat-reorder.json`. Only its
+statement/imports/environment are supplied, never fixture proofs. All roles use one model
 but retain distinct agent IDs. No hierarchy comparison is claimed.
+
+For a fresh $1 allowance with no prior-call reservation, select the consecutive
+product target `(n : Nat) : 6 ∣ n * (n + 1) * (n + 2)`:
+
+```sh
+PATH="$HOME/.elan/bin:$PATH" PYTHONPATH=coordinator/src:homelab/src \
+  python3 integration/live_openai_graph_trial.py \
+  --model gpt-6.1-sol --profile responses-reasoning \
+  --fixture integration/fixtures/graph-nat-consecutive-product.json \
+  --worker /tmp/opencode/solvenet-openai-trial-worker \
+  --key-file "$HOME/.config/solvenet/openai_api_key" \
+  --output /tmp/opencode/solvenet-openai-consecutive-product-observation.json \
+  --total-budget-usd 1 --prior-reserved-usd 0 \
+  --input-usd-per-million 2.50 --output-usd-per-million 10
+```
+
+This preflight projects **$0.81920**, with the same ten-call and per-call bounds.
+Append `--execute-paid` to execute the authorized trial. The fixture contains
+only statement/imports/environment. A local reference proof established feasibility
+under pinned Lean 4.19.0 with `Init` alone; that proof is not part of the fixture
+or model request.
+
+After the first consecutive-product observation stopped with incomplete structured
+output at 512 tokens, its conservative token-price reservation was $0.0075725.
+For a retry under the same total $1 allowance, use the command above with
+`--prior-reserved-usd .0075725` and a fresh
+`--output /tmp/opencode/solvenet-openai-consecutive-product-retry-observation.json`.
+The runner now requests 2,048 output tokens for all graph roles. The retry graph
+bound remains **$0.81920**, and the combined bound is **$0.8267725**.
 
 Ceilings: two planning/critique assignments, no independent frontier retries,
 four real Lean operations / 40 seconds Lean allowance, 10 seconds per Lean
