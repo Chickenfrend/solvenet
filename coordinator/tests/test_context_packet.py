@@ -89,6 +89,62 @@ class ContextPacketTests(unittest.TestCase):
         self.assertEqual(self.packet(other)[1]["checked_lemmas"], [])
         self.assertNotIn(proof, self.packet(other)[0]["source_ids"])
 
+    def rejected(self, key="rejected", proof="  exact False.intro\n"):
+        artifact = self.store.propose_group_artifact(
+            self.group,
+            key,
+            self.agent,
+            self.task,
+            ": True ∧ True",
+            ["Init"],
+            "pinned",
+            proof,
+        )
+        self.store.checked_group_artifact(
+            artifact, "rejected", "Lean diagnostic λ\n", binding=self.binding
+        )
+        return artifact
+
+    def test_required_rejection_and_critique_are_exact_or_admission_fails(self):
+        artifact = self.rejected()
+        text = 'Retry using conjunction introduction. λ\n"quoted"'
+        critique = self.store.add_group_message(
+            self.group, "critique", self.critic, self.task, "critique", text
+        )
+        selection = {
+            "rejected_artifact_ids": [artifact],
+            "critique_ids": [critique],
+            "task_type": "finding",
+        }
+        built, packet = self.packet(**selection)
+        self.assertEqual(
+            packet["untrusted"]["rejected_artifacts"][0]["proof"],
+            "  exact False.intro\n",
+        )
+        self.assertEqual(
+            packet["untrusted"]["rejected_artifacts"][0]["diagnostics"],
+            "Lean diagnostic λ\n",
+        )
+        self.assertEqual(packet["untrusted"]["messages"][0]["text"], text)
+        self.assertEqual(packet["checked_lemmas"], [])
+        self.assertTrue({artifact, critique} <= set(built["source_ids"]))
+        with self.assertRaisesRegex(ValueError, "exceed context budget"):
+            self.packet(max_bytes=100, **selection)
+        other = self.task_for("other-focus", self.claim("other-focus", ": True"))
+        with self.assertRaisesRegex(ValueError, "Unknown rejected artifact for focus"):
+            self.packet(other, **selection)
+        with self.assertRaisesRegex(ValueError, "Unknown critique for focus"):
+            self.packet(other, critique_ids=[critique])
+
+    def test_oversized_rejection_is_not_truncated_into_a_repair_packet(self):
+        proof = "-- " + "λ" * 2000 + "\nexact False.intro"
+        artifact = self.rejected(proof=proof)
+        with self.assertRaisesRegex(
+            ValueError, "Trigger evidence exceeds packet category budget"
+        ):
+            self.packet(rejected_artifact_ids=[artifact], task_type="critique")
+        self.assertEqual(self.store.group(self.group)["artifacts"][0]["proof"], proof)
+
     def test_source_ids_only_describe_final_packet_including_retained_review_references(
         self,
     ):

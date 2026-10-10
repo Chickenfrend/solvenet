@@ -92,6 +92,25 @@ excerpt bound, 1000-byte category ceiling). The persisted evidence fingerprint
 deduplicates unchanged events across restart, and the existing three-plan and
 reserved planning/critique assignment caps still apply.
 
+For an auxiliary rejection, the focused critic receives an explicitly selected
+`untrusted.rejected_artifacts` row containing the exact candidate proof, persisted
+Lean diagnostics, verdict and artifact/job/task/claim/verifier identifiers. A
+completed critique can publish a focus-claim finding with a concrete retry
+strategy. With `retries=1`, the frontier can dispatch one further investigation
+of that auxiliary, carrying both the rejection row and the exact critique message.
+`retries=0` disables this repair. The retry has investigator task lineage; it
+cannot reset its count through new artifacts, graph revisions or critique messages.
+No useful critique finding means no repair assignment. Rejected candidates remain
+untrusted and are never selected as checked declarations.
+
+Selected rejection and critique evidence is required, not silently pruned or
+shortened. Rejections have a 3000-byte JSON category ceiling; critiques share the
+existing 2000-byte message category. If exact feedback exceeds category, packet
+or prompt limits, the action is deferred. Compact feedback-specific graph
+instructions preserve the tactic-body contract within the existing input bounds.
+Ordinary direct-target fallback, global work/deadline limits, planning/critique
+assignment reservations and verification limits still apply.
+
 ## Separate ceilings and cost accounting
 
 `graph_limits` may configure smaller values than these defaults, except

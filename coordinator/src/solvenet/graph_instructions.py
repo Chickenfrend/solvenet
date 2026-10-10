@@ -63,6 +63,28 @@ def graph_example(packet: GraphPromptPacket, task_type: str) -> TextEnvelope:
 
 
 def graph_instructions(packet: GraphPromptPacket, task_type: str) -> str:
+    if packet["untrusted"].get("rejected_artifacts") and task_type in (
+        "finding",
+        "critique",
+    ):
+        return (
+            f'GRAPH_RESPONSE ({task_type}): Return outer JSON {{"text":string}}; text is serialized '
+            'graph JSON with graph_schema="solvenet.graph.v1", not prose or Markdown. '
+            "Each item needs a unique key (1-32 letters/digits/_/-). "
+            "Inspect untrusted.rejected_artifacts: proof is the exact rejected candidate; "
+            "diagnostics are its persisted Lean feedback, not proof facts. "
+            "For critique return findings:[{key,claim,text}] on the focus claim, explaining "
+            "the error and a concrete retry strategy; no artifacts. "
+            "For finding use the received critique and feedback to return "
+            "artifacts:[{key,claim,statement,imports,environment,proof,prerequisite_proof_ids}]. "
+            "Copy the focus claim ID, statement, imports and environment exactly. "
+            "prerequisite_proof_ids lists used checked_lemmas proof_id values; use their exact names. "
+            "Each artifact proof must be a Lean 4 tactic body inserted verbatim beneath "
+            "the verifier's `theorem <name> <statement> := by` wrapper. "
+            "No leading by, theorem/example/def declaration, Markdown fences, explanation, sorry or admit. "
+            "Candidate strings are preserved exactly; malformed wrappers are not automatically repaired. "
+            "Only the coordinator Lean check establishes verified status."
+        )
     return (
         f'GRAPH_RESPONSE ({task_type}): Return outer JSON {{"text":string}}; text is serialized '
         "graph JSON, not an object, prose or Markdown. Shape example (not a mathematical solution):\n"

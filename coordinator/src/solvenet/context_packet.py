@@ -22,6 +22,7 @@ CATEGORY_BYTES = {
     "lemmas": 2400,
 }
 TARGET_VERDICT_BYTES = 1000
+REJECTED_ARTIFACT_BYTES = 3000
 # Both current Go providers prepend system instructions and a trusted theorem
 # message. Reserve more than their current encoded size, plus unknown chat framing.
 PROVIDER_MARGIN = 1536
@@ -78,13 +79,36 @@ def prompt_cost(statement, imports, messages, max_output_tokens):
 
 
 def _include_trigger_evidence(
-    db, group_id, claim_id, graph, relationship_ids, review_ids, target_attempt_ids
+    db,
+    group_id,
+    claim_id,
+    graph,
+    relationship_ids,
+    review_ids,
+    target_attempt_ids,
+    rejected_artifact_ids,
+    critique_ids,
 ):
     """Add selected incident evidence and return IDs that admission must retain."""
     # Only explicitly selected, incident relationships cross the outgoing traversal
     # boundary. Preserve the evidence that caused a critique, not all incoming work.
-    required = {name: set() for name in ("relationships", "reviews", "target_verdicts")}
-    for ids in (relationship_ids, review_ids, target_attempt_ids):
+    required = {
+        name: set()
+        for name in (
+            "relationships",
+            "reviews",
+            "target_verdicts",
+            "rejected_artifacts",
+            "messages",
+        )
+    }
+    for ids in (
+        relationship_ids,
+        review_ids,
+        target_attempt_ids,
+        rejected_artifact_ids,
+        critique_ids,
+    ):
         if len(ids) > MAX_SELECTIONS or any(not isinstance(i, str) for i in ids):
             raise ValueError("Invalid packet evidence selection")
     for rid in relationship_ids:
@@ -124,6 +148,34 @@ def _include_trigger_evidence(
             dict(row) | {"diagnostics": _json_excerpt(row["diagnostics"], 400)}
         )
         required["target_verdicts"].add(aid)
+    graph["rejected_artifacts"] = []
+    for aid in rejected_artifact_ids:
+        row = db.execute(
+            """SELECT a.id,ca.claim_id,a.job_id,a.task_id,a.proof,a.status,
+            a.diagnostics,a.verifier_identity FROM group_artifacts a
+            JOIN claim_artifacts ca ON ca.artifact_id=a.id
+            WHERE a.group_id=? AND ca.claim_id=? AND a.id=?
+            AND a.status IN ('rejected','timeout','verifier_error')""",
+            (group_id, claim_id, aid),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Unknown rejected artifact for focus")
+        # Preserve the exact submitted proof and persisted Lean diagnostics. If
+        # they cannot fit, fail admission rather than silently dropping feedback.
+        graph["rejected_artifacts"].append(dict(row))
+        required["rejected_artifacts"].add(aid)
+    for mid in critique_ids:
+        row = db.execute(
+            """SELECT m.*,cm.claim_id FROM group_messages m JOIN claim_messages cm
+            ON cm.message_id=m.id WHERE m.group_id=? AND cm.claim_id=?
+            AND m.id=? AND m.kind='critique'""",
+            (group_id, claim_id, mid),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Unknown critique for focus")
+        required["messages"].add(mid)
+        if not any(m["id"] == mid for m in graph["messages"]):
+            graph["messages"].append(dict(row))
     return required
 
 
@@ -321,7 +373,11 @@ def _admit_categories(packet, graph, categories, required, rank, opinions, opini
             ]
         dest = packet["untrusted"][name]
         limit = (
-            TARGET_VERDICT_BYTES if name == "target_verdicts" else CATEGORY_BYTES[name]
+            TARGET_VERDICT_BYTES
+            if name == "target_verdicts"
+            else REJECTED_ARTIFACT_BYTES
+            if name == "rejected_artifacts"
+            else CATEGORY_BYTES[name]
         )
         for row in sorted(rows, key=rank):
             if len(encoded_bytes([*dest, row])) <= limit:
@@ -471,6 +527,7 @@ def _prune_packet(
         "artifacts",
         "messages",
         "target_verdicts",
+        "rejected_artifacts",
         "reviews",
         "relationships",
         "claims",
@@ -568,6 +625,8 @@ def build_packet(
     relationship_ids=(),
     review_ids=(),
     target_attempt_ids=(),
+    rejected_artifact_ids=(),
+    critique_ids=(),
     task_type=None,
 ):
     _number(max_bytes, "packet max_bytes", MAX_PACKET_BYTES)
@@ -608,10 +667,20 @@ def build_packet(
         _recent=True,
     )
     required = _include_trigger_evidence(
-        db, group_id, claim_id, graph, relationship_ids, review_ids, target_attempt_ids
+        db,
+        group_id,
+        claim_id,
+        graph,
+        relationship_ids,
+        review_ids,
+        target_attempt_ids,
+        rejected_artifact_ids,
+        critique_ids,
     )
-    categories = tuple(CATEGORY_BYTES) + (
-        ("target_verdicts",) if target_attempt_ids else ()
+    categories = (
+        tuple(CATEGORY_BYTES)
+        + (("target_verdicts",) if target_attempt_ids else ())
+        + (("rejected_artifacts",) if rejected_artifact_ids else ())
     )
     packet = {
         "schema": "solvenet.context.v1",

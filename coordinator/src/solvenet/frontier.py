@@ -236,10 +236,14 @@ def _frontier_candidates(db, group_id, root, history, planning, limits, binding)
                     and r["status"] == "done"
                     for r in history
                 )
-                rejected = any(
-                    a["claim_id"] == cid
-                    and a["status"] in ("rejected", "timeout", "verifier_error")
-                    for a in artifacts
+                rejected = next(
+                    (
+                        a
+                        for a in reversed(artifacts)
+                        if a["claim_id"] == cid
+                        and a["status"] in ("rejected", "timeout", "verifier_error")
+                    ),
+                    None,
                 )
                 if rejected:
                     candidate(
@@ -248,7 +252,46 @@ def _frontier_candidates(db, group_id, root, history, planning, limits, binding)
                         1,
                         "negative formal evidence redirects branch",
                         "rejected",
+                        rejected_artifact_ids=[rejected["id"]],
                     )
+                    critiques = [
+                        r
+                        for r in history
+                        if r["claim_id"] == cid
+                        and r["action"] == "critique"
+                        and r["status"] == "done"
+                        and r["strategy"].startswith("rejected|context:")
+                    ]
+                    findings = [
+                        r
+                        for r in history
+                        if r["claim_id"] == cid and r["action"] == "investigate"
+                    ]
+                    if critiques and findings and len(findings) <= limits["retries"]:
+                        messages = [
+                            r[0]
+                            for r in db.execute(
+                                """SELECT m.id,p.request FROM group_messages m JOIN claim_messages cm
+                            ON cm.message_id=m.id JOIN context_packets p ON p.job_id=m.job_id
+                            WHERE m.group_id=? AND cm.claim_id=?
+                            AND m.job_id=? AND m.kind='critique' ORDER BY m.rowid LIMIT 1""",
+                                (group_id, cid, critiques[-1]["job_id"]),
+                            )
+                            if rejected["id"]
+                            in json.loads(r["request"]).get("rejected_artifact_ids", [])
+                        ]
+                        if messages:
+                            candidate(
+                                cid,
+                                "investigate",
+                                2,
+                                "bounded auxiliary repair from formal rejection and critique",
+                                "auxiliary-repair",
+                                rejected_artifact_ids=[rejected["id"]],
+                                critique_ids=messages,
+                            )
+                            candidates[-1]["parent"] = findings[-1]["task_id"]
+                            candidates[-1]["avoid"] = findings[-1]["model"]
                 elif (
                     node["opinion"] == "promising"
                     or attempted

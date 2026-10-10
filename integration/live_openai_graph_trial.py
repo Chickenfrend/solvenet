@@ -19,6 +19,17 @@ from solvenet.store import Store
 from solvenet.verifier import LeanVerifier
 
 
+def trial_graph_limits():
+    """Permit one auxiliary feedback/repair cycle within the existing job cap."""
+    return {
+        "response_output_tokens": 2048,
+        "planning_calls": 4,
+        "verification_operations": 4,
+        "lean_elapsed_ms": 40000,
+        "retries": 1,
+    }
+
+
 @dataclass(frozen=True)
 class Budget:
     """All assignments, including failed/expired retries, reserve a full call."""
@@ -85,6 +96,7 @@ class Budget:
             "response_output_tokens": 2048,
             "synthesis_output_tokens": 2048,
             "output_bound": "Includes reasoning; trial graph jobs request 2048",
+            "graph_limits": trial_graph_limits(),
         }
 
 
@@ -280,13 +292,7 @@ def worker_session(
                             "context_bytes": budget.context_capacity,
                         }
                     },
-                    "graph_limits": {
-                        "response_output_tokens": 2048,
-                        "planning_calls": 2,
-                        "verification_operations": 4,
-                        "lean_elapsed_ms": 40000,
-                        "retries": 0,
-                    },
+                    "graph_limits": trial_graph_limits(),
                 },
             )
             group_id = created["id"]

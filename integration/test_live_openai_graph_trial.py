@@ -83,6 +83,15 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
         self.assertEqual(cap.projected_usd, Decimal(".8267725"))
         self.assertEqual(Decimal(cap.record()["projected_graph_usd"]), Decimal(".8192"))
 
+    def test_fresh_repair_cycle_keeps_ten_call_dollar_bound(self):
+        cap = replace(budget(), prior_reserved_usd=Decimal("0"))
+        cap.validate()
+        self.assertEqual(cap.projected_usd, Decimal(".81920"))
+        self.assertEqual(cap.max_jobs, 5)
+        self.assertEqual(cap.max_calls, 10)
+        self.assertEqual(cap.record()["graph_limits"]["planning_calls"], 4)
+        self.assertEqual(cap.record()["graph_limits"]["retries"], 1)
+
     def test_structured_stage_requires_actual_graph_envelope(self):
         for text, expected in (
             ("plain prose", False),
@@ -306,6 +315,8 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
             )
             submitted = requests.call_args_list[0].args[2]
             self.assertEqual(submitted["graph_limits"]["response_output_tokens"], 2048)
+            self.assertEqual(submitted["graph_limits"]["planning_calls"], 4)
+            self.assertEqual(submitted["graph_limits"]["retries"], 1)
             self.assertEqual({key: submitted[key] for key in target}, target)
             self.assertFalse(any("proof" in key for key in submitted))
             observation = json.loads(output.read_text())

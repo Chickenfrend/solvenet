@@ -69,7 +69,8 @@ For a retry under the same total $1 allowance, use the command above with
 The runner now requests 2,048 output tokens for all graph roles. The retry graph
 bound remains **$0.81920**, and the combined bound is **$0.8267725**.
 
-Ceilings: two planning/critique assignments, no independent frontier retries,
+Ceilings: four reserved planning/critique assignments (two for planning and two
+for a rejection critique), one frontier retry per equivalent strategy,
 four real Lean operations / 40 seconds Lean allowance, 10 seconds per Lean
 check, 45 seconds per provider call, 285-second group deadline and 300-second
 worker cutoff. At cutoff and cleanup, termination escalates to a kill after five
@@ -82,8 +83,12 @@ SQLite database, frozen prompts/packet hashes, graph acceptance/rejection receip
 checked artifacts and use evidence, target outcomes, assignment retries/failures,
 worker log, and actual/unknown usage. Observed token-based dollar values are
 estimates, not provider bills; unknown usage stays unknown. Both paths must be
-new. A formatting failure, truncation or negative mathematical result stops this
-observation without increasing its allowance. Inspect structured collaboration,
+new. A formatting failure or truncation stops this observation. A rejected
+auxiliary candidate can receive one critique and one repair finding; the five-job
+budget can fit plan → finding → critique → repaired finding → synthesis, with
+at most two assignments per job. All calls, including assignment failures and
+retries, retain the same ten-call **$0.81920** fresh projection. Additional graph
+work competes for that fixed allowance. Inspect structured collaboration,
 checked lemma handoff/use, and target verification separately.
 
 Offline cap/gate/cleanup regressions (no keys/API):
