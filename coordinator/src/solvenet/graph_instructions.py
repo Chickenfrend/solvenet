@@ -81,5 +81,13 @@ def graph_instructions(packet: GraphPromptPacket, task_type: str) -> str:
         "Findings: {key,claim,text}. Artifacts only in finding jobs: replace YOUR_LEAN_PROOF_BODY, "
         "copy the claim context exactly; prerequisite_proof_ids lists used checked_lemmas proof_id values. "
         "Use their exact name declarations in Lean, never invented names. "
+        "Each artifact proof must be a Lean 4 tactic body, inserted verbatim (with indentation) "
+        "beneath the verifier's `theorem <name> <statement> := by` wrapper. "
+        "Do not include a leading by, a theorem/example/def declaration, Markdown fences, or explanation. "
+        "Do not use sorry or admit. Candidate strings are preserved exactly; malformed wrappers "
+        "are not stripped or automatically repaired. "
+        'Format-only example for an unrelated claim: {"statement":": True","proof":"exact True.intro"} '
+        "produces `theorem <name> : True := by\\n  exact True.intro`. "
+        "This illustrates syntax only, not a proof of the received claim. "
         "Do not assert verified status: only the coordinator Lean check establishes proof facts."
     )

@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 from solvenet.context_packet import prompt_cost
 from solvenet.graph_response import graph_batch
 from solvenet.store import Store
+from solvenet.verifier import LeanVerifier, VerificationStatus
 
 
 class GraphInstructionTests(unittest.TestCase):
@@ -101,6 +103,62 @@ class GraphInstructionTests(unittest.TestCase):
         self.assertEqual(artifact["status"], "pending")
         self.assertEqual(artifact["statement"], ": True ∧ True")
         self.assertEqual(artifact["proof"], "YOUR_LEAN_PROOF_BODY")
+
+    def test_artifact_contract_is_in_frozen_worker_prompt(self):
+        d = self.dispatch("finding")
+        prompt = d[2]["messages"][-1]["content"]
+        for contract in (
+            "a Lean 4 tactic body",
+            "theorem <name> <statement> := by",
+            "Do not include a leading by, a theorem/example/def declaration, Markdown fences, or explanation",
+            "Candidate strings are preserved exactly",
+            "not stripped or automatically repaired",
+            "syntax only, not a proof of the received claim",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, prompt)
+
+    def test_artifact_candidates_are_not_normalized_on_ingestion(self):
+        for proof in (
+            "\n  exact ⟨True.intro, True.intro⟩  \n",
+            "by\n  exact ⟨True.intro, True.intro⟩",
+            "theorem wrapped : True ∧ True := by trivial",
+            "```lean\nexact ⟨True.intro, True.intro⟩\n```",
+        ):
+            with self.subTest(proof=proof):
+                d = self.dispatch("finding")
+                batch = json.loads(d[3]["text"])
+                batch["artifacts"][0]["proof"] = proof
+                receipt = self.complete(d, {"text": json.dumps(batch)})
+                self.assertEqual(receipt["status"], "accepted")
+                artifact_id = receipt["artifacts"]["p"]
+                artifact = next(
+                    a
+                    for a in self.store.group(self.group)["artifacts"]
+                    if a["id"] == artifact_id
+                )
+                self.assertEqual(artifact["proof"], proof)
+                self.assertEqual(artifact["status"], "pending")
+
+    @unittest.skipUnless(shutil.which("lake"), "Lake is not installed")
+    def test_format_example_checks_under_real_lean_wrapper(self):
+        d = self.dispatch("finding")
+        prompt = d[2]["messages"][-1]["content"]
+        example = json.loads(
+            prompt.split("Format-only example for an unrelated claim: ")[1].split(
+                " produces `"
+            )[0]
+        )
+        verifier = LeanVerifier(Path(__file__).resolve().parents[2] / "lean")
+        result = verifier.verify(
+            example["statement"], example["proof"], imports=["Init"]
+        )
+        self.assertEqual(result.status, VerificationStatus.VERIFIED, result.diagnostics)
+        # A leading wrapper must reach Lean unchanged, not become a valid tactic body.
+        result = verifier.verify(
+            example["statement"], "by\n  " + example["proof"], imports=["Init"]
+        )
+        self.assertEqual(result.status, VerificationStatus.REJECTED, result.diagnostics)
 
     def test_critique_without_received_edges_is_accepted(self):
         d = self.dispatch("critique")
