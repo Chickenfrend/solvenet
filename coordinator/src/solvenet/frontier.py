@@ -5,7 +5,7 @@ import json
 
 from . import protocol_limits
 from .composed import encode
-from .context_packet import build_packet, freeze_packet
+from .context_packet import build_packet, build_target_correction, freeze_packet
 from .group_operations import create_group_run, insert_group_job, stop_group_jobs
 from .group_routing import choose
 from .group_state import _require_group
@@ -18,6 +18,7 @@ DEFAULT_LIMITS = {
     "source_bytes": 32768,
     "packet_bytes": 6144,
     "retries": 1,
+    "target_corrections": 0,
     "response_output_tokens": 512,
 }
 
@@ -57,11 +58,15 @@ def validate_limits(value):
         raise ValueError("Invalid graph limits")
     result = DEFAULT_LIMITS | value
     for key, maximum in DEFAULT_LIMITS.items():
+        if key == "target_corrections":
+            maximum = 1
         if key == "response_output_tokens":
             maximum = protocol_limits.MAX_OUTPUT_TOKENS
         if (
             type(result[key]) is not int
-            or not (0 if key == "retries" else 1) <= result[key] <= maximum
+            or not (0 if key in ("retries", "target_corrections") else 1)
+            <= result[key]
+            <= maximum
         ):
             raise ValueError("Invalid graph limit: " + key)
     return result
@@ -99,6 +104,25 @@ def reserve_check(db, store, check_id, owner_kind, bundle, deadline_ms):
     ).fetchone()
     if not loop or loop["mode"] != "graph":
         return
+    if owner_kind == "attempt":
+        packet = db.execute(
+            """SELECT p.request,p.manifest FROM composed_checks c
+            JOIN attempts t ON t.id=c.owner_id
+            JOIN assignments a ON a.id=t.assignment_id
+            JOIN context_packets p ON p.job_id=a.job_id WHERE c.id=?""",
+            (check_id,),
+        ).fetchone()
+        if packet and json.loads(packet["request"]).get("strategy", "").startswith(
+            "target-correction|"
+        ):
+            from .proof_context import binding_matches
+
+            frozen = json.loads(packet["manifest"])
+            if not binding_matches(db, frozen) or any(
+                bundle[key] != frozen[key]
+                for key in ("verifier_identity", "verifier_revision")
+            ):
+                raise FrontierLimit("verifier_binding_changed")
     reason = lean_budget_reason(db, loop)
     if reason is None and store.clock() >= loop["deadline"] and owner_kind != "attempt":
         reason = "deadline"
@@ -131,6 +155,22 @@ def finish_check(db, check_id, result, usage):
                 check_id,
             ),
         )
+
+
+def _correction_source(db, group_id, history, limits):
+    if not limits.get("target_corrections", 0) or any(
+        r["strategy"].startswith("target-correction|") for r in history
+    ):
+        return None
+    return db.execute(
+        """SELECT t.id,d.task_id FROM attempts t
+        JOIN verifications v ON v.attempt_id=t.id
+        JOIN assignments a ON a.id=t.assignment_id
+        JOIN frontier_decisions d ON d.job_id=a.job_id
+        WHERE d.group_id=? AND d.action='synthesize' AND v.status='rejected'
+        ORDER BY t.rowid DESC LIMIT 1""",
+        (group_id,),
+    ).fetchone()
 
 
 def _frontier_candidates(db, group_id, root, history, planning, limits, binding):
@@ -360,6 +400,17 @@ def _frontier_candidates(db, group_id, root, history, planning, limits, binding)
             (group_id,),
         ).fetchall()
         events += ["target:" + r["attempt_id"] for r in verdicts]
+        failed = _correction_source(db, group_id, history, limits)
+        if failed:
+            candidate(
+                root,
+                "synthesize",
+                -1,
+                "bounded target correction from exact Lean rejection and frozen context",
+                "target-correction",
+                target_attempt_ids=[failed["id"]],
+            )
+            candidates[-1]["parent"] = failed["task_id"]
         if events and sum(r["action"] == "plan" for r in history) < 3:
             candidate(
                 root,
@@ -417,33 +468,60 @@ def _admit_candidate(
                     f"Frontier action: {action}. Focus claim: {c['claim_id']}. "
                     "For synthesis return a proof body of the original target. "
                     "For other actions follow GRAPH_RESPONSE."
+                    + (
+                        " Correct the quoted failed candidate using its exact Lean diagnostics. "
+                        "The checked lemma context is frozen from that attempt. Return only a new proof body."
+                        if c["strategy"] == "target-correction"
+                        else ""
+                    )
                 ),
             }
         ]
         try:
-            built = build_packet(
-                store,
-                db,
-                group_id,
-                c["claim_id"],
-                messages,
-                task_type=task_type,
-                max_output_tokens=output_tokens,
-                max_bytes=limits["packet_bytes"],
-                context_limit=min(
-                    8192,
-                    max(
-                        capabilities.get(m, {}).get("context_tokens", 8192)
-                        for m in models[role]
-                    ),
+            context_limit = min(
+                8192,
+                max(
+                    capabilities.get(m, {}).get("context_tokens", 8192)
+                    for m in models[role]
                 ),
-                **c["evidence"],
+            )
+            correction = c["strategy"] == "target-correction"
+            built = (
+                build_target_correction(
+                    db,
+                    group_id,
+                    c["evidence"]["target_attempt_ids"][0],
+                    messages,
+                    max_bytes=limits["packet_bytes"],
+                    context_limit=context_limit,
+                )
+                if correction
+                else build_packet(
+                    store,
+                    db,
+                    group_id,
+                    c["claim_id"],
+                    messages,
+                    task_type=task_type,
+                    max_output_tokens=output_tokens,
+                    max_bytes=limits["packet_bytes"],
+                    context_limit=min(
+                        8192,
+                        max(
+                            capabilities.get(m, {}).get("context_tokens", 8192)
+                            for m in models[role]
+                        ),
+                    ),
+                    **c["evidence"],
+                )
             )
             manifest = built["manifest"]
             if (
                 len(manifest["declarations"]) > limits["included_lemmas"]
                 or len(encode(manifest).encode()) > limits["source_bytes"]
             ):
+                if correction:
+                    raise ValueError("Frozen target correction manifest exceeds limits")
                 built = build_packet(
                     store,
                     db,
@@ -470,7 +548,12 @@ def _admit_candidate(
                 and r["strategy"].split("|retry:")[0] == strategy
             ]
             if prior:
-                if len(prior) > limits["retries"] or action in ("plan", "critique"):
+                retries = (
+                    0
+                    if action == "synthesize" and limits.get("target_corrections", 0)
+                    else limits["retries"]
+                )
+                if len(prior) > retries or action in ("plan", "critique"):
                     deferred.append(c | {"reason": "equivalent_strategy_exhausted"})
                     continue
                 c["reason"] += "; bounded independent retry after completed attempt"

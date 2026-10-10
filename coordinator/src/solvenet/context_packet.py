@@ -759,6 +759,73 @@ def build_packet(
     }
 
 
+def build_target_correction(
+    db, group_id, attempt_id, messages, *, max_bytes, context_limit
+):
+    """Reuse the failed job's exact manifest; never reselect or prune dependencies."""
+    from .proof_context import binding_matches
+
+    row = db.execute(
+        """SELECT t.candidate,v.attempt_id,v.status,v.diagnostics,a.job_id,p.*
+        FROM attempts t JOIN verifications v ON v.attempt_id=t.id
+        JOIN assignments a ON a.id=t.assignment_id
+        JOIN context_packets p ON p.job_id=a.job_id
+        JOIN jobs j ON j.id=a.job_id
+        WHERE t.id=? AND p.group_id=? AND j.kind='model.generate' AND v.status='rejected'""",
+        (attempt_id, group_id),
+    ).fetchone()
+    if row is None or row["manifest"] is None:
+        raise ValueError("Target correction requires a rejected frozen target")
+    manifest = json.loads(row["manifest"])
+    if not binding_matches(db, manifest):
+        raise ValueError("Target correction verifier binding changed")
+    packet = json.loads(row["packet"])
+    # Preserve the supplied declarations and their provenance verbatim. Advisory
+    # graph history is unnecessary for this mechanical correction and can crowd
+    # out exact feedback. Oversized required data fails admission, not truncation.
+    for name, rows in packet["untrusted"].items():
+        packet["omitted"][name] += len(rows)
+    packet["untrusted"] = {
+        "target_verdicts": [
+            {key: row[key] for key in ("attempt_id", "job_id", "status", "diagnostics")}
+            | {"candidate": row["candidate"]}
+        ]
+    }
+    packet["omitted"]["target_verdicts"] = 0
+    raw = encoded_bytes(packet)
+    complete_messages = _packet_messages(packet, messages, None)
+    budget = json.loads(row["budget"])
+    budget.update(
+        packet_bytes=len(raw),
+        packet_limit_bytes=max_bytes,
+        context_limit=context_limit,
+        input_byte_upper_bound=prompt_cost(
+            manifest["statement"], manifest["imports"], complete_messages, 0
+        ),
+        admission_upper_bound=prompt_cost(
+            manifest["statement"],
+            manifest["imports"],
+            complete_messages,
+            budget["output_token_allowance"],
+        ),
+    )
+    if (
+        len(raw) > max_bytes
+        or budget["input_byte_upper_bound"] > MAX_INPUT_BYTES
+        or budget["admission_upper_bound"] > context_limit
+    ):
+        raise ValueError("Exact target correction feedback/context exceeds budget")
+    return {
+        "packet": raw,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "source_ids": _packet_source_ids(packet),
+        "graph_revision": row["graph_revision"],
+        "manifest": manifest,
+        "messages": complete_messages,
+        "budget": budget,
+    }
+
+
 def freeze_packet(db, job_id, group_id, task_id, built, request):
     db.execute(
         "INSERT INTO context_packets VALUES (?,?,?,?,?,?,?,?,?,?,?)",

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from solvenet.composed import declaration_name
-from solvenet.context_packet import build_packet
+from solvenet.context_packet import build_packet, build_target_correction
 from solvenet.frontier import FrontierLimit, validate_limits
 from solvenet.proof_context import VerificationBusy
 from solvenet.protocol_limits import MAX_OUTPUT_TOKENS
@@ -123,8 +123,8 @@ class FrontierTests(unittest.TestCase):
             item["prerequisite_proof_ids"] = prerequisites
         return {"graph_schema": "solvenet.graph.v1", "artifacts": [item]}
 
-    def scenario(self, outcome):
-        group = self.start(outcome)
+    def scenario(self, outcome, **kwargs):
+        group = self.start(outcome, **kwargs)
         claims, edges = self.plan(group)
         lease, decision = self.next(group)
         self.assertEqual(
@@ -159,6 +159,277 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(chosen["graph_revision"], packet["graph_revision"])
         self.assertTrue(chosen["deferred"])
         return group, claims, chosen, next_lease
+
+    def test_real_lean_target_correction_exact_feedback_frozen_context_and_restart(
+        self,
+    ):
+        group, _, _, target = self.scenario(
+            "verified", graph_limits={"target_corrections": 1}
+        )
+        original = self.store.job_context_packet(target["job"]["id"])
+        proof_id = original["manifest"]["selected_proof_ids"][0]
+        good = f"exact ⟨{declaration_name(proof_id)}, True.intro, True.intro⟩"
+        bad = "\n" + good + "\nrfl\n"
+        graph = self.store.group_claim_neighborhood(
+            group, self.store.group(group)["graph"]["root_id"]
+        )
+        edge = next(
+            e
+            for e in graph["relationships"]
+            if e["to_id"] == original["manifest"]["declarations"][0]["claim_id"]
+        )
+        self.store.review_group_relationship(
+            group,
+            "later-opinion",
+            edge["id"],
+            self.store.group(group)["agents"][0]["id"],
+            "challenged",
+        )
+        self.complete(target, bad)
+        self.coordinator.tick()
+        failed = self.store.run(self.store.group(group)["run"]["run_id"])["attempts"][
+            -1
+        ]
+        self.assertEqual(failed["verification_status"], "rejected")
+        self.assertIn("no goals", failed["diagnostics"])
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        repair, decision = self.next(group)
+        self.assertIn("bounded target correction", decision["reason"])
+        frozen = self.store.job_context_packet(repair["job"]["id"])
+        feedback = json.loads(frozen["packet"])["untrusted"]["target_verdicts"][0]
+        self.assertEqual(feedback["candidate"], bad)
+        self.assertEqual(feedback["diagnostics"], failed["diagnostics"])
+        self.assertEqual(feedback["attempt_id"], failed["id"])
+        self.assertEqual(feedback["job_id"], target["job"]["id"])
+        self.assertEqual(frozen["manifest"], original["manifest"])
+        with self.assertRaises(Conflict):
+            self.store.select_target_proof_context(repair["job"]["id"], [])
+        self.assertEqual(
+            json.loads(frozen["packet"])["checked_lemmas"],
+            json.loads(original["packet"])["checked_lemmas"],
+        )
+        self.assertEqual(frozen["request"]["target_attempt_ids"], [failed["id"]])
+        self.assertIn(failed["id"], frozen["source_ids"])
+        task = next(
+            t
+            for t in self.store.group(group)["tasks"]
+            if t["id"] == decision["task_id"]
+        )
+        original_task = next(
+            d
+            for d in self.store.frontier_trace(group)["decisions"]
+            if d["job_id"] == target["job"]["id"]
+        )
+        self.assertEqual(task["parent_id"], original_task["task_id"])
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        for _ in range(3):
+            self.assertFalse(self.coordinator.tick())
+        self.assertEqual(self.store.job_context_packet(repair["job"]["id"]), frozen)
+        self.complete(repair, good)
+        self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "verified_target")
+        attempts = self.store.run(self.store.group(group)["run"]["run_id"])["attempts"]
+        self.assertEqual(len(attempts), 2)
+        self.assertNotEqual(attempts[0]["id"], attempts[1]["id"])
+        evidence = self.store.composed_evidence(attempts[-1]["id"])[-1]
+        self.assertEqual(evidence["usage"]["direct"], [declaration_name(proof_id)])
+        self.assertEqual(evidence["usage"]["status"], "known")
+        self.assertEqual(self.store.frontier_trace(group)["lean"]["operations"], 3)
+        self.assertEqual(self.store.job_context_packet(target["job"]["id"]), original)
+
+    def test_target_correction_exhaustion_does_not_reset_on_restart(self):
+        group = self.start(graph_limits={"target_corrections": 1, "planning_calls": 2})
+        initial, _ = self.next(group)
+        self.complete(initial, {"graph_schema": "solvenet.graph.v1"})
+        target, _ = self.next(group)
+        self.complete(target, "exact True.intro")
+        repair, decision = self.next(group)
+        self.assertTrue(decision["strategy"].startswith("target-correction|"))
+        self.complete(repair, "exact True.intro")
+        self.coordinator.tick()
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        for _ in range(3):
+            self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "no_useful_frontier")
+        trace = self.store.frontier_trace(group)
+        self.assertEqual(
+            [d["action"] for d in trace["decisions"]],
+            ["plan", "synthesize", "synthesize", "stop"],
+        )
+        self.assertEqual(trace["lean"]["operations"], 2)
+
+    def test_target_correction_cannot_buy_model_work_after_lean_cap(self):
+        group = self.start(
+            graph_limits={"target_corrections": 1, "verification_operations": 1}
+        )
+        initial, _ = self.next(group)
+        self.complete(initial, {"graph_schema": "solvenet.graph.v1"})
+        target, _ = self.next(group)
+        self.complete(target, "exact True.intro")
+        for _ in range(3):
+            self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "verification_budget")
+        self.assertEqual(len(self.store.frontier_trace(group)["decisions"]), 2)
+
+    def test_target_correction_oversized_exact_candidate_fails_admission(self):
+        group = self.start(graph_limits={"target_corrections": 1, "planning_calls": 2})
+        initial, _ = self.next(group)
+        self.complete(initial, {"graph_schema": "solvenet.graph.v1"})
+        target, _ = self.next(group)
+        self.complete(target, "/-" + "x" * 9000 + "-/\nexact True.intro")
+        for _ in range(3):
+            self.coordinator.tick()
+        trace = self.store.frontier_trace(group)
+        self.assertEqual(len([d for d in trace["decisions"] if d["job_id"]]), 2)
+        self.assertTrue(
+            any(
+                "Exact target correction feedback/context exceeds budget" in d["reason"]
+                for d in trace["decisions"][-1]["deferred"]
+            )
+        )
+        self.assertEqual(trace["lean"]["operations"], 1)
+
+    def test_target_correction_configuration_is_opt_in_and_single(self):
+        self.assertEqual(validate_limits({})["target_corrections"], 0)
+        self.assertEqual(
+            validate_limits({"target_corrections": 1})["target_corrections"], 1
+        )
+        for value in (-1, 2, True):
+            with self.assertRaises(ValueError):
+                validate_limits({"target_corrections": value})
+
+    def test_target_correction_refuses_changed_verifier_revision(self):
+        group = self.start(graph_limits={"target_corrections": 1, "planning_calls": 2})
+        initial, _ = self.next(group)
+        self.complete(initial, {"graph_schema": "solvenet.graph.v1"})
+        target, _ = self.next(group)
+        self.complete(target, "exact True.intro")
+        self.coordinator.tick()
+        failed = self.store.run(self.store.group(group)["run"]["run_id"])["attempts"][
+            -1
+        ]
+        original = self.store.job_context_packet(target["job"]["id"])
+        # Returning to the same identity still changes the binding revision.
+        self.store.bind_group_artifact_verifier("test:changed")
+        self.store.bind_group_artifact_verifier(self.verifier.artifact_identity())
+        with self.store.transaction() as db:
+            with self.assertRaisesRegex(ValueError, "verifier binding changed"):
+                build_target_correction(
+                    db,
+                    group,
+                    failed["id"],
+                    [],
+                    max_bytes=6144,
+                    context_limit=8192,
+                )
+        self.assertEqual(self.store.job_context_packet(target["job"]["id"]), original)
+
+    def test_target_correction_worker_failure_consumes_single_correction(self):
+        group = self.start(graph_limits={"target_corrections": 1, "planning_calls": 2})
+        initial, _ = self.next(group)
+        self.complete(initial, {"graph_schema": "solvenet.graph.v1"})
+        target, _ = self.next(group)
+        self.complete(target, "exact True.intro")
+        repair, _ = self.next(group)
+        self.store.result(
+            repair["assignment_id"],
+            {
+                "lease_token": repair["lease_token"],
+                "status": "failed",
+                "error": "offline",
+                "failure_class": "permanent",
+            },
+        )
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        for _ in range(3):
+            self.coordinator.tick()
+        trace = self.store.frontier_trace(group)
+        self.assertEqual(self.store.group_loop(group)["reason"], "no_useful_frontier")
+        self.assertEqual(
+            sum(
+                d["strategy"].startswith("target-correction|")
+                for d in trace["decisions"]
+            ),
+            1,
+        )
+        self.assertEqual(trace["lean"]["operations"], 1)
+        attempts = self.store.run(self.store.group(group)["run"]["run_id"])["attempts"]
+        self.assertEqual(len(attempts), 1)
+
+    def test_target_correction_binding_change_after_dispatch_stops_before_lean(self):
+        group = self.start(graph_limits={"target_corrections": 1, "planning_calls": 2})
+        initial, _ = self.next(group)
+        self.complete(initial, {"graph_schema": "solvenet.graph.v1"})
+        target, _ = self.next(group)
+        self.complete(target, "exact True.intro")
+        repair, _ = self.next(group)
+        frozen = self.store.job_context_packet(repair["job"]["id"])
+        self.store.bind_group_artifact_verifier("test:changed")
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        self.complete(repair, "exact ⟨True.intro, True.intro, True.intro⟩")
+        with patch.object(self.verifier, "verify_composed") as verify:
+            self.coordinator.tick()
+            verify.assert_not_called()
+        self.assertEqual(
+            self.store.group_loop(group)["reason"], "verifier_binding_changed"
+        )
+        self.assertEqual(self.store.job_context_packet(repair["job"]["id"]), frozen)
+        self.assertEqual(self.store.frontier_trace(group)["lean"]["operations"], 1)
+        attempts = self.store.run(self.store.group(group)["run"]["run_id"])["attempts"]
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]["verification_status"], "rejected")
+        self.assertIsNone(attempts[1]["verification_status"])
+
+    def test_target_correction_preserves_transitive_lemma_closure(self):
+        group = self.start(graph_limits={"target_corrections": 1})
+        claims, _ = self.plan(group)
+        finding, _ = self.next(group)
+        self.complete(finding, self.artifact(claims["a"], ": True", "exact True.intro"))
+        self.coordinator.tick()
+        proof_a = self.store.group(group)["artifacts"][0]
+        proof_b = self.store.propose_group_artifact(
+            group,
+            "dependent-proof",
+            proof_a["agent_id"],
+            proof_a["task_id"],
+            ": True ∧ True",
+            ["Init"],
+            "lean-test",
+            f"exact ⟨{declaration_name(proof_a['id'])}, True.intro⟩",
+            prerequisite_proof_ids=[proof_a["id"]],
+        )
+        target, _ = self.next(group)
+        original = self.store.job_context_packet(target["job"]["id"])
+        self.assertEqual(
+            [d["proof_id"] for d in original["manifest"]["declarations"]],
+            [proof_a["id"], proof_b],
+        )
+        good = f"exact ⟨True.intro, {declaration_name(proof_b)}⟩"
+        self.complete(target, good + "\nrfl")
+        repair, _ = self.next(group)
+        frozen = self.store.job_context_packet(repair["job"]["id"])
+        self.assertEqual(frozen["manifest"], original["manifest"])
+        self.assertEqual(
+            json.loads(frozen["packet"])["checked_lemmas"],
+            json.loads(original["packet"])["checked_lemmas"],
+        )
+        self.complete(repair, good)
+        self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "verified_target")
+        attempt = self.store.run(self.store.group(group)["run"]["run_id"])["attempts"][
+            -1
+        ]
+        usage = self.store.composed_evidence(attempt["id"])[-1]["usage"]
+        self.assertEqual(usage["direct"], [declaration_name(proof_b)])
+        self.assertEqual(
+            set(usage["transitive"]),
+            {declaration_name(proof_a["id"]), declaration_name(proof_b)},
+        )
 
     def test_paired_three_branch_checked_rejected_and_challenged(self):
         observed = []
