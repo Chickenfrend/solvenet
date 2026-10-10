@@ -117,3 +117,44 @@ Acceptance: report whether decomposition, feedback, repair, checked-lemma handof
 and actual final proof use occurred. Target acceptance is Lean's exact verdict;
 a failure or direct proof is recorded honestly rather than treated as composed
 collaboration. Update the observation record and commit the stage.
+
+Implementation status (2026-10-09): the single authorized paid observation is
+complete after `4a66283` and `e845e3e`; separate stage-3 review and the parent
+workflow's commit remain pending. No source or recording changes were needed.
+Preflight confirmed $0.81920 under a fresh $1 cap, prior reservation zero, at
+$2.50/M input and $10/M output. The compiled worker's source is unchanged from
+its recorded build revision `16d7f25`. Only the worker read the external key;
+the Python runner passed its path through the environment. No probe, reference
+proof submission or additional paid observation occurred.
+
+The actual sequence was plan → identity investigation → rejection critique →
+identity repair → synthesis: five completed calls, five leases, zero assignment
+retries/failures; ten assignments and 20 work units reserved. The planner proposed
+two auxiliary claims. The identity's first exact candidate had inconsistent
+indentation and was rejected; its exact proof and Lean diagnostics reached the
+critic and repair investigator, along with the attributed critique. The corrected
+indentation verified. The synthesizer received the corrected artifact as its
+sole checked declaration and explicitly named it in the target source.
+
+Lean rejected the exact target with `no goals to be solved` and disallowed
+`sorryAx`. Its committed composed-check receipt has `usage_unknown`, so checked
+final dependency use is not established. The bounded auxiliary repair and
+checked-lemma handoff succeeded; composed target verification did not. The
+graph stopped at `capacity_or_model_budget`, with no work remaining, and the
+target run exhausted. No target retry or separate even-product investigation ran.
+
+Three Lean operations / six subprocesses used 5,093 ms, below the four-operation /
+40-second cap. Provider usage was 6,727 input and 2,133 output tokens, all known,
+estimated at $0.0381475 (not an invoice). Unknown dependency-use evidence is
+distinct from known provider usage. The evidence JSON and adjacent SQLite/logs
+are `/tmp/opencode/solvenet-openai-consecutive-product-follow-up-observation.json`
+and `.json.data`. Read-only inspection confirmed exact feedback delivery,
+committed verdict/use receipts and all five frozen-packet hashes against frontier
+decisions. See [the observation record](openai-observation.md) for details.
+
+Checks passed: 17 offline live-trial tests, repository-wide Ruff and
+`git diff --check`. Read-only evidence assertions also passed for exact rejected
+proof/diagnostics in both feedback packets, critique ID/text in the repair packet,
+sole corrected-artifact selection, named attempted use, all three committed
+verdicts, unknown target dependency use, five calls and the reported cost.
+Only these two documentation files changed; no commit was made in this session.

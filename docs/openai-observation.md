@@ -93,3 +93,75 @@ with adjacent SQLite and worker-log directories. This demonstrates structured
 decomposition and attempted lemma work, not successful composed proof reuse.
 The next prompt improvement should explicitly specify the artifact tactic-body
 format; a later experiment should also provide sufficient critique/repair budget.
+
+## Bounded consecutive-product follow-up
+
+On 2026-10-09, after commits `4a66283` (artifact tactic-body contract) and
+`e845e3e` (bounded rejection feedback and repair), exactly one further observation
+ran on the same consecutive-product fixture. It used `gpt-6.1-sol`,
+`responses-reasoning`, low reasoning effort, `Init` and pinned Lean 4.19.0.
+No reference proof was supplied. The external credential was read only by the
+compiled Go worker; Python passed its file path in the worker environment.
+The binary's recorded build revision was `16d7f25`; its worker source was unchanged
+through the two implementation commits.
+
+The no-call preflight confirmed a fresh $1 allowance, prior reservation zero,
+and a **$0.81920** worst-case projection at $2.50/M input and $10/M output.
+It reserved five jobs / ten attempted assignments (including failures/retries),
+20 work units, 24,576 input and 2,048 output tokens per attempt. The graph allowed
+four planning/critique assignments, one auxiliary repair, four Lean operations
+and 40 seconds Lean time. Per-call, group and process deadlines remained 45,
+285 and 300 seconds. No compatibility probe or additional observation ran.
+
+### Observed handoff and verdicts
+
+1. The planner proposed an even-product lemma and the successor-product increment
+   identity, with target-to-lemma suggestions. Only the identity received a
+   separate investigation within this budget.
+2. The first identity artifact was the exact string
+   `"rw [Nat.mul_add]\n  ac_rfl"`. Lean rejected its inconsistent indentation
+   with `expected end of input` and a missing candidate constant. The model
+   followed the no-leading-`by` rule but still produced malformed layout.
+3. The critic's frozen packet contained that exact rejected artifact and its
+   persisted diagnostics. Its attributed critique recommended equally indented
+   tactic lines; the repair investigator received both the same rejection and
+   the exact critique.
+4. The repaired artifact `"  rw [Nat.mul_add]\n  ac_rfl"` verified. Its proof ID
+   is `abc64cd6bb5646538ebf08c3da2baf6d`. The synthesizer's frozen packet and
+   composed manifest selected this artifact alone, under the supplied name
+   `SolveNetLemma_0dad0a4c68a87c3fcf79f485`; the rejected artifact was excluded.
+5. The final candidate explicitly called that declaration in a rewrite and
+   attempted its own local even-product proof. **Lean rejected the target** with
+   `no goals to be solved` and `Candidate uses disallowed axiom: sorryAx`.
+   The committed target composed-check receipt records `usage_unknown`, with
+   no direct/type/transitive dependency-use evidence. Naming the supplied lemma
+   in rejected source establishes attempted use, not checked final proof use.
+
+This demonstrates real-model decomposition, exact feedback delivery, a successful
+bounded auxiliary repair and checked-lemma handoff. It does not demonstrate a
+verified composed target proof, hierarchy benefits or collaboration efficiency.
+The graph stopped at `capacity_or_model_budget` with zero work remaining; the
+runner recorded `observation_complete` and the target run was `exhausted`.
+No final-target retry or separate even-product investigation was dispatched.
+
+### Cost and durable evidence
+
+Actual execution made five completed provider calls / five leases, zero assignment
+retries and zero provider failures. Four graph-response ingestion receipts were
+accepted; formal verification separately rejected one auxiliary, verified its
+repair and rejected the target. Three Lean operations used six subprocesses and
+5,093 ms total (1,519 + 1,545 + 2,029 ms). Ten assignments and all 20 work units
+were reserved, rather than ten calls being executed.
+
+Reported usage is 6,727 input and 2,133 output tokens, with zero unknown provider
+usage entries. At the authorized conservative rates the estimate is
+**$0.0381475**; this is not a provider invoice. Dependency-use evidence for the
+rejected target remains unknown independently of the known provider token usage.
+The JSON's generic `Probe usage unknown` limitation and null prior-probe field
+are inherited labels: this observation had no probe and zero prior reservation.
+
+Evidence is `/tmp/opencode/solvenet-openai-consecutive-product-follow-up-observation.json`
+and its adjacent `.json.data` directory. Read-only inspection of SQLite confirmed
+all three committed composed checks, exact rejection/critique delivery, selected
+declarations, use receipts and five frozen packets. All five packet hashes match
+the frontier decision records. These remain local operator artifacts.
