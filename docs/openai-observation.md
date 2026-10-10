@@ -165,3 +165,38 @@ and its adjacent `.json.data` directory. Read-only inspection of SQLite confirme
 all three committed composed checks, exact rejection/critique delivery, selected
 declarations, use receipts and five frozen packets. All five packet hashes match
 the frontier decision records. These remain local operator artifacts.
+
+## Fixed matched repair evaluation (2026-10-10)
+
+Following independent stage-4 review and fresh $5 authorization, exactly one fixed
+four-run batch compared group and single-agent Lean-feedback workflows on the
+consecutive-product target and the easier Nat-reorder control. All four targets
+verified with Sol 6.1 Responses reasoning at low effort and real Lean 4.19.0.
+Only target fixture inputs were supplied; credentials remained worker-local.
+
+The consecutive-product group verified an auxiliary increment identity, rejected
+its initial target, then accepted one owner-submitted target correction using the
+same frozen lemma context and exact Lean feedback. The accepted composed-check
+receipt records known direct/transitive use of
+`SolveNetLemma_2932797e3078494180f718c3`. The single agent instead verified its
+initial target with one call, using local induction and arithmetic reasoning.
+Reorder needed two group calls and one single-agent call, without repair or
+supplied-lemma use. The group used more calls, estimated provider cost and Lean
+time on both problems in this batch; one sample per mode/problem cannot establish
+general effectiveness, success rates or efficiency.
+
+Eight completed calls, zero retries/failures, and fully reported usage total
+7,883 input / 3,799 output tokens, estimated at **$0.0576975** at the authorized
+conservative rates. Six Lean operations used **9,604 ms**. The entire **$3.93216**
+worst-case reservation remains held; provider invoices remain unknown. No probes,
+additional trials or automatic reruns were performed.
+
+Evidence is `/tmp/opencode/solvenet-matched-repair-evaluation/ledger.json`, the four
+observation JSONs, and their adjacent SQLite/log sidecars. The raw summary says
+zero consecutive-product group target repairs because it misses the strategy's
+context suffix; persisted task/decision evidence confirms one. Final review fixed
+the runner counter with an offline regression and produced the separate
+`offline-corrected-summaries-stage4.json` report without changing original evidence
+or making additional paid calls. Full comparison,
+evidence IDs and reporting caveats are in the
+[matched evaluation record](matched-repair-evaluation.md).
