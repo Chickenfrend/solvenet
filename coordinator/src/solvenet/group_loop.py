@@ -173,7 +173,12 @@ class GroupLoop:
                     != json.dumps(capabilities, sort_keys=True)
                     or existing["deadline"] != requested_deadline
                     or existing["mode"] != mode
-                    or existing["limits"] != json.dumps(limits, sort_keys=True)
+                    or (
+                        validate_limits(json.loads(existing["limits"]))
+                        if mode == "graph"
+                        else json.loads(existing["limits"])
+                    )
+                    != limits
                 ):
                     _conflict("Loop key reused with different configuration")
                 return group_id

@@ -19,6 +19,8 @@ DEFAULT_LIMITS = {
     "packet_bytes": 6144,
     "retries": 1,
     "target_corrections": 0,
+    "completion_reserve": 0,
+    "completion_check_ms": 10000,
     "response_output_tokens": 512,
 }
 
@@ -58,18 +60,56 @@ def validate_limits(value):
         raise ValueError("Invalid graph limits")
     result = DEFAULT_LIMITS | value
     for key, maximum in DEFAULT_LIMITS.items():
-        if key == "target_corrections":
+        if key in ("target_corrections", "completion_reserve"):
             maximum = 1
+        if key == "completion_check_ms":
+            maximum = 180000
         if key == "response_output_tokens":
             maximum = protocol_limits.MAX_OUTPUT_TOKENS
         if (
             type(result[key]) is not int
-            or not (0 if key in ("retries", "target_corrections") else 1)
+            or not (
+                0
+                if key in ("retries", "target_corrections", "completion_reserve")
+                else 1
+            )
             <= result[key]
             <= maximum
         ):
             raise ValueError("Invalid graph limit: " + key)
     return result
+
+
+def completion_tail(db, loop):
+    """Unspent completion jobs; retry leases remain charged by ordinary admission.
+
+    Use the largest configured synthesis cost so heterogeneous routing cannot
+    consume a tail that only fits the cheapest model. Defaults leave policy intact.
+    """
+    limits = json.loads(loop["limits"])
+    if not limits.get("completion_reserve", 0):
+        return {"jobs": 0, "work": 0, "checks": 0, "lean_ms": 0}
+    jobs = db.execute(
+        "SELECT count(*) FROM frontier_decisions WHERE group_id=? AND action='synthesize' AND job_id IS NOT NULL",
+        (loop["group_id"],),
+    ).fetchone()[0]
+    checks = db.execute(
+        """SELECT count(*) FROM frontier_lean_reservations r
+        JOIN composed_checks c ON c.id=r.check_id
+        WHERE r.group_id=? AND c.owner_kind='attempt'""",
+        (loop["group_id"],),
+    ).fetchone()[0]
+    slots = 1 + limits.get("target_corrections", 0)
+    models = json.loads(loop["models"])["synthesizer"]
+    models = [models] if isinstance(models, str) else models
+    capabilities = json.loads(loop["capabilities"])
+    cost = max(capabilities.get(m, {}).get("cost", 1) for m in models)
+    return {
+        "jobs": max(0, slots - jobs),
+        "work": max(0, slots - jobs) * 2 * cost,
+        "checks": max(0, slots - checks),
+        "lean_ms": max(0, slots - checks) * limits["completion_check_ms"],
+    }
 
 
 def stop(db, store, group_id, reason):
@@ -124,6 +164,21 @@ def reserve_check(db, store, check_id, owner_kind, bundle, deadline_ms):
             ):
                 raise FrontierLimit("verifier_binding_changed")
     reason = lean_budget_reason(db, loop)
+    limits = json.loads(loop["limits"])
+    if reason is None and limits.get("completion_reserve", 0):
+        tail = completion_tail(db, loop)
+        cost = lean_cost(db, loop["group_id"])
+        remaining_checks = max(0, tail["checks"] - (owner_kind == "attempt"))
+        remaining_ms = remaining_checks * limits["completion_check_ms"]
+        if (
+            cost["operations"] + 1 + remaining_checks
+            > limits["verification_operations"]
+        ):
+            reason = "completion_verification_reserve"
+        elif (
+            cost["elapsed_ms"] + deadline_ms + remaining_ms > limits["lean_elapsed_ms"]
+        ):
+            reason = "completion_lean_time_reserve"
     if reason is None and store.clock() >= loop["deadline"] and owner_kind != "attempt":
         reason = "deadline"
     # Only a target dispatched before deadline may drain, with the same ceilings.
@@ -436,8 +491,25 @@ def _admit_candidate(
     models = {r: [m] if isinstance(m, str) else m for r, m in models.items()}
     capabilities = json.loads(loop["capabilities"])
     selected = None
+    tail = completion_tail(db, loop)
+    lean = lean_cost(db, group_id)
     for c in candidates:
         action = c["action"]
+        completion = action == "synthesize"
+        held_jobs = max(0, tail["jobs"] - 1) if completion else tail["jobs"]
+        if tail["jobs"] and len(history) + 1 + held_jobs > group["max_tasks"]:
+            deferred.append(c | {"reason": "completion_job_reserve"})
+            continue
+        if action in ("investigate", "prove") and tail["checks"]:
+            if lean["operations"] >= limits["verification_operations"] - tail["checks"]:
+                deferred.append(c | {"reason": "completion_verification_reserve"})
+                continue
+            if (
+                lean["elapsed_ms"] + limits["completion_check_ms"]
+                > limits["lean_elapsed_ms"] - tail["lean_ms"]
+            ):
+                deferred.append(c | {"reason": "completion_lean_time_reserve"})
+                continue
         role = (
             "planner"
             if action == "plan"
@@ -568,7 +640,14 @@ def _admit_candidate(
                 role,
                 task_type,
                 built["budget"]["input_byte_upper_bound"],
-                group["remaining_work"],
+                group["remaining_work"]
+                - (
+                    tail["work"] * max(0, tail["jobs"] - 1) // tail["jobs"]
+                    if completion and tail["jobs"]
+                    else 0
+                    if completion
+                    else tail["work"]
+                ),
                 avoid=c["avoid"],
                 now=store.clock(),
                 lease_seconds=store.lease_seconds,
@@ -581,7 +660,14 @@ def _admit_candidate(
             deferred.append(
                 c
                 | {
-                    "reason": "model_unavailable_or_budget",
+                    "reason": "completion_work_reserve"
+                    if not completion
+                    and tail["work"]
+                    and any(
+                        "budget_exceeded" in r["reasons"]
+                        for r in json.loads(routing)["candidates"]
+                    )
+                    else "model_unavailable_or_budget",
                     "routing": json.loads(routing),
                 }
             )
@@ -775,6 +861,12 @@ class Frontier:
                 "decisions": decisions,
                 "lean": lean_cost(db, group_id),
                 "model": model_cost(db, group_id),
+                "completion_tail": completion_tail(
+                    db,
+                    db.execute(
+                        "SELECT * FROM group_loops WHERE group_id=?", (group_id,)
+                    ).fetchone(),
+                ),
             }
 
     def advance_frontier(self, group_id):
@@ -877,6 +969,13 @@ class Frontier:
                     )
                     else "capacity_or_model_budget"
                 )
+                reserve_reasons = [
+                    d["reason"]
+                    for d in deferred
+                    if d["reason"].startswith("completion_")
+                ]
+                if reserve_reasons and reason == "capacity_or_model_budget":
+                    reason = reserve_reasons[0]
                 db.execute(
                     """INSERT OR IGNORE INTO frontier_decisions
                     (group_id,claim_id,action,strategy,graph_revision,reason,deferred,reservation,processed)

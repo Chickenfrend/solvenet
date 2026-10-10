@@ -26,21 +26,37 @@ from live_openai_graph_trial import (
 
 
 def budget():
-    return Budget(Decimal("1"), Decimal(".08"), Decimal("2.50"), Decimal("10"))
+    return Budget(Decimal("5"), Decimal(".08"), Decimal("2.50"), Decimal("10"))
 
 
 class LiveOpenAIBudgetTests(unittest.TestCase):
+    def test_independent_dollar_work_and_prompt_bounds(self):
+        cap = replace(budget(), prior_reserved_usd=Decimal("0"))
+        for changes in (
+            {"max_work": 20},
+            {"total_usd": Decimal("5.01")},
+            {"per_run_usd": Decimal(".98")},
+            {"per_run_usd": Decimal("1.51")},
+            {"context_capacity": 65536},
+            {"output_capacity": 32768},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(cap, **changes).validate()
+        replace(cap, max_work=32).validate()
+        self.assertEqual(cap.record()["graph_limits"]["target_corrections"], 1)
+        self.assertEqual(cap.record()["graph_limits"]["completion_reserve"], 1)
+
     def test_total_includes_prior_unknown_probe_and_every_retry(self):
         cap = budget()
         cap.validate()
-        self.assertEqual(cap.max_jobs, 5)
-        self.assertEqual(cap.max_calls, 10)
-        self.assertEqual(cap.projected_usd, Decimal(".89920"))
+        self.assertEqual(cap.max_jobs, 6)
+        self.assertEqual(cap.max_calls, 12)
+        self.assertEqual(cap.projected_usd, Decimal("1.06304"))
         with self.assertRaises(ValueError):
-            replace(cap, total_usd=Decimal(".89919")).validate()
+            replace(cap, total_usd=Decimal("1.06303")).validate()
         replace(cap, total_usd=cap.projected_usd).validate()
         with self.assertRaises(ValueError):
-            replace(cap, context_capacity=32768).validate()
+            replace(cap, context_capacity=65536).validate()
         for price in ("NaN", "Infinity", "-1", "0"):
             with self.subTest(price=price), self.assertRaises(ValueError):
                 replace(cap, input_usd_per_million=Decimal(price)).validate()
@@ -61,7 +77,7 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
                 "--output",
                 "/does-not-exist/observation.json",
                 "--total-budget-usd",
-                "1",
+                "5",
                 "--prior-reserved-usd",
                 ".08",
                 "--input-usd-per-million",
@@ -74,21 +90,24 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(
-            Decimal(json.loads(result.stdout)["projected_total_usd"]), Decimal(".89920")
+            Decimal(json.loads(result.stdout)["projected_total_usd"]),
+            Decimal("1.06304"),
         )
 
     def test_retry_budget_includes_first_consecutive_product_observation(self):
         cap = replace(budget(), prior_reserved_usd=Decimal(".0075725"))
         cap.validate()
-        self.assertEqual(cap.projected_usd, Decimal(".8267725"))
-        self.assertEqual(Decimal(cap.record()["projected_graph_usd"]), Decimal(".8192"))
+        self.assertEqual(cap.projected_usd, Decimal(".9906125"))
+        self.assertEqual(
+            Decimal(cap.record()["projected_graph_usd"]), Decimal(".98304")
+        )
 
-    def test_fresh_repair_cycle_keeps_ten_call_dollar_bound(self):
+    def test_fresh_repair_cycle_keeps_twelve_call_dollar_bound(self):
         cap = replace(budget(), prior_reserved_usd=Decimal("0"))
         cap.validate()
-        self.assertEqual(cap.projected_usd, Decimal(".81920"))
-        self.assertEqual(cap.max_jobs, 5)
-        self.assertEqual(cap.max_calls, 10)
+        self.assertEqual(cap.projected_usd, Decimal(".98304"))
+        self.assertEqual(cap.max_jobs, 6)
+        self.assertEqual(cap.max_calls, 12)
         self.assertEqual(cap.record()["graph_limits"]["planning_calls"], 4)
         self.assertEqual(cap.record()["graph_limits"]["retries"], 1)
 
@@ -147,8 +166,8 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
                 if fixture
                 else ROOT / "integration/fixtures/graph-nat-reorder.json",
             )
-            self.assertEqual(cap.max_calls, 10)
-            self.assertEqual(cap.projected_usd, Decimal(".81920"))
+            self.assertEqual(cap.max_calls, 12)
+            self.assertEqual(cap.projected_usd, Decimal(".98304"))
 
     def test_unknown_usage_is_not_zero_or_a_total_price(self):
         estimate = usage_estimate(
@@ -265,7 +284,7 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
         self.assertEqual(self.store.admission_reason(), "assignment_cap")
         with self.store.transaction() as db:
             self.assertEqual(
-                db.execute("SELECT count(*) FROM assignments").fetchone()[0], 10
+                db.execute("SELECT count(*) FROM assignments").fetchone()[0], 12
             )
 
     def test_process_cutoff_prevents_first_request(self):

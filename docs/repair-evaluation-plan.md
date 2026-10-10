@@ -33,7 +33,7 @@ receipts nor scripted tests establish safety for public untrusted contributors.
 ## Stage 1 implementation status (2026-10-09)
 
 Implemented offline; independent review approved after the binding guard fix below.
-Stage commit is pending.
+Stage commit: `497293b`.
 
 - Graph loops accept `graph_limits={"target_corrections": 1}` for at most one
   target correction per group. The default is `0`, preserving existing graph
@@ -79,5 +79,59 @@ not installed; the repository's unittest runner was used instead.
 | Stage | Provider calls | New paid spend | Remaining authorization |
 | --- | ---: | ---: | ---: |
 | 1 — offline target repair | 0 | $0.00 | $5.00 |
+| 2 — offline workflow reservations | 0 | $0.00 | $5.00 |
 
 No credentials were accessed and no paid observations were performed.
+
+## Stage 2 implementation status (2026-10-09)
+
+Implemented offline. Independent review remains a separate stage gate.
+
+- Opt in with `graph_limits={"completion_reserve": 1,
+  "target_corrections": 1}`. Existing callers default to no reservation.
+  The durable frontier history reserves two completion jobs, their retry leases,
+  weighted model work, and two Lean operations. Only synthesis/correction dispatch
+  consumes the model tail; only target checks consume the Lean tail. Successful
+  initial synthesis stops immediately, even with unused correction capacity.
+- Weighted work remains distinct from assignments: each graph job reserves
+  `2 * model_cost` work and at most two assignments. For heterogeneous synthesis
+  models, the tail uses the largest configured cost, preserving capacity through
+  routing changes. Task slots are held too. Earlier persisted loop configurations
+  are normalized with the new default limits on idempotent startup.
+- `completion_check_ms` defaults to 10,000 ms per reserved operation; configure it
+  to the verifier's full operation deadline. Auxiliary admission leaves those
+  deadlines and operation slots available. Actual check admission atomically checks
+  the full new deadline plus the remaining tail against the Lean elapsed ceiling.
+  Unknown/abandoned usage keeps its existing deadline charge and spent operation.
+  Multiple artifacts from one response cannot consume the tail: a refused artifact
+  is marked incompatible with a capacity diagnostic, without a synthetic Lean
+  verdict, allowing the target workflow to advance.
+- Trace reports remaining completion jobs/work/checks/time. Decisions distinguish
+  `completion_work_reserve`, `completion_job_reserve`,
+  `completion_verification_reserve`, and `completion_lean_time_reserve` from
+  ordinary capacity/context/availability and deadline failures.
+- The OpenAI trial enables the reservation and one target correction. Its default
+  24 work units at model cost 2 cover six jobs / twelve assignments: planning,
+  finding, critique, auxiliary repair, synthesis and target correction. This is
+  capacity, not a guarantee of model proposals or a fixed action sequence.
+  Four planning/critique assignments, six Lean operations, and 60 seconds of Lean
+  deadlines are separate bounds. The wall limit is 660 seconds (group dispatch
+  stops 15 seconds earlier); provider calls retain their 45-second timeout.
+- CLI controls `--max-work`, `--model-cost`, `--context-capacity`,
+  `--output-capacity`, `--per-run-budget-usd`, and `--wall-seconds` are bounded.
+  Preflight requires at least six jobs, caps per-run projection at $1.50 and total
+  authorization at $5, and includes all prior reserved spend and retry assignments.
+  Each call conservatively charges the full 24,576 input and 2,048 output capacity
+  (including reasoning). At $2.50/M input and $10/M output, twelve calls project
+  **$0.98304**, with **$0** paid so far for this new task. Raising work or capacities
+  must still pass both dollar ceilings. Preflight remains the default and does not
+  read credentials or start a worker.
+
+Validation: 100 unittest tests passed in 391 seconds across frontier, group routing,
+group loop and offline OpenAI trial suites, with real Lean and `$HOME/.elan/bin` on
+`PATH`. Expected injected verifier failures were logged. Repository Ruff check
+and formatting pass; configured mypy passes (5 source files). Coverage includes
+exhausted exploration with successful target correction, separate Lean operation
+and elapsed reservations, unused correction capacity after success, heterogeneous
+model costs, twelve-call conservative projection, prompt/output capacity and
+independent per-run/cumulative dollar gates. No paid observations were run.

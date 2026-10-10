@@ -239,6 +239,64 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(self.store.frontier_trace(group)["lean"]["operations"], 3)
         self.assertEqual(self.store.job_context_packet(target["job"]["id"]), original)
 
+    def test_completion_tail_protects_target_and_correction_from_exploration(self):
+        group = self.store.start_group_loop(
+            "reserved",
+            ": True ∧ (True ∧ True)",
+            ["Init"],
+            "lean-test",
+            self.models,
+            mode="graph",
+            max_work=12,
+            graph_limits={"target_corrections": 1, "completion_reserve": 1},
+        )
+        self.plan(group)
+        for _ in range(3):
+            lease, decision = self.next(group)
+            self.assertNotEqual(decision["action"], "synthesize")
+            self.complete(lease, {"graph_schema": "solvenet.graph.v1"})
+        target, decision = self.next(group)
+        self.assertEqual(decision["action"], "synthesize")
+        self.assertTrue(
+            any(d["reason"] == "completion_work_reserve" for d in decision["deferred"])
+        )
+        self.assertEqual(self.store.group(group)["remaining_work"], 2)
+        self.complete(target, "exact True.intro")
+        correction, decision = self.next(group)
+        self.assertTrue(decision["strategy"].startswith("target-correction|"))
+        self.assertEqual(self.store.group(group)["remaining_work"], 0)
+        self.complete(correction, "exact ⟨True.intro, True.intro, True.intro⟩")
+        self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "verified_target")
+        trace = self.store.frontier_trace(group)
+        self.assertEqual(trace["model"]["reserved_assignments"], 12)
+        self.assertEqual(trace["model"]["reserved_work"], 12)
+        self.assertEqual(trace["completion_tail"]["work"], 0)
+
+    def test_completion_lean_tail_skips_auxiliary_checks_and_releases_unused_repair(
+        self,
+    ):
+        group = self.start(
+            graph_limits={
+                "target_corrections": 1,
+                "completion_reserve": 1,
+                "verification_operations": 2,
+            }
+        )
+        self.plan(group)
+        target, decision = self.next(group)
+        self.assertEqual(decision["action"], "synthesize")
+        self.assertTrue(
+            any(
+                d["reason"] == "completion_verification_reserve"
+                for d in decision["deferred"]
+            )
+        )
+        self.complete(target, "exact ⟨True.intro, True.intro, True.intro⟩")
+        self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "verified_target")
+        self.assertEqual(self.store.frontier_trace(group)["lean"]["operations"], 1)
+
     def test_target_correction_exhaustion_does_not_reset_on_restart(self):
         group = self.start(graph_limits={"target_corrections": 1, "planning_calls": 2})
         initial, _ = self.next(group)
@@ -462,6 +520,56 @@ class FrontierTests(unittest.TestCase):
                     choice["reason"],
                 )
         self.assertEqual(observed, ["synthesize", "critique", "critique"])
+
+    def test_completion_tail_uses_heterogeneous_cost(self):
+        from solvenet.frontier import completion_tail
+
+        models = self.models | {"synthesizer": ["scripted", "expensive"]}
+        group = self.store.start_group_loop(
+            "heterogeneous",
+            ": True",
+            ["Init"],
+            "lean-test",
+            models,
+            mode="graph",
+            max_work=32,
+            model_capabilities={"scripted": {"cost": 1}, "expensive": {"cost": 3}},
+            graph_limits={"completion_reserve": 1, "target_corrections": 1},
+        )
+        with self.store.connect() as db:
+            loop = db.execute(
+                "SELECT * FROM group_loops WHERE group_id=?", (group,)
+            ).fetchone()
+            self.assertEqual(
+                completion_tail(db, loop),
+                {
+                    "jobs": 2,
+                    "work": 12,
+                    "checks": 2,
+                    "lean_ms": 20000,
+                },
+            )
+
+    def test_completion_lean_time_reserve_is_distinct_from_operation_cap(self):
+        group = self.start(
+            graph_limits={
+                "completion_reserve": 1,
+                "target_corrections": 1,
+                "lean_elapsed_ms": 20000,
+            }
+        )
+        self.plan(group)
+        target, decision = self.next(group)
+        self.assertEqual(decision["action"], "synthesize")
+        self.assertTrue(
+            any(
+                d["reason"] == "completion_lean_time_reserve"
+                for d in decision["deferred"]
+            )
+        )
+        self.complete(target, "exact ⟨True.intro, True.intro, True.intro⟩")
+        self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "verified_target")
 
     def repair_scenario(self, retries=1, critique_text=None):
         self.store.claim("worker", ["scripted"], supports_model_respond=True)

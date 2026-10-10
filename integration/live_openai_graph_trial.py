@@ -20,13 +20,16 @@ from solvenet.verifier import LeanVerifier
 
 
 def trial_graph_limits():
-    """Permit one auxiliary feedback/repair cycle within the existing job cap."""
+    """Reserve synthesis and one target correction after auxiliary feedback work."""
     return {
         "response_output_tokens": 2048,
         "planning_calls": 4,
-        "verification_operations": 4,
-        "lean_elapsed_ms": 40000,
+        "verification_operations": 6,
+        "lean_elapsed_ms": 60000,
         "retries": 1,
+        "target_corrections": 1,
+        "completion_reserve": 1,
+        "completion_check_ms": 10000,
     }
 
 
@@ -38,10 +41,12 @@ class Budget:
     prior_reserved_usd: Decimal
     input_usd_per_million: Decimal
     output_usd_per_million: Decimal
-    max_work: int = 20
+    max_work: int = 24
     model_cost: int = 2
     context_capacity: int = 24576
     output_capacity: int = 2048
+    per_run_usd: Decimal = Decimal("1.5")
+    wall_seconds: int = 660
 
     @property
     def max_jobs(self):
@@ -62,9 +67,10 @@ class Budget:
     def validate(self):
         for value, low, high in (
             (self.max_work, 12, 256),
-            (self.model_cost, 1, 16),
+            (self.model_cost, 1, 8),
             (self.context_capacity, 4096, 1048576),
             (self.output_capacity, 2048, 32768),
+            (self.wall_seconds, 60, 1800),
         ):
             if type(value) is not int or not low <= value <= high:
                 raise ValueError("Invalid work/context/output bound")
@@ -73,6 +79,7 @@ class Budget:
             self.prior_reserved_usd,
             self.input_usd_per_million,
             self.output_usd_per_million,
+            self.per_run_usd,
         )
         if any(not n.is_finite() or n < 0 for n in values):
             raise ValueError("Prices and allowances must be finite and nonnegative")
@@ -81,6 +88,10 @@ class Budget:
             or self.input_usd_per_million <= 0
             or self.output_usd_per_million <= 0
             or self.projected_usd > self.total_usd
+            or self.total_usd > 5
+            or not 0 < self.per_run_usd <= Decimal("1.5")
+            or self.projected_usd - self.prior_reserved_usd > self.per_run_usd
+            or self.max_jobs < 6
         ):
             raise ValueError("Conservative total projection exceeds authorized budget")
 
@@ -106,7 +117,7 @@ class TrialStore(Store):
     def __init__(self, path, budget):
         super().__init__(path)
         self.budget = budget
-        self.cutoff = time.monotonic() + 300
+        self.cutoff = time.monotonic() + budget.wall_seconds
         self.halt_reason = None
         self.claim_lock = threading.Lock()
 
@@ -281,7 +292,8 @@ def worker_session(
                     "imports": fixture["imports"],
                     "environment": fixture["environment"],
                     "max_work": budget.max_work,
-                    "deadline": time.time() + 285,
+                    "deadline": time.time()
+                    + max(1, store.cutoff - time.monotonic() - 15),
                     "models": dict.fromkeys(
                         ("planner", "investigator", "critic", "synthesizer"), model
                     ),
@@ -310,6 +322,7 @@ def worker_session(
                     store.halt_reason = "structured_plan_failed"
                     break
                 if snapshot["loop"]["phase"] == "stopped":
+                    store.halt_reason = snapshot["loop"]["reason"]
                     break
                 if worker.poll() is not None:
                     store.halt_reason = "worker_exited"
@@ -354,7 +367,7 @@ def worker_session(
                     "reasoning_effort": "low",
                     "single_model_collaboration": True,
                     "per_call_timeout_seconds": 45,
-                    "process_cutoff_seconds": 300,
+                    "process_cutoff_seconds": budget.wall_seconds,
                     "terminal_reason": store.halt_reason,
                     "error_type": error,
                     "snapshot": snapshot,
@@ -435,6 +448,12 @@ def main():
     parser.add_argument("--prior-reserved-usd", required=True, type=Decimal)
     parser.add_argument("--input-usd-per-million", required=True, type=Decimal)
     parser.add_argument("--output-usd-per-million", required=True, type=Decimal)
+    parser.add_argument("--max-work", type=int, default=24)
+    parser.add_argument("--model-cost", type=int, default=2)
+    parser.add_argument("--context-capacity", type=int, default=24576)
+    parser.add_argument("--output-capacity", type=int, default=2048)
+    parser.add_argument("--per-run-budget-usd", type=Decimal, default=Decimal("1.5"))
+    parser.add_argument("--wall-seconds", type=int, default=660)
     parser.add_argument(
         "--execute-paid",
         action="store_true",
@@ -446,6 +465,12 @@ def main():
         args.prior_reserved_usd,
         args.input_usd_per_million,
         args.output_usd_per_million,
+        max_work=args.max_work,
+        model_cost=args.model_cost,
+        context_capacity=args.context_capacity,
+        output_capacity=args.output_capacity,
+        per_run_usd=args.per_run_budget_usd,
+        wall_seconds=args.wall_seconds,
     )
     try:
         budget.validate()

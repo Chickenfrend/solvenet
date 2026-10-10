@@ -433,7 +433,19 @@ class Coordinator:
         except VerificationBusy:
             return False
         except FrontierLimit as error:
-            self.store.stop_frontier(artifact["group_id"], str(error))
+            if str(error) in (
+                "completion_verification_reserve",
+                "completion_lean_time_reserve",
+            ):
+                # Capacity refusal is not a Lean rejection. Release this pending
+                # artifact so the reserved target workflow can still advance.
+                with self.store.transaction() as db:
+                    db.execute(
+                        "UPDATE group_artifacts SET status='incompatible',diagnostics=? WHERE id=? AND status='pending'",
+                        (str(error), artifact["id"]),
+                    )
+            else:
+                self.store.stop_frontier(artifact["group_id"], str(error))
             return None
         graph_mode = self.store.group_loop(artifact["group_id"])
         if bundle is not None and (
