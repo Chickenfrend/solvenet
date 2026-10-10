@@ -151,7 +151,7 @@ def _include_trigger_evidence(
     graph["rejected_artifacts"] = []
     for aid in rejected_artifact_ids:
         row = db.execute(
-            """SELECT a.id,ca.claim_id,a.job_id,a.task_id,a.proof,a.status,
+            """SELECT a.id,ca.claim_id,a.job_id,a.task_id,a.agent_id,a.proof,a.status,
             a.diagnostics,a.verifier_identity FROM group_artifacts a
             JOIN claim_artifacts ca ON ca.artifact_id=a.id
             WHERE a.group_id=? AND ca.claim_id=? AND a.id=?
@@ -763,8 +763,6 @@ def build_target_correction(
     db, group_id, attempt_id, messages, *, max_bytes, context_limit
 ):
     """Reuse the failed job's exact manifest; never reselect or prune dependencies."""
-    from .proof_context import binding_matches
-
     row = db.execute(
         """SELECT t.candidate,v.attempt_id,v.status,v.diagnostics,a.job_id,p.*
         FROM attempts t JOIN verifications v ON v.attempt_id=t.id
@@ -776,24 +774,74 @@ def build_target_correction(
     ).fetchone()
     if row is None or row["manifest"] is None:
         raise ValueError("Target correction requires a rejected frozen target")
+    feedback = {
+        key: row[key] for key in ("attempt_id", "job_id", "status", "diagnostics")
+    } | {"candidate": row["candidate"]}
+    return _build_exact_correction(
+        row,
+        db,
+        messages,
+        max_bytes,
+        context_limit,
+        "target_verdicts",
+        feedback,
+        None,
+        "target",
+    )
+
+
+def build_auxiliary_correction(
+    db, group_id, artifact_id, messages, *, max_bytes, context_limit
+):
+    """Freeze the original owner's supplied context and exact rejected artifact."""
+    row = db.execute(
+        """SELECT p.* FROM context_packets p JOIN group_artifacts a ON a.job_id=p.job_id
+        WHERE a.id=? AND a.group_id=? AND a.status='rejected'""",
+        (artifact_id, group_id),
+    ).fetchone()
+    if row is None or row["manifest"] is None:
+        raise ValueError("Auxiliary correction requires a rejected frozen artifact")
+    feedback = dict(
+        db.execute(
+            """SELECT a.id,ca.claim_id,a.job_id,a.task_id,a.proof,a.status,
+        a.diagnostics,a.verifier_identity FROM group_artifacts a JOIN claim_artifacts ca
+        ON ca.artifact_id=a.id WHERE a.id=? AND a.group_id=?""",
+            (artifact_id, group_id),
+        ).fetchone()
+    )
+    if json.loads(row["packet"])["focus"]["id"] != feedback["claim_id"]:
+        raise ValueError("Auxiliary correction requires the original focused claim")
+    return _build_exact_correction(
+        row,
+        db,
+        messages,
+        max_bytes,
+        context_limit,
+        "rejected_artifacts",
+        feedback,
+        "finding",
+        "auxiliary",
+    )
+
+
+def _build_exact_correction(
+    row, db, messages, max_bytes, context_limit, category, feedback, task_type, label
+):
+    from .proof_context import binding_matches
+
     manifest = json.loads(row["manifest"])
     if not binding_matches(db, manifest):
-        raise ValueError("Target correction verifier binding changed")
+        raise ValueError(label.capitalize() + " correction verifier binding changed")
     packet = json.loads(row["packet"])
     # Preserve the supplied declarations and their provenance verbatim. Advisory
     # graph history is unnecessary for this mechanical correction and can crowd
     # out exact feedback. Oversized required data fails admission, not truncation.
     for name, rows in packet["untrusted"].items():
         packet["omitted"][name] += len(rows)
-    packet["untrusted"] = {
-        "target_verdicts": [
-            {key: row[key] for key in ("attempt_id", "job_id", "status", "diagnostics")}
-            | {"candidate": row["candidate"]}
-        ]
-    }
-    packet["omitted"]["target_verdicts"] = 0
+    packet["untrusted"] = {category: [feedback]}
+    packet["omitted"][category] = 0
     raw = encoded_bytes(packet)
-    complete_messages = _packet_messages(packet, messages, None)
+    complete_messages = _packet_messages(packet, messages, task_type)
     budget = json.loads(row["budget"])
     budget.update(
         packet_bytes=len(raw),
@@ -814,7 +862,9 @@ def build_target_correction(
         or budget["input_byte_upper_bound"] > MAX_INPUT_BYTES
         or budget["admission_upper_bound"] > context_limit
     ):
-        raise ValueError("Exact target correction feedback/context exceeds budget")
+        raise ValueError(
+            "Exact " + label + " correction feedback/context exceeds budget"
+        )
     return {
         "packet": raw,
         "sha256": hashlib.sha256(raw).hexdigest(),

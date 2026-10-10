@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from solvenet.composed import declaration_name
-from solvenet.context_packet import build_packet, build_target_correction
+from solvenet.context_packet import (
+    build_auxiliary_correction,
+    build_packet,
+    build_target_correction,
+)
 from solvenet.frontier import FrontierLimit, validate_limits
 from solvenet.proof_context import VerificationBusy
 from solvenet.protocol_limits import MAX_OUTPUT_TOKENS
@@ -571,7 +575,14 @@ class FrontierTests(unittest.TestCase):
         self.coordinator.tick()
         self.assertEqual(self.store.group_loop(group)["reason"], "verified_target")
 
-    def repair_scenario(self, retries=1, critique_text=None):
+    def repair_scenario(
+        self,
+        retries=1,
+        critique_text=None,
+        direct=False,
+        bad_proof=None,
+        reserved=False,
+    ):
         self.store.claim("worker", ["scripted"], supports_model_respond=True)
         fixture = json.loads(
             (
@@ -594,6 +605,9 @@ class FrontierTests(unittest.TestCase):
                 "response_output_tokens": 2048,
                 "verification_operations": 4,
                 "lean_elapsed_ms": 40000,
+                "direct_auxiliary_correction": int(direct),
+                "completion_reserve": int(reserved),
+                "target_corrections": int(reserved),
             },
         )
         planner, _ = self.next(group)
@@ -618,7 +632,11 @@ class FrontierTests(unittest.TestCase):
         receipt = self.store.ingest_group_graph_response(group, planner["job"]["id"])
         claim = receipt["claims"]["aux"]
         finding, _ = self.next(group)
-        bad = "\n  " + fixture["failed_proof"] + "\n"
+        bad = (
+            bad_proof
+            if bad_proof is not None
+            else "\n  " + fixture["failed_proof"] + "\n"
+        )
 
         def artifact(proof):
             return {
@@ -637,9 +655,23 @@ class FrontierTests(unittest.TestCase):
 
         self.complete(finding, artifact(bad))
         critic, decision = self.next(group)
-        self.assertEqual(decision["action"], "critique")
         rejected = self.store.group(group)["artifacts"][0]
         self.assertEqual(rejected["status"], "rejected")
+        if direct and retries:
+            self.assertEqual(decision["action"], "investigate")
+            original = self.store.job_context_packet(finding["job"]["id"])
+            frozen = self.store.job_context_packet(critic["job"]["id"])
+            self.assertEqual(frozen["manifest"], original["manifest"])
+            self.assertEqual(critic["job"]["model"], finding["job"]["model"])
+            with self.store.connect() as db:
+                owners = db.execute(
+                    "SELECT owner_id FROM group_tasks WHERE id IN (?,?)",
+                    (decision["task_id"], rejected["task_id"]),
+                ).fetchall()
+            self.assertEqual(len(owners), 2)
+            self.assertEqual(owners[0]["owner_id"], owners[1]["owner_id"])
+            return group, fixture, artifact, rejected, None, critic, decision
+        self.assertEqual(decision["action"], "critique")
         self.assertIn("type mismatch", rejected["diagnostics"])
         frozen = self.store.job_context_packet(critic["job"]["id"])
         feedback = json.loads(frozen["packet"])["untrusted"]["rejected_artifacts"][0]
@@ -661,6 +693,184 @@ class FrontierTests(unittest.TestCase):
         )
         lease, choice = self.next(group)
         return group, fixture, artifact, rejected, text, lease, choice
+
+    def test_direct_auxiliary_indentation_correction_and_named_target_use(self):
+        bad = (
+            "calc\n"
+            "  (a + b) + c = a + (b + c) := Nat.add_assoc a b c\n"
+            "  _ = a + (c + b) := by\n"
+            "  rw [Nat.add_comm b c]"
+        )
+        group, fixture, artifact, rejected, _, repair, choice = self.repair_scenario(
+            direct=True, bad_proof=bad
+        )
+        self.assertTrue(choice["strategy"].startswith("auxiliary-correction|"))
+        frozen = self.store.job_context_packet(repair["job"]["id"])
+        feedback = json.loads(frozen["packet"])["untrusted"]["rejected_artifacts"][0]
+        self.assertEqual(feedback["proof"], bad)
+        self.assertEqual(feedback["diagnostics"], rejected["diagnostics"])
+        self.assertEqual(frozen["request"]["rejected_artifact_ids"], [rejected["id"]])
+        self.assertIn(rejected["id"], frozen["source_ids"])
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        for _ in range(3):
+            self.assertFalse(self.coordinator.tick())
+        self.assertEqual(self.store.job_context_packet(repair["job"]["id"]), frozen)
+        fixed = (
+            "calc\n"
+            "  (a + b) + c = a + (b + c) := Nat.add_assoc a b c\n"
+            "  _ = a + (c + b) := by\n"
+            "    rw [Nat.add_comm b c]"
+        )
+        self.complete(repair, artifact(fixed))
+        target, choice = self.next(group)
+        self.assertEqual(choice["action"], "synthesize")
+        corrected = self.store.group(group)["artifacts"][-1]
+        self.assertEqual(corrected["status"], "verified")
+        self.complete(
+            target,
+            fixture["proof_target"].format(b_name=declaration_name(corrected["id"])),
+        )
+        self.coordinator.tick()
+        self.assertEqual(self.store.group_loop(group)["reason"], "verified_target")
+        attempt = self.store.run(self.store.group(group)["run"]["run_id"])["attempts"][
+            -1
+        ]
+        self.assertEqual(
+            self.store.composed_evidence(attempt["id"])[-1]["usage"]["direct"],
+            [declaration_name(corrected["id"])],
+        )
+        trace = self.store.frontier_trace(group)
+        self.assertEqual(
+            [d["action"] for d in trace["decisions"]],
+            ["plan", "investigate", "investigate", "synthesize"],
+        )
+        self.assertEqual(trace["model"]["reserved_assignments"], 8)
+        self.assertEqual(trace["lean"]["operations"], 3)
+
+    def test_direct_auxiliary_repeated_failure_critiques_without_more_corrections(self):
+        group, _, artifact, rejected, _, repair, _ = self.repair_scenario(direct=True)
+        response = artifact(rejected["proof"])
+        response["artifacts"].append(response["artifacts"][0] | {"key": "another"})
+        self.complete(repair, response)
+        critic, choice = self.next(group)
+        self.assertEqual(choice["action"], "critique")
+        self.complete(
+            critic,
+            {
+                "graph_schema": "solvenet.graph.v1",
+                "findings": [
+                    {
+                        "key": "retry",
+                        "claim": choice["claim_id"],
+                        "text": "Change strategy.",
+                    }
+                ],
+            },
+        )
+        self.store = Store(self.path, lease_seconds=5, clock=lambda: self.now[0])
+        self.coordinator = Coordinator(self.store, self.verifier)
+        target, choice = self.next(group)
+        self.assertEqual(choice["action"], "synthesize")
+        self.complete(target, "exact True.intro")
+        for _ in range(8):
+            self.coordinator.tick()
+        trace = self.store.frontier_trace(group)
+        self.assertEqual(
+            sum(
+                d["strategy"].startswith("auxiliary-correction|")
+                for d in trace["decisions"]
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(d["action"] == "investigate" for d in trace["decisions"]), 2
+        )
+
+    def test_direct_auxiliary_configuration_preserves_defaults_and_retry_bound(self):
+        self.assertEqual(validate_limits({})["direct_auxiliary_correction"], 0)
+        for value in (-1, 2, True, "1"):
+            with self.assertRaises(ValueError):
+                validate_limits({"direct_auxiliary_correction": value})
+        group, _, _, _, _, _, choice = self.repair_scenario(direct=True, retries=0)
+        self.assertEqual(choice["action"], "synthesize")
+        self.assertFalse(
+            any(
+                d["strategy"].startswith("auxiliary-correction|")
+                for d in self.store.frontier_trace(group)["decisions"]
+            )
+        )
+
+    def test_direct_auxiliary_exact_feedback_rejects_oversize_and_changed_binding(self):
+        group, _, _, rejected, _, repair, _ = self.repair_scenario(direct=True)
+        frozen = self.store.job_context_packet(repair["job"]["id"])
+        with self.store.transaction() as db:
+            with self.assertRaisesRegex(ValueError, "Exact auxiliary correction"):
+                build_auxiliary_correction(
+                    db, group, rejected["id"], [], max_bytes=1, context_limit=8192
+                )
+            db.execute("UPDATE artifact_verifier_binding SET revision=revision+1")
+            with self.assertRaisesRegex(ValueError, "binding changed"):
+                build_auxiliary_correction(
+                    db, group, rejected["id"], [], max_bytes=6144, context_limit=8192
+                )
+        self.assertEqual(self.store.job_context_packet(repair["job"]["id"]), frozen)
+
+    def test_direct_auxiliary_changed_binding_after_dispatch_spends_no_lean_slot(self):
+        group, _, artifact, _, _, repair, _ = self.repair_scenario(direct=True)
+        before = self.store.frontier_trace(group)["lean"]["operations"]
+        with self.store.transaction() as db:
+            db.execute("UPDATE artifact_verifier_binding SET revision=revision+1")
+        self.complete(repair, artifact("rw [Nat.add_assoc, Nat.add_comm b c]"))
+        self.coordinator.tick()
+        self.assertEqual(self.store.frontier_trace(group)["lean"]["operations"], before)
+
+    def test_direct_auxiliary_repeated_failure_cannot_spend_completion_work_tail(self):
+        group, _, artifact, rejected, _, repair, _ = self.repair_scenario(
+            direct=True, reserved=True
+        )
+        self.complete(repair, artifact(rejected["proof"]))
+        _, choice = self.next(group)
+        self.assertEqual(choice["action"], "synthesize")
+        self.assertTrue(
+            any(
+                d["action"] == "critique" and d["reason"] == "completion_work_reserve"
+                for d in choice["deferred"]
+            )
+        )
+        self.assertEqual(
+            sum(
+                d["strategy"].startswith("auxiliary-correction|")
+                for d in self.store.frontier_trace(group)["decisions"]
+            ),
+            1,
+        )
+
+    def test_direct_auxiliary_strategy_help_request_routes_to_critique(self):
+        group = self.start(graph_limits={"direct_auxiliary_correction": 1})
+        claims, _ = self.plan(group)
+        finding, _ = self.next(group)
+        response = self.artifact(claims["a"], ": True", "exact False.intro")
+        response["help_requests"] = [
+            {
+                "key": "strategy",
+                "claim": claims["a"],
+                "action": "critique",
+                "reason": "Reconsider the mathematical strategy.",
+            }
+        ]
+        self.complete(finding, response)
+        critic, choice = self.next(group)
+        self.assertEqual(choice["action"], "critique")
+        self.assertIn("strategy help request", choice["reason"])
+        self.assertEqual(
+            len(
+                self.store.job_context_packet(critic["job"]["id"])["request"][
+                    "rejected_artifact_ids"
+                ]
+            ),
+            1,
+        )
 
     def test_real_lean_auxiliary_feedback_one_repair_and_checked_use(self):
         group, fixture, artifact, rejected, critique, repair, choice = (

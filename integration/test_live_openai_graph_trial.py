@@ -45,6 +45,7 @@ class LiveOpenAIBudgetTests(unittest.TestCase):
         replace(cap, max_work=32).validate()
         self.assertEqual(cap.record()["graph_limits"]["target_corrections"], 1)
         self.assertEqual(cap.record()["graph_limits"]["completion_reserve"], 1)
+        self.assertEqual(cap.record()["graph_limits"]["direct_auxiliary_correction"], 1)
 
     def test_total_includes_prior_unknown_probe_and_every_retry(self):
         cap = budget()

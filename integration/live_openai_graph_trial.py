@@ -28,6 +28,7 @@ def trial_graph_limits():
         "lean_elapsed_ms": 60000,
         "retries": 1,
         "target_corrections": 1,
+        "direct_auxiliary_correction": 1,
         "completion_reserve": 1,
         "completion_check_ms": 10000,
     }

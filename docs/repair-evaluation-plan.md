@@ -80,6 +80,7 @@ not installed; the repository's unittest runner was used instead.
 | --- | ---: | ---: | ---: |
 | 1 — offline target repair | 0 | $0.00 | $5.00 |
 | 2 — offline workflow reservations | 0 | $0.00 | $5.00 |
+| 3 — offline mechanical correction routing | 0 | $0.00 | $5.00 |
 
 No credentials were accessed and no paid observations were performed.
 
@@ -135,3 +136,53 @@ exhausted exploration with successful target correction, separate Lean operation
 and elapsed reservations, unused correction capacity after success, heterogeneous
 model costs, twelve-call conservative projection, prompt/output capacity and
 independent per-run/cumulative dollar gates. No paid observations were run.
+
+## Stage 3 implementation status (2026-10-09)
+
+Implemented offline following reviewed stage 2 (`43c4b8e`); independent review
+and the parent session's commit remain the stage gate.
+
+- `graph_limits={"direct_auxiliary_correction": 1, "retries": 1}` routes an
+  initial auxiliary Lean rejection to the same logical owner and model for one
+  correction. The option defaults to `0`, retaining the existing critique-first
+  auxiliary workflow. `retries=0` disables correction. Stage 1 target correction
+  remains independently configured and direct.
+- Routing uses persisted verification status, never diagnostic-string matching.
+  Exact candidate/Lean diagnostics and artifact/job/task/claim/verifier attribution
+  accompany a verbatim copy of the original frozen supplied context. Feedback or
+  supplied context that cannot fit is refused rather than truncated or reselected.
+  A changed verifier binding is refused before dispatch or Lean execution.
+- The corrected response is a distinct model job/task and artifact. Its parent
+  task and owner are retained. Durable per-claim correction history prevents
+  additional artifacts, graph/context changes, lease retries and restart from
+  resetting the single correction allowance.
+- A rejected correction escalates to mathematical critique if the existing
+  planning/work/task/deadline limits and completion tail permit. Challenged
+  strategies and explicit critique requests retain their critique route. Critique
+  after failure cannot authorize another correction in direct mode. Timeout and
+  verifier error use critique rather than the initial Lean-rejection route.
+- The OpenAI trial enables direct auxiliary correction with the existing six-job
+  ceiling and completion reservation. A successful repair path can use five jobs
+  (planning, auxiliary, correction, synthesis, target correction), leaving critique
+  capacity for repeated failure. The offline successful auxiliary/target fixture
+  uses four jobs instead of the critique-first fixture's five: eight versus ten
+  reserved assignments, with the same three Lean operations. These reservations
+  and scripted outcomes do not establish real-model effectiveness or paid savings.
+- Real Lean coverage rejects a nested `calc` tactic with incorrect indentation,
+  accepts its owner-submitted indentation correction, and verifies the final
+  target using the corrected lemma's exact generated name with a known direct-use
+  receipt. Coverage also exercises frozen feedback/context, duplicate submission,
+  restart, multiple rejected correction artifacts, critique escalation without
+  renewed correction, opt-in validation, disabled retries, explicit strategy help,
+  changed verifier bindings and completion-tail protection. Existing
+  critique-first and target-correction regression coverage remains active.
+
+Validation: 127 distinct unittest tests passed across frontier (58), context
+packet (20), group routing (7), group loop (24) and offline OpenAI trial (18).
+The final frontier suite passed in 424 seconds with real Lean; expected injected
+verifier failures were logged. The initial combined invocation passed its
+coordinator tests but failed to import the trial suite because `homelab/src` was
+missing from `PYTHONPATH`; the trial suite then passed with that path supplied.
+Repository Ruff check and formatting pass; configured mypy passes (5 source
+files); `git diff --check` passes. No credentials were accessed and no paid
+observations were run. Changes remain uncommitted for parent-session review.

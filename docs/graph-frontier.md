@@ -103,6 +103,20 @@ cannot reset its count through new artifacts, graph revisions or critique messag
 No useful critique finding means no repair assignment. Rejected candidates remain
 untrusted and are never selected as checked declarations.
 
+Opt in with `direct_auxiliary_correction=1` to send the first Lean-rejected
+auxiliary directly to its original logical owner and model, without an intervening
+critique. `retries=1` allows one correction per claim; `retries=0` disables it.
+The correction freezes the rejected job's complete supplied manifest and checked
+lemma packet, plus the exact artifact proof, diagnostics and attribution. It
+submits a separate graph artifact with parent-task lineage. Diagnostic text is
+never classified to decide whether a failure is mechanical or mathematical.
+An explicit challenged strategy still routes to critique. Repeated failure,
+timeout or verifier error routes to bounded critique, with no further auxiliary
+correction in this mode. Critique remains subject to planning, work and completion
+tail admission. Artifact multiplicity, context changes and restart cannot reset
+the correction allowance. An unavailable owner or oversized exact context defers
+correction and permits target fallback.
+
 Selected rejection and critique evidence is required, not silently pruned or
 shortened. Rejections have a 3000-byte JSON category ceiling; critiques share the
 existing 2000-byte message category. If exact feedback exceeds category, packet
@@ -125,6 +139,7 @@ assignment reservations and verification limits still apply.
 | `source_bytes` (encoded replay inputs and generated Lean source) | 32768 |
 | `packet_bytes` (full encoded graph packet) | 6144 |
 | `retries` (independent retries per strategy) | 1 |
+| `direct_auxiliary_correction` (opt-in direct owner correction, 0 or 1) | 0 |
 | `response_output_tokens` (non-synthesis plan/finding/critique output) | 512 |
 
 Synthesis continues to request 2048 output tokens. The configured response

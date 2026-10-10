@@ -5,7 +5,12 @@ import json
 
 from . import protocol_limits
 from .composed import encode
-from .context_packet import build_packet, build_target_correction, freeze_packet
+from .context_packet import (
+    build_auxiliary_correction,
+    build_packet,
+    build_target_correction,
+    freeze_packet,
+)
 from .group_operations import create_group_run, insert_group_job, stop_group_jobs
 from .group_routing import choose
 from .group_state import _require_group
@@ -19,6 +24,7 @@ DEFAULT_LIMITS = {
     "packet_bytes": 6144,
     "retries": 1,
     "target_corrections": 0,
+    "direct_auxiliary_correction": 0,
     "completion_reserve": 0,
     "completion_check_ms": 10000,
     "response_output_tokens": 512,
@@ -60,7 +66,11 @@ def validate_limits(value):
         raise ValueError("Invalid graph limits")
     result = DEFAULT_LIMITS | value
     for key, maximum in DEFAULT_LIMITS.items():
-        if key in ("target_corrections", "completion_reserve"):
+        if key in (
+            "target_corrections",
+            "completion_reserve",
+            "direct_auxiliary_correction",
+        ):
             maximum = 1
         if key == "completion_check_ms":
             maximum = 180000
@@ -70,7 +80,13 @@ def validate_limits(value):
             type(result[key]) is not int
             or not (
                 0
-                if key in ("retries", "target_corrections", "completion_reserve")
+                if key
+                in (
+                    "retries",
+                    "target_corrections",
+                    "completion_reserve",
+                    "direct_auxiliary_correction",
+                )
                 else 1
             )
             <= result[key]
@@ -144,6 +160,24 @@ def reserve_check(db, store, check_id, owner_kind, bundle, deadline_ms):
     ).fetchone()
     if not loop or loop["mode"] != "graph":
         return
+    if owner_kind == "artifact":
+        packet = db.execute(
+            """SELECT p.request,p.manifest FROM composed_checks c
+            JOIN group_artifacts a ON a.id=c.owner_id
+            JOIN context_packets p ON p.job_id=a.job_id WHERE c.id=?""",
+            (check_id,),
+        ).fetchone()
+        if packet and json.loads(packet["request"]).get("strategy", "").startswith(
+            "auxiliary-correction|"
+        ):
+            from .proof_context import binding_matches
+
+            frozen = json.loads(packet["manifest"])
+            if not binding_matches(db, frozen) or any(
+                bundle[key] != frozen[key]
+                for key in ("verifier_identity", "verifier_revision")
+            ):
+                raise FrontierLimit("verifier_binding_changed")
     if owner_kind == "attempt":
         packet = db.execute(
             """SELECT p.request,p.manifest FROM composed_checks c
@@ -226,6 +260,72 @@ def _correction_source(db, group_id, history, limits):
         ORDER BY t.rowid DESC LIMIT 1""",
         (group_id,),
     ).fetchone()
+
+
+def _direct_auxiliary_candidate(
+    db, cid, rejected, history, limits, candidate, candidates, proposal
+):
+    """One durable correction per claim, independent of artifact/manifest churn."""
+    if proposal and proposal["action"] == "critique":
+        candidate(
+            cid,
+            "critique",
+            1,
+            "attributed strategy help request",
+            proposal["id"],
+            rejected_artifact_ids=[rejected["id"]],
+        )
+        return
+    corrections = [
+        r
+        for r in history
+        if r["claim_id"] == cid and r["strategy"].startswith("auxiliary-correction|")
+    ]
+    if not corrections and limits["retries"] and rejected["status"] == "rejected":
+        source = db.execute(
+            """SELECT j.model,t.owner_id FROM jobs j
+            JOIN group_tasks t ON t.id=? WHERE j.id=?""",
+            (rejected["task_id"], rejected["job_id"]),
+        ).fetchone()
+        if source:
+            candidate(
+                cid,
+                "investigate",
+                -1,
+                "bounded direct auxiliary correction from exact Lean rejection and frozen context",
+                "auxiliary-correction",
+                rejected_artifact_ids=[rejected["id"]],
+            )
+            candidates[-1].update(
+                parent=rejected["task_id"],
+                owner_id=source["owner_id"],
+                owner_model=source["model"],
+            )
+            return
+    candidate(
+        cid,
+        "critique",
+        1,
+        "repeated formal failure or unavailable direct correction redirects branch",
+        "rejected",
+        rejected_artifact_ids=[rejected["id"]],
+    )
+
+
+def _target_correction_candidate(
+    db, group_id, root, history, limits, candidate, candidates
+):
+    failed = _correction_source(db, group_id, history, limits)
+    if failed:
+        candidate(
+            root,
+            "synthesize",
+            -1,
+            "bounded target correction from exact Lean rejection and frozen context",
+            "target-correction",
+            target_attempt_ids=[failed["id"]],
+        )
+        candidates[-1]["parent"] = failed["task_id"]
 
 
 def _frontier_candidates(db, group_id, root, history, planning, limits, binding):
@@ -341,6 +441,18 @@ def _frontier_candidates(db, group_id, root, history, planning, limits, binding)
                     None,
                 )
                 if rejected:
+                    if limits.get("direct_auxiliary_correction", 0):
+                        _direct_auxiliary_candidate(
+                            db,
+                            cid,
+                            rejected,
+                            history,
+                            limits,
+                            candidate,
+                            candidates,
+                            proposals.get(cid),
+                        )
+                        continue
                     candidate(
                         cid,
                         "critique",
@@ -455,17 +567,9 @@ def _frontier_candidates(db, group_id, root, history, planning, limits, binding)
             (group_id,),
         ).fetchall()
         events += ["target:" + r["attempt_id"] for r in verdicts]
-        failed = _correction_source(db, group_id, history, limits)
-        if failed:
-            candidate(
-                root,
-                "synthesize",
-                -1,
-                "bounded target correction from exact Lean rejection and frozen context",
-                "target-correction",
-                target_attempt_ids=[failed["id"]],
-            )
-            candidates[-1]["parent"] = failed["task_id"]
+        _target_correction_candidate(
+            db, group_id, root, history, limits, candidate, candidates
+        )
         if events and sum(r["action"] == "plan" for r in history) < 3:
             candidate(
                 root,
@@ -557,9 +661,18 @@ def _admit_candidate(
                     for m in models[role]
                 ),
             )
-            correction = c["strategy"] == "target-correction"
+            correction = c["strategy"] in ("target-correction", "auxiliary-correction")
             built = (
-                build_target_correction(
+                build_auxiliary_correction(
+                    db,
+                    group_id,
+                    c["evidence"]["rejected_artifact_ids"][0],
+                    messages,
+                    max_bytes=limits["packet_bytes"],
+                    context_limit=context_limit,
+                )
+                if c["strategy"] == "auxiliary-correction"
+                else build_target_correction(
                     db,
                     group_id,
                     c["evidence"]["target_attempt_ids"][0],
@@ -635,7 +748,7 @@ def _admit_candidate(
             model, cost, routing = choose(
                 db,
                 group_id,
-                models,
+                models | {role: [c["owner_model"]]} if c.get("owner_model") else models,
                 capabilities,
                 role,
                 task_type,
@@ -721,6 +834,7 @@ def _dispatch_frontier_task(
         if role != "investigator"
         else ("investigator-2" if c["parent"] else "investigator-1")
     )
+    owner_id = c.get("owner_id", agents[owner])
     task_id, job_id = identifier(), identifier()
     key = "frontier:" + str(len(history))
     parent = (
@@ -743,7 +857,7 @@ def _dispatch_frontier_task(
             key,
             c["parent"],
             agents["planner"],
-            agents[owner],
+            owner_id,
             c["reason"],
             cost,
             parent["depth"] + 1 if parent else 0,
@@ -776,7 +890,7 @@ def _dispatch_frontier_task(
         group_id,
         key,
         task_id,
-        agents[owner],
+        owner_id,
         group["environment"],
         cost,
         model=model,
