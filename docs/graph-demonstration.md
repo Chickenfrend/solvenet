@@ -1,5 +1,8 @@
 # G6: graph-driven composed proof and local observation
 
+The [first paid OpenAI observation](openai-observation.md) subsequently solved
+the target with planner-to-synthesizer handoff, but without auxiliary-lemma reuse.
+
 G1–G6 are implemented locally in sequence: G1 `e0aaa6f`, G2 `906fa68`,
 G3 `833969a`, G4 `9ea32a0`, G5 `e935aea`, G6 `e3ae833`. Combined review
 fix `fbcadb8` delivers the actual triggering relationship/review/reason in

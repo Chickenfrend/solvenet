@@ -1,5 +1,68 @@
 # Process-level integration: IT1, A6 and G6
 
+## Opt-in OpenAI graph observation (O4)
+
+`live_openai_graph_trial.py` defaults to a **no-call preflight**. Supply an exact
+model ID, the tested `responses-reasoning` profile, a compiled worker, a
+worker-local key-file path, current operator-confirmed rates, a total allowance
+and any prior-call reservation. Only adding `--execute-paid` starts requests.
+The Python runner never opens the key file; it passes its path only in the
+worker environment. It performs no compatibility probe.
+
+Example preflight (prices are illustrative; confirm the selected model's current
+prices at <https://developers.openai.com/api/docs/pricing> before execution):
+
+```sh
+PATH="$HOME/.elan/bin:$PATH" PYTHONPATH=coordinator/src:homelab/src \
+  python3 integration/live_openai_graph_trial.py \
+  --model gpt-6.1-sol --profile responses-reasoning \
+  --worker /tmp/opencode/solvenet-openai-trial-worker \
+  --key-file "$HOME/.config/solvenet/openai_api_key" \
+  --output /tmp/opencode/solvenet-o4-openai-observation.json \
+  --total-budget-usd 1 --prior-reserved-usd 0.08 \
+  --input-usd-per-million 2.50 --output-usd-per-million 10
+```
+
+With these inputs the conservative total projection is **$0.89920**, including
+the $0.08 reservation for an earlier probe whose usage is unknown. The graph
+reserves 20 work units at model cost 2: at most five jobs, each with at most two
+assignments, hence at most ten attempted calls including retries. Every attempt
+reserves 24,576 input tokens (full request bytes plus framing bounded by the
+worker) and 2,048 output tokens including reasoning. Existing graph jobs request
+512 tokens for plan/finding/critique and 2,048 for target proofs; the projection
+uses 2,048 for every attempt. It refuses a projection above the total allowance.
+
+The claim gate independently caps assignments and pauses on expired assignments
+or missing input/output usage, including failures. A structured planning reply
+is required before further graph expansion. It uses the multi-step natural-number
+reordering target from `fixtures/graph-nat-reorder.json`, supplying only its
+statement/imports/environment, never fixture proofs. All roles use one model
+but retain distinct agent IDs. No hierarchy comparison is claimed.
+
+Ceilings: two planning/critique assignments, no independent frontier retries,
+four real Lean operations / 40 seconds Lean allowance, 10 seconds per Lean
+check, 45 seconds per provider call, 285-second group deadline and 300-second
+worker cutoff. At cutoff and cleanup, termination escalates to a kill after five
+seconds if needed; the scheduler
+is operator-driven and has no background thread. A running Lean check may take
+up to its ten-second bound to return after the process cutoff.
+
+The fresh JSON output and adjacent `.json.data` directory persist the coordinator
+SQLite database, frozen prompts/packet hashes, graph acceptance/rejection receipts,
+checked artifacts and use evidence, target outcomes, assignment retries/failures,
+worker log, and actual/unknown usage. Observed token-based dollar values are
+estimates, not provider bills; unknown usage stays unknown. Both paths must be
+new. A formatting failure, truncation or negative mathematical result stops this
+observation without increasing its allowance. Inspect structured collaboration,
+checked lemma handoff/use, and target verification separately.
+
+Offline cap/gate/cleanup regressions (no keys/API):
+
+```sh
+PYTHONPATH=coordinator/src:homelab/src python3 -m unittest discover \
+  -s integration -p test_live_openai_graph_trial.py -v
+```
+
 O1 also runs the G6 graph scenario through fake loopback OpenAI `chat-json` and
 `responses-reasoning` profiles using an arbitrary configured model ID. Both
 profiles carry nested graph JSON and target proofs through compiled Go workers,
